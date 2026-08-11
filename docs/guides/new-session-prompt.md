@@ -9,23 +9,21 @@
 开始前必须按顺序完整阅读以下文件：
 
 1. `AGENTS.md`：环境、命令、硬性规则、当前基线和阶段边界。
-2. `docs/phase1-architecture.md`：架构设计 v1.7，项目单一事实来源。
-3. `docs/phase3-code-review.md` 末尾“第二轮复审处理结果”：阶段 3 最终修复记录。
-4. `README.md`：当前安装、运行和 Scheduler 使用说明。
+2. `docs/architecture/phase1-architecture.md`：架构设计 v1.12，项目单一事实来源。
+3. `README.md`：当前安装、运行和 Scheduler 使用说明。
 
 项目当前状态：
 
-- 阶段 1 架构、阶段 2 MVP、阶段 3 Memory + Scheduler 均已完成。
-- 当前完整测试基线是 **pytest 50/50 全绿**；红线 `tests/test_memory_isolation.py` 为 6/6。
-- 已实现多助手与记忆隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 检索与有界 LIKE 降级、跨任务记忆延续、跨进程运行锁，以及和 Runtime 共用事件循环的 APScheduler。
-- 架构文档当前版本是 v1.7；阶段 3 已有两轮审查和处理闭环。
-- 阶段 4（FastAPI + SSE + Vue 3 Web UI）尚未开始。
-- 项目已初始化 Git 仓库，默认分支为 `main`，但尚无首次提交；建立基线提交前不要依赖 git diff 覆盖未跟踪文件，也不要擅自使用 checkout 或 reset。
+- 阶段 1 架构、阶段 2 MVP、阶段 3 Memory + Scheduler、阶段 4 写作工作台均已完成。
+- 当前完整测试基线是 **pytest 123/123 全绿**；记忆隔离红线为 9/9；前端测试为 30/30，类型检查与生产构建通过。
+- 已实现多助手隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写和项目 Agent 聊天）。
+- 架构文档当前版本是 v1.12；阶段 4 复审已完成。当前没有自动开始的新阶段。
+- 项目使用 Git，默认分支为 `main`，跟踪私有远程 `origin/main`。不要擅自使用 checkout、reset 等破坏性命令，也不要覆盖未提交内容。
 
 必须遵守：
 
 - 所有 Python 操作只能使用 `C:\miniconda\envs\writing-agent\python.exe`；不要使用系统 Python，不建 venv。
-- 架构或跨模块契约变化必须先更新 `docs/phase1-architecture.md` 并升版。
+- 架构或跨模块契约变化必须先更新 `docs/architecture/phase1-architecture.md` 并升版。
 - 行为变更使用 TDD：先写失败测试并确认 RED，再实现 GREEN，最后跑完整测试。
 - `tests/test_memory_isolation.py` 必须始终常绿；Memory/锁改动必须先跑红线再跑全量。
 - `agent/`、`scheduler/` 和未来 `api/` 禁止直接写 SQL，只能通过 `MemoryStore`；SQL 仅留在 `memory/` 层，助手数据查询必须按 `assistant_id` 隔离。
@@ -36,9 +34,9 @@
 这次先不要写代码。读完后请先告诉我：
 
 1. 你对当前架构、已完成能力和阶段边界的理解；
-2. 阶段 4 的实施计划、文件范围、关键接口、测试策略和风险点；
-3. 是否需要先处理已知的 CLI Ctrl+C 体验项，以及你建议纳入或暂缓的理由。
+2. 当前用户请求涉及的文件范围、验证方式与风险点；
+3. 是否存在需要先处理的遗留项，以及建议纳入或暂缓的理由。
 
-等我确认计划后再开始修改文件。
+等我确认计划后再开始修改文件；若只是明确的文档整理，先说明影响范围再直接完成整理。
 
 ---

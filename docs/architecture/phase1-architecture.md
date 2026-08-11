@@ -1,6 +1,6 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.11 · 2026-08-10
+> 版本：v1.12 · 2026-08-11
 > 状态：阶段 4 写作 IDE 及 v1.11 复审加固已完成（Python 123/123、前端 30/30、记忆隔离 9/9），文档与代码已同步
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
@@ -14,6 +14,7 @@
 > v1.10 变更：根据阶段 4 代码审查收紧写作 IDE 契约——文档保存与 change set 应用采用跨进程串行、可恢复的写入意图，冲突请求不得触碰正文文件；一次聊天产生的多个 change set 必须先全量校验再原子落库；任务记录携带 `assistant_id`、SSE 按订阅者广播且终态记录有界保留；内置写工具禁止覆盖受管项目；前端预览必须消毒，所有保存/应用操作以标签页或 change set 自身 `project_id` 为准，并保护 dirty 内容、同步 CodeMirror 与关闭 SSE（§4.7/§5.7/§5.9/§5.10/§6.2）。
 >
 > v1.11 变更：根据阶段 4 复审补齐恢复与异步作用域契约——运行锁和文档写入意图记录 PID 对应的进程启动时间，遗留旧行以创建时间 TTL 兜底，PID 复用不得造成永久阻塞；写入意图先用短事务认领、在事务外原子写文件、再用短事务终结，认领/插入竞态稳定映射 HTTP 409；MemoryStore 启动时对账 `.import-*`、`.purge-*` 与归档半程残骸，约束表迁移必须原子回滚；导入文件的 UTF-8 BOM 在后续保存/apply/恢复中保持；资源冲突使用专用异常；所有异步任务端点在返回 202 前校验助手与运行锁；前端的助手切换、项目树、文档打开、rewrite、apply/reject 和 SSE 只接纳发起作用域仍匹配的异步响应，待审卡片仅在父级确认 apply/reject 成功后移除（§4.7/§5.7/§5.9/§5.10/§6.2/§9）。
+> v1.12 变更：文档目录按 `architecture/`、`reviews/`、`guides/` 与 `history/` 分类，并新增 `docs/README.md` 导航；仅调整文档位置与入口链接，不改变运行时架构或模块契约。
 
 ---
 
@@ -583,7 +584,11 @@ writing-agent/
                      ★ articles/<assistant_id>/*.md
                      项目/文档身份、当前 `document_version` 与 change set 由 app.db 管理
                      archive/<id>-<ts>/（删除助手的归档，运行时自动生成）
-  docs/            ★ phase1-architecture.md / phase1-architecture-review.md
+  docs/            ★ README.md（导航）
+                     architecture/phase1-architecture.md / phase1-architecture-review.md
+                     reviews/phase2-code-review.md / phase3-code-review.md / phase4-code-review.md
+                     guides/new-session-prompt.md / windows-task-scheduler.md
+                     history/superpowers/（历史设计与实施记录）
   tests/           ★ test_skill_loading.py / ★ test_tool_registry.py / ★ test_memory_isolation.py
                      （三个测试全部随 MVP 交付）
   .env.example     ★
