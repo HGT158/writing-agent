@@ -1,0 +1,29 @@
+# LLM（OpenAI 兼容接口）
+openai>=2.0,<3
+
+# Agent 状态机（代码依赖 1.x 系 API，勿降级到 0.2）
+langgraph>=1.0
+langgraph-checkpoint-sqlite>=3.0
+
+# MCP 官方 SDK（stdio 传输）
+mcp>=1.10
+
+# 数据与配置
+pydantic>=2.6
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# 运行锁 PID 存活校验 / Windows 终端颜色
+psutil>=5.9
+colorama>=0.4.6
+
+# 定时任务（阶段 3：与 Runtime 共用 asyncio 事件循环）
+APScheduler>=3.10,<4
+
+# 阶段 4 本地 Web API / SSE
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+python-multipart>=0.0.20,<1
+
+# uv（提供 uvx，用于运行 mcp-server-fetch）
+uv>=0.4

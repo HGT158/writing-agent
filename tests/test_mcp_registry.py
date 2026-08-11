@@ -1,0 +1,40 @@
+"""MCP 配置注册容错测试（审查 P1-9）：坏配置只警告不抛异常。"""
+import json
+
+from mcp_client.registry import load_server_configs
+
+
+def test_bad_json_degrades_to_empty(tmp_path):
+    cfg = tmp_path / "bad.json"
+    cfg.write_text("{not valid json", encoding="utf-8")
+    warnings = []
+    result = load_server_configs(cfg, tmp_path, warn=warnings.append)
+    assert result == {}
+    assert any("解析失败" in w for w in warnings)
+
+
+def test_missing_command_server_skipped(tmp_path):
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"mcpServers": {"no-cmd": {"args": []}, "ok": {"command": "uvx", "args": ["x"]}}}),
+                   encoding="utf-8")
+    warnings = []
+    result = load_server_configs(cfg, tmp_path, warn=warnings.append)
+    assert set(result) == {"ok"}
+    assert any("no-cmd" in w for w in warnings)
+
+
+def test_var_interpolation_and_undefined_warning(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEFINED_KEY", "secret-1")
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"mcpServers": {"s": {
+        "command": "npx",
+        "args": ["-y", "pkg", "${PROJECT_ROOT}/data"],
+        "env": {"A": "${DEFINED_KEY}", "B": "${UNDEFINED_KEY}"},
+    }}}), encoding="utf-8")
+    warnings = []
+    result = load_server_configs(cfg, tmp_path, warn=warnings.append)
+    server = result["s"]
+    assert server["args"][-1] == f"{tmp_path}/data"
+    assert server["env"]["A"] == "secret-1"
+    assert server["env"]["B"] == ""
+    assert any("UNDEFINED_KEY" in w for w in warnings)

@@ -1,0 +1,4 @@
+# 开发/测试依赖（生产运行不需要）：pip install -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.0
+httpx>=0.28,<1
