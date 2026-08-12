@@ -792,6 +792,14 @@ def purge_project(
     os.replace(source, staging)
     try:
         conn.execute(
+            "DELETE FROM project_chat_messages WHERE assistant_id = ? AND project_id = ?",
+            (assistant_id, project_id),
+        )
+        conn.execute(
+            "DELETE FROM project_chat_sessions WHERE assistant_id = ? AND project_id = ?",
+            (assistant_id, project_id),
+        )
+        conn.execute(
             "DELETE FROM document_write_intents WHERE assistant_id = ? AND project_id = ?",
             (assistant_id, project_id),
         )
@@ -1097,6 +1105,24 @@ def get_change_set(
     if row is None:
         raise KeyError(f"change set 不存在：{change_set_id}")
     return _row_to_change_set(row)
+
+
+def list_pending_chat_changes(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+) -> list[ChangeSetRecord]:
+    _project_row(conn, assistant_id, project_id)
+    rows = conn.execute(
+        "SELECT change_set_id, assistant_id, project_id, document_id, session_id, source, "
+        "start_offset, end_offset, original_text, replacement_text, base_version, status, "
+        "created_at, applied_at FROM change_sets "
+        "WHERE assistant_id = ? AND project_id = ? AND session_id = ? "
+        "AND source = 'chat' AND status = 'pending' ORDER BY created_at, change_set_id",
+        (assistant_id, project_id, chat_session_id),
+    ).fetchall()
+    return [_row_to_change_set(row) for row in rows]
 
 
 def reject_change_set(

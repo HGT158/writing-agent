@@ -7,13 +7,17 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from memory.errors import ResourceConflictError
 from memory.store import MemoryStore
+from pydantic import ValidationError
 
+from .project_editing import ProjectEditBatch
 from .schemas import ToolContext, ToolSpec
 
 
@@ -121,3 +125,68 @@ def make_builtin_tools(data_dir: Path, store: MemoryStore) -> list[ToolSpec]:
             idempotent=False,  # 每次调用生成新文件并登记索引，失败不重试
         ),
     ]
+
+
+def make_project_edit_tool(store: MemoryStore, project_id: str) -> ToolSpec:
+    """创建仅绑定当前项目的编辑提案工具；工具只写 pending change set。"""
+
+    async def propose(args: dict[str, Any], ctx: ToolContext) -> str:
+        try:
+            batch = ProjectEditBatch.model_validate(args)
+        except ValidationError as exc:
+            raise ValueError("修改建议参数无效，请重试") from exc
+        seen: set[str] = set()
+        drafts: list[dict[str, object]] = []
+        for item in batch.changes:
+            if item.document_id in seen:
+                raise ValueError("同一次编辑调用中每个文档只能出现一次")
+            seen.add(item.document_id)
+            document = store.get_document(ctx.assistant_id, project_id, item.document_id)
+            if document.version != item.document_version:
+                raise ResourceConflictError("版本冲突")
+            content = document.content or ""
+            if item.old_text == "":
+                if content:
+                    raise ResourceConflictError("非空文档不能使用空旧文本")
+                start = 0
+            else:
+                start = content.find(item.old_text)
+                if start < 0:
+                    raise ResourceConflictError("旧文本不存在")
+                if content.find(item.old_text, start + 1) >= 0:
+                    raise ResourceConflictError("旧文本匹配多处，请提供更多上下文")
+            drafts.append({
+                "document_id": item.document_id,
+                "start": start,
+                "end": start + len(item.old_text),
+                "original_text": item.old_text,
+                "replacement_text": item.new_text,
+                "base_version": item.document_version,
+            })
+        changes = store.create_change_sets(
+            ctx.assistant_id,
+            project_id,
+            drafts,
+            source="chat",
+            session_id=ctx.session_id,
+        )
+        return json.dumps(
+            {
+                "change_set_ids": [item.change_set_id for item in changes],
+                "count": len(changes),
+            },
+            ensure_ascii=False,
+        )
+
+    return ToolSpec(
+        name="propose_project_edits",
+        description=(
+            "为项目文档提出精确修改建议；改写、增删或替换正文时必须调用。"
+            "目标文档为空时，使用空 old_text 提交首稿。"
+            "工具只生成待审核 diff，不会直接写文件。"
+        ),
+        args_schema=ProjectEditBatch.model_json_schema(),
+        handler=propose,
+        idempotent=False,
+        captures_source=False,
+    )

@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.12 · 2026-08-11
-> 状态：阶段 4 写作 IDE 及 v1.11 复审加固已完成（Python 123/123、前端 30/30、记忆隔离 9/9），文档与代码已同步
+> 版本：v1.16 · 2026-08-12
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史及 v1.16 失败路径加固均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -15,6 +15,13 @@
 >
 > v1.11 变更：根据阶段 4 复审补齐恢复与异步作用域契约——运行锁和文档写入意图记录 PID 对应的进程启动时间，遗留旧行以创建时间 TTL 兜底，PID 复用不得造成永久阻塞；写入意图先用短事务认领、在事务外原子写文件、再用短事务终结，认领/插入竞态稳定映射 HTTP 409；MemoryStore 启动时对账 `.import-*`、`.purge-*` 与归档半程残骸，约束表迁移必须原子回滚；导入文件的 UTF-8 BOM 在后续保存/apply/恢复中保持；资源冲突使用专用异常；所有异步任务端点在返回 202 前校验助手与运行锁；前端的助手切换、项目树、文档打开、rewrite、apply/reject 和 SSE 只接纳发起作用域仍匹配的异步响应，待审卡片仅在父级确认 apply/reject 成功后移除（§4.7/§5.7/§5.9/§5.10/§6.2/§9）。
 > v1.12 变更：文档目录按 `architecture/`、`reviews/`、`guides/` 与 `history/` 分类，并新增 `docs/README.md` 导航；仅调整文档位置与入口链接，不改变运行时架构或模块契约。
+> v1.13 变更：项目 Agent 聊天改为有界的流式工具调用：普通回答直接发送文本增量；编辑指令调用项目作用域的 `propose_project_edits` 工具，以精确旧文本/新文本和文档版本批量创建 pending change set，再发送 `change_preview`，正文仍只在用户接受后写入。前端把同一任务的文本增量追加到一个消息气泡，并展示工具执行状态和既有 diff 审核卡片（§4.7/§5.2/§5.4/§5.9/§5.10/§6.2/§9）。
+
+> v1.14 变更：`propose_project_edits` 允许仅在目标文档正文为空时使用 `old_text=""`，语义固定为在 `[0, 0)` 插入新正文，从而让项目 Agent 能为新建空白项目生成首稿；非空文档仍禁止空旧文本，避免插入位置歧义。项目 Agent 失败时前端只显示一条可读错误，不重复呈现工具错误与任务错误（§4.7/§5.4/§6.2/§9）。
+
+> v1.15 变更：每个助手的每个项目支持多个持久化 Agent 聊天会话；专用 `project_chat_sessions/project_chat_messages` 表按助手、项目、会话三层隔离，恢复最近会话、完整消息与关联 pending diff。模型每轮接收当前会话全部可见历史；上下文压缩列入后续待办，本版不截断。会话存在 pending diff 或助手任务运行中时禁止删除；chat diff 只在 AgentPanel 呈现，接受/拒绝成功后按服务端状态移除。会话加载期间禁止发送，失败流不保留未持久化的半截 assistant 文本，重新生成作为新的可见 user 消息呈现，避免 UI 与模型历史分叉（§4.7/§5.4/§5.7/§5.9/§5.10/§9）。
+
+> v1.16 变更：根据阶段 5 审查加固项目聊天失败路径。首次发送由 API 预建会话后，任务若在首条消息持久化前失败或取消，只补偿删除仍为 0 消息且无关联 diff 的新会话；已有消息或 diff 时必须保留，补偿异常不得覆盖原始任务错误。聊天消息与普通任务统一限制为 100,000 字符；流式工具参数通过 schema 校验后才发送 `tool_call`；异常退出显式关闭模型流；空白模型回复转为可见且持久化的提示。前端 POST 失败回滚未送达 user 气泡，终态清理工具状态，token 到达时自动滚动，SSE 断线提示刷新恢复（§5.4/§5.7/§5.9/§5.10/§9）。
 
 ---
 
@@ -286,7 +293,11 @@ Scheduler、CLI、API 三个入口都可能让同一个助手同时跑两个 Loo
 
 可编辑导入文件只接受 UTF-8 或 UTF-8 BOM。API 返回给编辑器的正文不含 BOM，但文件首次导入时是否携带 UTF-8 BOM 必须在后续手工保存、change set 应用和崩溃恢复中保持，不能静默改变文件编码标记。
 
-右侧 Agent 面板绑定当前助手与项目。聊天可读取当前文件、明确附加的其他项目文件和本助手记忆；涉及内容修改时也必须返回 change set/diff，经用户确认后才写入。一次模型响应包含多个修改时，MemoryStore 必须先验证全部目标文档、版本、范围和原文快照，再在单个事务中批量创建 change set；任何一项非法则整批失败，不留下不可见的 pending 建议。聊天不能在未明确项目时修改文件，也不能访问其他助手项目。选区改写、聊天修改和普通写作任务共享 AgentRuntime、EventBus、AssistantRegistry、MemoryStore、MCP/Skill 注册表及运行锁，不另建 LLM 调用链路。
+右侧 Agent 面板绑定当前助手与项目。聊天可读取当前文件、明确附加的其他项目文件和本助手记忆；涉及内容修改时也必须返回 change set/diff，经用户确认后才写入。项目聊天采用**最多两个模型轮次**的有界工具调用：第一轮流式返回普通文本，或调用项目作用域的 `propose_project_edits`；工具调用结束后可再进行一个禁用工具的流式轮次，向用户说明已生成的修改建议，不允许继续递归调用工具。
+
+`propose_project_edits` 的单次调用携带一组修改，每项包含 `document_id`、`old_text`、`new_text` 与 `document_version`。工具在服务端绑定已校验的 `assistant_id` 和 `project_id`，模型不能覆盖归属；`old_text` 必须在目标版本正文中精确且唯一匹配，零匹配或多匹配均使整批失败。唯一例外是目标正文为空时允许 `old_text=""`，固定生成 `[0, 0)` 插入建议；非空正文使用空旧文本仍整批失败。同一调用对每个文档最多生成一条建议；同一文档的多处调整必须合并为一个覆盖范围，避免接受第一条后版本递增使同批其余建议失效。工具根据匹配位置计算 Unicode code point 半开区间，MemoryStore 在单个事务中验证全部目标文档、版本和原文快照后创建 pending change set；任何一项非法则整批失败，不留下部分建议。该工具只创建建议，**不得直接保存或替换项目文件**。
+
+聊天不能在未明确项目时修改文件，也不能访问其他助手项目。选区改写、聊天修改和普通写作任务共享 AgentRuntime、EventBus、AssistantRegistry、MemoryStore、MCP/Skill 注册表及运行锁，不另建独立持久化或并发链路。
 
 ---
 
@@ -327,6 +338,8 @@ class ActionPlan(BaseModel):
 
 **错误即观察**原则：工具抛异常不打断 Loop，而是变成 `Observation(success=False, error=...)` 交回 Planner——这是 Agent 自愈能力的基础。
 
+项目聊天的 `propose_project_edits` 仍使用 `ToolSpec`，定义位于 `agent/tools.py` 并声明 `idempotent=False`、`captures_source=False`。它只注册到本次项目聊天的临时工具表，不进入普通写作 Agent Loop 的全局工具清单；闭包绑定已校验的 `project_id`，`ToolContext` 继续注入不可由模型伪造的 `assistant_id` / `session_id` / `data_dir`。工具参数流结束并通过 schema 校验后才执行，部分 JSON 参数不得产生数据库副作用。
+
 ### 5.3 `agent/loop.py` — 状态机装配
 
 observe / plan / act / reflect / **write 五个节点全部在本模块装配**（write 节点的大纲→逐节成文→合并编排逻辑量较大，是独立节点函数，不散落在别处）。挂载：
@@ -349,6 +362,8 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 9. 仅当以 `schedule` 长驻模式启动时，在**当前 Runtime 的 asyncio 事件循环**上注册并启动 APScheduler；一次性 `run` 不启动 Scheduler
 
 每次任务：`runtime.run(assistant_id, task)` → **按助手获取运行锁（占用则拒绝，§4.6）** → 取该助手 persona + 技能子集 → `recall` 一次写入 `state.memory_context` → 进入 Loop。
+
+项目聊天入口 `runtime.chat_project(...)` 复用同一运行锁、LLM client、EventBus、Skill 与 MemoryStore。它把模型文本 delta 立即发为 `token`，累积并完成流式 tool-call 参数的 JSON/schema 校验后才发送 `tool_call` 并执行一次 `propose_project_edits`；异常路径显式关闭模型流。若发生工具调用，最多追加一个无工具的流式说明轮次。API 任务终态中的 `reply` 等于本次任务所有可见文本 delta 的顺序拼接，`change_set_ids` 来自工具执行结果；模型没有返回可见文本时，Runtime 发送并持久化明确提示，不能留下无反馈的连续 user 消息。
 
 CLI 入口为 `agent/__main__.py`（`python -m agent` 的载体），子命令：`run`（默认）、`assistants list/create/delete`、`--resume`。`run` 命令从 Runtime 启动开始即进入 `try/finally` 清理边界：启动或任务执行发生未预期异常时发出 failed 事件并返回非零退出码，已分配的 Store/MCP 等资源仍由 `runtime.close()` 释放。
 
@@ -419,6 +434,7 @@ when_to_use: 任务涉及外部事实、时效性信息、需要引用来源时�
 | 长期 | `assistants/<id>/memory/profile.md`（写作风格/偏好/常用主题）+ SQLite `articles` 表（含 `assistant_id`） | 跨任务、跨会话沉淀 | **任务启动时 `recall` 一次，结果存 `state.memory_context`，Planner 每轮从 state 注入**；Reflect 判定有新偏好时 `memorize` |
 | 项目工作区 | `data/assistants/<id>/projects/<project_id>/` + SQLite `projects` / `project_documents`（均含 `assistant_id`） | 受管文件树、可编辑文档身份和 `document_version` | 导入/树查询/文件保存均经 API 与 MemoryStore；内容以受管文件为事实来源 |
 | AI 修改建议 | SQLite `change_sets`（含 `assistant_id`、`project_id`、`document_id`、`session_id`、原文范围/快照、替换文本、基准版本、来源模式、状态） | 选区改写或聊天产生的待确认修改 | 生成时写入 pending；应用/拒绝/过期均按助手、项目与文档归属校验 |
+| 项目 Agent 会话 | SQLite `project_chat_sessions` / `project_chat_messages`（均含 `assistant_id`、`project_id`、`chat_session_id`） | 每项目多会话标题、完整可见 user/assistant 历史 | 首次发送创建会话，消息成功产生时持久化；打开项目默认恢复最近会话，模型按顺序读取当前会话全部消息 |
 
 - `store.py` 统一接口（`assistant_id` 恒为第一参数）：
 
@@ -440,6 +456,8 @@ def recall_semantic(assistant_id: str, query: str) -> str  # 预留向量接口�
 - **检索故障降级**：profile、文章 FTS、消息 FTS、文章 LIKE、消息 LIKE、最近文章六路读取分别隔离异常并记 warning；任一路损坏时继续组合其余可用结果。FTS 查询失败时最近文章仍可兜底，任何 recall 存储故障都不得阻断 Agent 写作主链路。
 - **同助手跨会话共享**：`recall` 的检索范围 = 本助手全部历史会话 + 本助手 profile.md；**跨助手隔离**：SQL 强制 `WHERE assistant_id = ?`，profile 按目录物理隔离。
 - **项目与建议隔离**：`projects`、`project_documents`、`change_sets`、`document_write_intents` 的所有查询必须同时校验 `assistant_id`；`project_id` / `document_id` 不能单独作为授权或查询条件。保存文档和应用 change set 必须在写事务内执行版本号、状态与原文快照校验，使用持久化写入意图 + 临时文件 + 原子替换更新正文；冲突方不得触碰磁盘，进程崩溃后的残留意图必须可恢复。聊天产生多条建议时使用 MemoryStore 批量接口原子创建。
+- **项目聊天隔离与生命周期**：项目会话和消息的所有查询必须同时过滤 `assistant_id + project_id + chat_session_id`，不得混入普通 Agent Loop 的 `sessions/messages` 或 FTS 索引。第一条用户消息自动生成会话标题；列表按更新时间倒序。会话详情同时返回 `source='chat'` 且仍为 pending 的关联 change set。存在 pending diff 或助手运行锁时删除会话返回冲突；无 pending 且成功获取助手级 mutation lock 时，删除消息、会话及已处理 chat change set 元数据，但不回滚已写入正文。消息正文按可见原文保存，只以 trim 后结果判断空值和生成标题。项目 purge 与助手 purge 必须级联清理项目聊天表，归档项目保留历史但不可访问。
+- **新会话失败补偿**：首次发送由 API 同步创建会话并返回 `chat_session_id`。后台任务成功、失败或取消后，API 都对本次新建会话执行幂等条件清理：会话仍存在、消息数为 0、且无任何关联 change set 时才删除；已有 user/assistant 消息或 diff 时必须保留，避免模型失败后丢失已送达内容。继续既有会话不得触发会话删除；补偿清理失败只记 warning，不得覆盖原始任务结果或错误。
 - **工具写边界**：`save_markdown` 只允许写 `data/` 下的非受管中间产物，必须拒绝 `assistants/<assistant_id>/projects/` 及任意其他助手项目路径；项目正文只能经项目文档/change set API 修改。
 
 ### 5.8 Scheduler — `scheduler/`
@@ -482,12 +500,15 @@ JOBS = [
 | `POST /api/projects/{project_id}/documents/{document_id}/selection-rewrites` | 创建选区局部改写任务；body 必含 `assistant_id`、选区文本/范围、指令和版本；返回 `task_id`/`change_set_id` |
 | `POST /api/projects/{project_id}/change-sets/{change_set_id}/apply` | 显式应用选区或聊天 change set；body 必含 `assistant_id` 和期望版本；快照或版本不匹配返回 409 |
 | `POST /api/projects/{project_id}/change-sets/{change_set_id}/reject` | 拒绝 change set；必须校验助手、项目和文档归属 |
-| `POST /api/projects/{project_id}/agent/messages` | 向项目 Agent 面板发送消息；body 必含 `assistant_id`，可带当前 `document_id`、选区及显式附件；修改类结果仍以 change set 返回 |
+| `POST /api/projects/{project_id}/agent/messages` | 向项目 Agent 面板发送消息；body 必含 `assistant_id`，消息最长 100,000 字符，可带当前 `document_id`、选区及显式附件；返回任务 id，文本通过 SSE 流式发送，修改类结果由 `propose_project_edits` 生成 change set |
+| `GET /api/projects/{project_id}/agent/sessions?assistant_id=X` | 按更新时间倒序返回该助手项目的聊天会话 |
+| `GET /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 返回完整可见消息与该会话 pending chat diff |
+| `DELETE /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 删除无 pending diff 的会话；存在 pending 返回 409 |
 | `GET /api/articles?assistant_id=X` | 既有完成态文章归档列表；`assistant_id` 必填。它不是项目编辑入口 |
 | `GET /api/articles/{id}?assistant_id=X` | 只读获取完成态文章；要继续编辑须复制/导入为项目，所有保存统一走项目文档 API |
 | `GET /` | 托管 `web/dist` 静态文件 |
 
-`TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按 TTL/容量有界保留，事件历史只为断线重放服务，不得无限增长。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流，并新增 `change_preview` 事件（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）；正文只有在 apply 成功后更新。
+`TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按 TTL/容量有界保留，事件历史只为断线重放服务，不得无限增长。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）。正文只有在 apply 成功后更新。
 
 API 层不通过错误文本猜测冲突类型。MemoryStore/项目存储以专用冲突异常表达版本冲突、待处理状态和跨进程写入占用，API 稳定映射为 HTTP 409；参数错误保持 400，资源不存在保持 404。
 
@@ -495,9 +516,9 @@ API 层不通过错误文本猜测冲突类型。MemoryStore/项目存储以专�
 
 Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部/活动栏提供**助手选择器**和项目导入；左侧资源管理器列出当前助手的项目及项目文件树；中间为多标签 CodeMirror 编辑器，可切换 Markdown 预览；右侧为绑定当前项目的 Agent 面板，显示对话、执行事件、来源和待确认修改。切换助手时必须关闭或重新加载不属于新助手的项目标签和 Agent 会话。
 
-选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；若产生文件修改，同样进入 change set 预览，不直接覆盖。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
+选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡。`tool_call` / `tool_result` 显示为紧凑的“正在准备修改 / 修改建议已生成 / 失败”状态；若产生文件修改，同样进入 change set 预览，不直接覆盖。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
 
-每个编辑标签必须保存自己的 `project_id`；保存使用标签页归属，应用/拒绝使用 change set 归属，不能依赖资源树当前选中的项目。外部接受修改后必须把服务端正文同步进 CodeMirror 与 store；若目标标签 dirty，必须先显式确认丢弃未保存内容。Agent 面板的待审卡片只能在父级确认 apply/reject 成功后移除，请求失败必须保留以便重试。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、文档或卸载时必须关闭所属 EventSource，网络/解析错误必须退出 loading 状态；异步 POST 返回和旧任务事件都需校验发起时的助手、项目和文档作用域，不能注入新上下文。
+每个编辑标签必须保存自己的 `project_id`；保存使用标签页归属，应用/拒绝使用 change set 归属，不能依赖资源树当前选中的项目。chat diff 只由 AgentPanel 呈现，DocumentEditor 只呈现 selection rewrite，禁止复制同一 chat 卡片。接受修改始终提交 change set 自带的 `document_version`，不要求目标文档已打开；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。Agent 面板的待审卡片只能在父级确认 apply/reject 成功后移除，请求失败必须保留以便重试。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属 EventSource，网络/解析错误必须退出 loading 状态并提示可刷新恢复；聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
 
 前端只能通过 API 读写，不能直接读取 SQLite、助手目录或外部原路径。`npm run build` 产物由 FastAPI 托管，单进程交付。
 
@@ -543,6 +564,8 @@ sequenceDiagram
 {"type": "tool_call", "data": {"tool": "tavily_search", "args": {}, "reason": "..."}}
 {"type": "tool_result","data": {"tool": "tavily_search", "ok": true, "summary": "..."}}
 {"type": "token",     "data": {"text": "…正文流式片段…"}}
+{"type": "tool_call", "data": {"tool": "propose_project_edits", "args": {"changes": 2}}}
+{"type": "tool_result","data": {"tool": "propose_project_edits", "ok": true, "summary": "已生成 2 处修改建议"}}
 {"type": "change_preview", "data": {"change_set_id": "...", "project_id": "...", "document_id": "...", "range": {"from": 10, "to": 24}, "replacement": "…建议替换文本…", "document_version": 7}}
 {"type": "done",      "data": {"path": "data/articles/tech-writer/模型蒸馏-20260806-0934.md"}}
 {"type": "failed",    "data": {"reason": "..."}}
@@ -645,6 +668,16 @@ PROJECT_IMPORT_MAX_FILE_MB=100
 | 文件原子替换后进程退出或 SQLite 元数据未终结 | 保留 `document_write_intents`；下次 MemoryStore 读取/写入按目标内容摘要恢复并完成版本/change set 状态终结，不允许永久分叉 |
 | 选区改写任务与同助手长任务并发 | 复用 `run_locks`；后来者遵循既有 API 409 / CLI 报错 / Scheduler 跳过语义，不排队 |
 | AI 改写输出非法或为空 | 标记该局部任务 failed，保留原选区与正文，不创建可应用建议 |
+| 项目聊天流在 tool-call 参数完成前中断 | 丢弃未完成参数，任务 failed；不得执行工具或创建 change set |
+| `propose_project_edits` 的旧文本不存在或匹配多处 | 整批工具调用失败并发送 `tool_result(ok=false)`；不创建部分 change set，提示模型/用户提供更精确上下文 |
+| `propose_project_edits` 对空白文档生成首稿 | 仅当当前正文为空且 `old_text=""` 时创建 `[0, 0)` pending change set；非空正文的空旧文本整批拒绝 |
+| 删除仍有 pending diff 的项目聊天会话 | MemoryStore 在事务内检查并返回专用冲突；API 映射 409，消息、会话和 change set 均不删除 |
+| 删除正在运行任务所属助手的项目聊天会话 | 会话删除先获取助手级 mutation lock；锁冲突映射 409，运行中会话与消息保持不变 |
+| 项目聊天消息只有空白字符 | API 在创建会话和入队前返回 400，不产生空会话 |
+| 项目聊天模型调用失败 | 用户消息已持久化并保留；不完整 assistant 流不写入历史，已成功创建的 pending diff 仍可在会话详情恢复 |
+| 首次项目聊天在写入用户消息前失败 | 仅当本次新会话仍为 0 消息且无关联 diff 时补偿删除；已有任何持久化内容则保留 |
+| 项目聊天模型返回空白回复 | Runtime 发送并持久化可见提示，避免历史出现无反馈的连续 user 消息 |
+| OpenAI 兼容服务拒绝流式 tools 参数 | 任务明确失败并保留正文；不得退化为伪流式或直接写文件，错误信息指出当前模型服务不支持项目 Agent 编辑工具 |
 | 导入目录包含 `..`、绝对路径、符号链接或重解析点 | 拒绝对应导入并清理本次未完成的临时目录；不得在项目根外创建文件 |
 | 导入中途失败或项目同名 | 先写受管目录内的临时项目，全部完成后原子改名；显示名可相同，`project_id` 与物理目录不得覆盖 |
 

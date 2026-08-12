@@ -9,15 +9,15 @@
 开始前必须按顺序完整阅读以下文件：
 
 1. `AGENTS.md`：环境、命令、硬性规则、当前基线和阶段边界。
-2. `docs/architecture/phase1-architecture.md`：架构设计 v1.12，项目单一事实来源。
+2. `docs/architecture/phase1-architecture.md`：架构设计 v1.16，项目单一事实来源。
 3. `README.md`：当前安装、运行和 Scheduler 使用说明。
 
 项目当前状态：
 
 - 阶段 1 架构、阶段 2 MVP、阶段 3 Memory + Scheduler、阶段 4 写作工作台均已完成。
-- 当前完整测试基线是 **pytest 123/123 全绿**；记忆隔离红线为 9/9；前端测试为 30/30，类型检查与生产构建通过。
-- 已实现多助手隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写和项目 Agent 聊天）。
-- 架构文档当前版本是 v1.12；阶段 4 复审已完成。当前没有自动开始的新阶段。
+- 当前完整测试基线是 **pytest 162/162 全绿**；记忆隔离红线为 10/10；前端测试为 43/43，类型检查与生产构建通过。
+- 已实现多助手隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写、项目 Agent 流式编辑和每项目多会话历史）。
+- 架构文档当前版本是 v1.16；阶段 4 复审、项目 Agent 流式编辑、空白文档首稿生成、多会话历史和阶段 5 审查修复均已完成。当前没有自动开始的新阶段。
 - 项目使用 Git，默认分支为 `main`，跟踪私有远程 `origin/main`。不要擅自使用 checkout、reset 等破坏性命令，也不要覆盖未提交内容。
 
 必须遵守：

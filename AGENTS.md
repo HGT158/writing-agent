@@ -4,9 +4,9 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.12**。
-- 阶段 2、3、4 均已完成；当前基线：Python **123/123**、记忆隔离 **9/9**、前端 **30/30**。
-- 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写和项目 Agent 聊天。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.16**。
+- 阶段 2、3、4、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成、v1.15 项目 Agent 多会话历史及 v1.16 失败路径加固均已完成；当前基线：Python **162/162**、记忆隔离 **10/10**、前端 **43/43**。
+- 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑与每项目多会话历史。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读
@@ -15,8 +15,7 @@
 
 1. `AGENTS.md`
 2. `docs/architecture/phase1-architecture.md`
-3. `docs/reviews/phase3-code-review.md` 末尾“第二轮复审处理结果”
-4. `README.md`
+3. `README.md`
 
 读完后先汇报当前理解、处理范围和验收方式；用户确认前不得开始下一阶段。
 
@@ -63,6 +62,7 @@ npm run build
 10. Git 提交采用 Conventional Commits：`类型(可选范围): 中文摘要`；摘要和正文使用中文，技术名词可保留原文。
 11. 提交或推送前检查 `.env`、`data/`、数据库、日志、依赖和构建产物未进入索引。
 12. 完成工作后同步实际测试基线与相关文档，并遵守阶段门。
+13. `docs/` 只保持 `architecture/`、`guides/`、`history/`、`reviews/` 四类目录；Superpower 产生的现行设计归入 `architecture/`，完成后的过程材料归入 `history/`，禁止新建 `docs/superpowers/` 等平行目录。
 
 ## 当前 Git 状态
 

@@ -14,6 +14,7 @@ const document = {
 const apiMocks = vi.hoisted(() => ({
   listAssistants: vi.fn(), listProjects: vi.fn(), createProject: vi.fn(),
   getProjectTree: vi.fn(), getDocument: vi.fn(), saveDocument: vi.fn(),
+  applyChange: vi.fn(), rejectChange: vi.fn(),
 }))
 
 vi.mock('./api/client', () => ({ apiClient: apiMocks }))
@@ -30,6 +31,8 @@ describe('App project creation', () => {
     apiMocks.getProjectTree.mockReset().mockResolvedValue([document])
     apiMocks.getDocument.mockReset().mockResolvedValue(document)
     apiMocks.saveDocument.mockReset()
+    apiMocks.applyChange.mockReset()
+    apiMocks.rejectChange.mockReset()
   })
 
   it('disables the save command while a save request is running', async () => {
@@ -94,5 +97,59 @@ describe('App project creation', () => {
 
     expect(vm.activeProjectId).toBe('project-new')
     expect(vm.projectTree[0].project_id).toBe('project-new')
+  })
+
+  it('applies a chat change when its target document is not open', async () => {
+    apiMocks.applyChange.mockResolvedValue({
+      document: { ...document, version: 3, content: 'Agent 修改' },
+      change_set: { change_set_id: 'change-1', status: 'applied' },
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      applyAgentChange: (
+        change: Record<string, unknown>, complete: (success: boolean) => void,
+      ) => Promise<void>
+    }
+    const complete = vi.fn()
+
+    await vm.applyAgentChange({
+      change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
+      range: { from: 0, to: 0 }, original: '', replacement: 'Agent 修改',
+      document_version: 2, source: 'chat',
+    }, complete)
+
+    expect(apiMocks.applyChange).toHaveBeenCalledWith(
+      'default', 'project-1', 'change-1', 2,
+    )
+    expect(complete).toHaveBeenCalledWith(true)
+  })
+
+  it('uses the change version when an open tab has a stale cached version', async () => {
+    apiMocks.applyChange.mockResolvedValue({
+      document: { ...document, version: 3, content: 'Agent 修改' },
+      change_set: { change_set_id: 'change-1', status: 'applied' },
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      applyAgentChange: (
+        change: Record<string, unknown>, complete: (success: boolean) => void,
+      ) => Promise<void>
+    }
+
+    await vm.applyAgentChange({
+      change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
+      range: { from: 0, to: 0 }, original: '', replacement: 'Agent 修改',
+      document_version: 2, source: 'chat',
+    }, vi.fn())
+
+    expect(apiMocks.applyChange).toHaveBeenCalledWith(
+      'default', 'project-1', 'change-1', 2,
+    )
   })
 })

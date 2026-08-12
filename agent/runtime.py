@@ -1,6 +1,7 @@
 """Runtime（架构 §5.4）：进程启动时组装一次，任务按 runtime.run(assistant_id, task) 运行。"""
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,12 @@ from scheduler import RuntimeScheduler
 from .assistant_registry import AssistantRegistry
 from .events import EventBus
 from .executor import ToolRegistry
-from .llm import chat_text
+from .llm import chat_text, stream_chat_turn
 from .loop import RuntimeServices, build_graph
-from .project_editing import ProjectChatResult, parse_chat_payload
-from .schemas import AgentState
+from .project_editing import ProjectChatResult, ProjectEditBatch
+from .schemas import AgentState, ToolContext
 from .skills import load_skills
-from .tools import make_builtin_tools
+from .tools import make_builtin_tools, make_project_edit_tool
 
 
 class AgentRuntime:
@@ -210,6 +211,7 @@ class AgentRuntime:
         project_id: str,
         message: str,
         *,
+        chat_session_id: str,
         current_document_id: str | None = None,
     ) -> ProjectChatResult:
         """项目 Agent 对话；文件修改只生成待确认 change set。"""
@@ -217,11 +219,14 @@ class AgentRuntime:
             raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
         assistant = self.assistants.get(assistant_id)
         task_id = uuid.uuid4().hex[:12]
-        session_id = uuid.uuid4().hex[:12]
         self.store.acquire_lock(assistant_id, task_id, self.settings.run_lock_ttl_hours)
         try:
             if not message.strip():
                 raise ValueError("消息不能为空")
+            self.store.get_project_tree(assistant_id, project_id)
+            self.store.get_project_chat_session(
+                assistant_id, project_id, chat_session_id
+            )
             context = "(未打开文档)"
             if current_document_id is not None:
                 document = self.store.get_document(
@@ -235,41 +240,107 @@ class AgentRuntime:
                 )
             editing = self.skills.get("editing")
             skill_prompt = editing.body if editing is not None else "帮助用户审校和改写项目文本。"
-            prompt = (
-                f"{skill_prompt}\n\n"
-                "返回严格 JSON："
-                '{"reply":"给用户的回答","changes":[{"document_id":"...",'
-                '"start":0,"end":1,"original_text":"...","replacement_text":"...",'
-                '"document_version":1}]}。不修改文件时 changes 为空。\n\n'
-                f"当前项目文档：\n{context}\n\n用户消息：{message.strip()}"
+            system_prompt = (
+                f"{assistant.persona}\n\n{skill_prompt}\n\n"
+                "你正在项目 Agent 面板中回答用户。回答应简洁、具体。"
+                "用户要求改写、增删或替换正文时，必须调用 propose_project_edits，"
+                "不要声称已经修改文件，也不要在工具调用前输出解释。"
+                "普通问答不调用工具。\n\n"
+                f"当前项目文档：\n{context}"
             )
-            raw = await chat_text(
-                self.llm,
-                self.settings.model_name,
-                [
-                    {"role": "system", "content": assistant.persona},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                json_mode=True,
-            )
-            payload = parse_chat_payload(raw)
-            changes = self.store.create_change_sets(
+            self.store.add_project_chat_message(
                 assistant_id,
                 project_id,
-                [
-                    {
-                        "document_id": item.document_id,
-                        "start": item.start,
-                        "end": item.end,
-                        "original_text": item.original_text,
-                        "replacement_text": item.replacement_text,
-                        "base_version": item.document_version,
-                    }
-                    for item in payload.changes
+                chat_session_id,
+                "user",
+                message,
+            )
+            history = self.store.list_project_chat_messages(
+                assistant_id, project_id, chat_session_id
+            )
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": system_prompt},
+                *[
+                    {"role": item.role, "content": item.content}
+                    for item in history
                 ],
-                source="chat",
-                session_id=session_id,
+            ]
+            visible: list[str] = []
+
+            def emit_text(text: str) -> None:
+                visible.append(text)
+                self.bus.emit("token", text=text)
+
+            chat_tools = ToolRegistry()
+            chat_tools.register(make_project_edit_tool(self.store, project_id))
+            edit_tool = chat_tools.get("propose_project_edits")
+            if edit_tool is None:
+                raise RuntimeError("项目编辑工具注册失败")
+            tool_schema = [{
+                "type": "function",
+                "function": {
+                    "name": edit_tool.name,
+                    "description": edit_tool.description,
+                    "parameters": edit_tool.args_schema,
+                },
+            }]
+            first = await stream_chat_turn(
+                self.llm,
+                self.settings.model_name,
+                messages,
+                tools=tool_schema,
+                on_text=emit_text,
+            )
+            if not first.tool_calls:
+                reply = "".join(visible)
+                if not reply.strip():
+                    reply = "模型未返回可见内容，请重试。"
+                    emit_text(reply)
+                self.store.add_project_chat_message(
+                    assistant_id,
+                    project_id,
+                    chat_session_id,
+                    "assistant",
+                    reply,
+                )
+                return ProjectChatResult(reply=reply, changes=[])
+            if len(first.tool_calls) != 1:
+                raise RuntimeError("项目聊天每轮只允许一个编辑提案工具调用")
+            call = first.tool_calls[0]
+            if call.name != edit_tool.name:
+                raise RuntimeError(f"项目聊天不允许调用工具：{call.name}")
+            ctx = ToolContext(
+                assistant_id=assistant_id,
+                session_id=chat_session_id,
+                data_dir=str(self.settings.data_dir),
+            )
+            try:
+                args = json.loads(call.arguments)
+                validated = ProjectEditBatch.model_validate(args)
+            except Exception as exc:
+                error = "修改建议参数无效，请重试"
+                self.bus.emit("tool_result", tool=call.name, ok=False, error=error)
+                raise ValueError(error) from exc
+            self.bus.emit(
+                "tool_call",
+                tool=call.name,
+                args={"changes": len(validated.changes)},
+            )
+            try:
+                output = await edit_tool.call(args, ctx)
+            except Exception as exc:
+                self.bus.emit("tool_result", tool=call.name, ok=False, error=str(exc))
+                raise
+            result_data = json.loads(output)
+            changes = [
+                self.store.get_change_set(assistant_id, project_id, change_set_id)
+                for change_set_id in result_data["change_set_ids"]
+            ]
+            self.bus.emit(
+                "tool_result",
+                tool=call.name,
+                ok=True,
+                summary=f"已生成 {len(changes)} 处修改建议",
             )
             for change in changes:
                 self.bus.emit(
@@ -283,9 +354,45 @@ class AgentRuntime:
                     document_version=change.base_version,
                     source="chat",
                 )
-            if payload.reply:
-                self.bus.emit("token", text=payload.reply)
-            return ProjectChatResult(reply=payload.reply, changes=changes)
+            messages.extend([
+                {
+                    "role": "assistant",
+                    "content": first.text or None,
+                    "tool_calls": [{
+                        "id": call.id,
+                        "type": "function",
+                        "function": {"name": call.name, "arguments": call.arguments},
+                    }],
+                },
+                {"role": "tool", "tool_call_id": call.id, "content": output},
+            ])
+            followup_started = False
+
+            def emit_followup(text: str) -> None:
+                nonlocal followup_started
+                if not followup_started and first.text:
+                    emit_text("\n\n")
+                followup_started = True
+                emit_text(text)
+
+            await stream_chat_turn(
+                self.llm,
+                self.settings.model_name,
+                messages,
+                on_text=emit_followup,
+            )
+            reply = "".join(visible)
+            if not reply.strip():
+                reply = "修改建议已生成，请审核。"
+                emit_text(reply)
+            self.store.add_project_chat_message(
+                assistant_id,
+                project_id,
+                chat_session_id,
+                "assistant",
+                reply,
+            )
+            return ProjectChatResult(reply=reply, changes=changes)
         except Exception as exc:
             self.bus.emit("failed", reason=str(exc))
             raise

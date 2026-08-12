@@ -53,6 +53,29 @@ export interface ChangeSetRecord {
   status: 'pending' | 'applied' | 'rejected'
 }
 
+export interface ProjectChatSession {
+  chat_session_id: string
+  assistant_id?: string
+  project_id?: string
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface ProjectChatMessage {
+  message_id: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export interface ProjectChatSessionDetail {
+  session: ProjectChatSession
+  messages: ProjectChatMessage[]
+  pending_changes: ChangePreview[]
+}
+
 export interface TaskStatus {
   task_id: string
   status: 'running' | 'done' | 'failed'

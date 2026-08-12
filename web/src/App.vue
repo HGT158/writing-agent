@@ -128,20 +128,20 @@ async function saveActive() {
 
 async function applyAgentChange(change: ChangePreview, complete: (success: boolean) => void = () => undefined) {
   const tab = workspace.getTab(change.project_id, change.document_id)
-  if (!tab) {
-    globalError.value = '修改目标文档未打开'
-    complete(false)
-    return
-  }
-  if (tab.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) {
+  if (tab?.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) {
     complete(false)
     return
   }
   try {
     const result = await apiClient.applyChange(
-      workspace.assistantId, change.project_id, change.change_set_id, tab.version,
+      workspace.assistantId,
+      change.project_id,
+      change.change_set_id,
+      change.document_version,
     )
-    workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
+    if (tab) {
+      workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
+    }
     if (externalChange.value?.change_set_id === change.change_set_id) externalChange.value = null
     complete(true)
   } catch (error) {
@@ -225,7 +225,6 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         :assistant-id="workspace.assistantId"
         :project-id="agentProjectId"
         :document-id="activeTab?.document_id || null"
-        @preview="externalChange = $event"
         @apply="applyAgentChange"
         @reject="rejectAgentChange"
       />

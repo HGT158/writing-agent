@@ -57,5 +57,6 @@ class ChangeSetReject(BaseModel):
 
 class ProjectChatRequest(BaseModel):
     assistant_id: str
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=100_000)
+    chat_session_id: str | None = None
     current_document_id: str | None = None

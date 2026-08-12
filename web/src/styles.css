@@ -44,6 +44,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .heading-actions { display: flex; gap: 2px; }
 .heading-actions button { width: 25px; height: 25px; display: grid; place-items: center; }
 .heading-actions button:hover { background: #e5e7e9; }
+.chat-session-toolbar { flex: 0 0 37px; display: grid; grid-template-columns: minmax(0, 1fr) 28px 28px; align-items: center; gap: 3px; padding: 4px 7px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.chat-session-select { min-width: 0; height: 28px; border: 1px solid var(--border); background: var(--surface); padding: 0 6px; font-size: 12px; }
+.new-chat-button, .delete-chat-button { width: 28px; height: 28px; display: grid; place-items: center; color: #4f555a; }
+.new-chat-button:hover:not(:disabled), .delete-chat-button:hover:not(:disabled) { background: #e5e7e9; }
+.delete-chat-button:hover:not(:disabled) { color: var(--danger); }
 .project-list { overflow: auto; }
 .project-row, .file-row { width: 100%; min-height: 28px; display: flex; align-items: center; text-align: left; padding: 3px 8px; font-size: 12px; }
 .project-row:hover, .file-row:hover { background: #e7e9eb; }
@@ -104,6 +109,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .message-role { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; }
 .message p { margin: 4px 0 0; white-space: pre-wrap; font-size: 13px; line-height: 1.55; }
 .message.user { background: #f0f2f3; }
+.tool-status { margin: 0; padding: 7px 11px; border-bottom: 1px solid #e5e7e9; color: var(--accent); font-size: 12px; }
 .agent-composer { position: relative; flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--surface); padding: 8px; }
 .agent-composer textarea { width: 100%; resize: none; border: 1px solid var(--border); padding: 8px 34px 8px 8px; line-height: 1.45; }
 .send-button { position: absolute; right: 14px; bottom: 15px; width: 28px; height: 28px; display: grid; place-items: center; color: var(--accent); }

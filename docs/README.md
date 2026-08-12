@@ -6,10 +6,13 @@
 
 | 文档 | 用途 |
 |---|---|
-| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.12） |
+| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.16） |
+| [architecture/project-agent-streaming-edit-design.md](architecture/project-agent-streaming-edit-design.md) | 项目 Agent 流式编辑工具设计（已实现） |
+| [architecture/project-chat-history-design.md](architecture/project-chat-history-design.md) | 项目 Agent 多会话历史设计（已实现） |
 | [../AGENTS.md](../AGENTS.md) | Agent 工作约定、环境和硬性规则 |
 | [guides/new-session-prompt.md](guides/new-session-prompt.md) | 新对话的可复制启动提示词 |
 | [guides/windows-task-scheduler.md](guides/windows-task-scheduler.md) | Windows 登录启动 Scheduler 的配置 |
+| [guides/backlog.md](guides/backlog.md) | 已确认但暂缓实施的后续能力 |
 
 ## 审查记录
 
@@ -21,6 +24,7 @@
 | [reviews/phase2-code-review.md](reviews/phase2-code-review.md) | 阶段 2 MVP 代码审查 |
 | [reviews/phase3-code-review.md](reviews/phase3-code-review.md) | 阶段 3 Memory + Scheduler 审查与二轮复审闭环 |
 | [reviews/phase4-code-review.md](reviews/phase4-code-review.md) | 阶段 4 写作 IDE 审查与处理结果 |
+| [reviews/phase5-code-review.md](reviews/phase5-code-review.md) | 项目 Agent 流式编辑与多会话增量审查及处理结果 |
 
 ## 历史设计
 

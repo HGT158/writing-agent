@@ -7,6 +7,9 @@ import type { ChangePreview, TaskEvent } from '../types'
 const apiMocks = vi.hoisted(() => ({
   chatProject: vi.fn(),
   watchTask: vi.fn(),
+  listProjectChatSessions: vi.fn(),
+  getProjectChatSession: vi.fn(),
+  deleteProjectChatSession: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({ apiClient: apiMocks }))
@@ -33,10 +36,257 @@ describe('AgentPanel', () => {
     HTMLElement.prototype.scrollTo = vi.fn()
     apiMocks.chatProject.mockReset()
     apiMocks.watchTask.mockReset()
-    apiMocks.chatProject.mockResolvedValue({ task_id: 'task-1' })
+    apiMocks.listProjectChatSessions.mockReset().mockResolvedValue([])
+    apiMocks.getProjectChatSession.mockReset()
+    apiMocks.deleteProjectChatSession.mockReset().mockResolvedValue({ deleted: true })
+    apiMocks.chatProject.mockResolvedValue({ task_id: 'task-1', chat_session_id: 'session-1' })
   })
 
-  it('retries the last instruction without adding a duplicate user message', async () => {
+  it('loads the most recent session and keeps it when the document changes', async () => {
+    apiMocks.listProjectChatSessions.mockResolvedValue([{
+      chat_session_id: 'session-recent', title: '最近会话',
+      created_at: '2026-08-11T00:00:00Z', updated_at: '2026-08-11T01:00:00Z',
+      message_count: 2,
+    }])
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: {
+        chat_session_id: 'session-recent', title: '最近会话',
+        created_at: '2026-08-11T00:00:00Z', updated_at: '2026-08-11T01:00:00Z',
+        message_count: 2,
+      },
+      messages: [
+        { message_id: 1, role: 'user', content: '历史问题', created_at: '2026-08-11T00:00:00Z' },
+        { message_id: 2, role: 'assistant', content: '历史回答', created_at: '2026-08-11T00:00:01Z' },
+      ],
+      pending_changes: [],
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.chat-session-select').element).toHaveProperty('value', 'session-recent')
+    expect(wrapper.get('.message.user').text()).toContain('历史问题')
+    expect(wrapper.get('.message.assistant').text()).toContain('历史回答')
+
+    await wrapper.setProps({ documentId: 'document-2' })
+    await flushPromises()
+    expect(wrapper.get('.message.user').text()).toContain('历史问题')
+    expect(apiMocks.getProjectChatSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables sending while the session list is loading', async () => {
+    let resolveSessions: (sessions: unknown[]) => void = () => undefined
+    apiMocks.listProjectChatSessions.mockReturnValue(
+      new Promise((resolve) => { resolveSessions = resolve }),
+    )
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await nextTick()
+
+    expect(wrapper.get('textarea').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.send-button').attributes('disabled')).toBeDefined()
+
+    resolveSessions([])
+    await flushPromises()
+    expect(wrapper.get('textarea').attributes('disabled')).toBeUndefined()
+  })
+
+  it('switches sessions and restores pending changes', async () => {
+    const sessions = [
+      { chat_session_id: 'session-2', title: '会话二', created_at: '2', updated_at: '2', message_count: 1 },
+      { chat_session_id: 'session-1', title: '会话一', created_at: '1', updated_at: '1', message_count: 1 },
+    ]
+    apiMocks.listProjectChatSessions.mockResolvedValue(sessions)
+    apiMocks.getProjectChatSession.mockImplementation(
+      (_assistantId: string, _projectId: string, sessionId: string) => Promise.resolve({
+        session: sessions.find((item) => item.chat_session_id === sessionId),
+        messages: [{ message_id: 1, role: 'user', content: sessionId, created_at: '1' }],
+        pending_changes: sessionId === 'session-1' ? [change] : [],
+      }),
+    )
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('.chat-session-select').setValue('session-1')
+    await flushPromises()
+
+    expect(wrapper.get('.message.user').text()).toContain('session-1')
+    expect(wrapper.find('.change-diff').exists()).toBe(true)
+    expect(wrapper.get('.delete-chat-button').attributes('disabled')).toBeDefined()
+  })
+
+  it('starts a new local session and adopts the server session id on send', async () => {
+    apiMocks.listProjectChatSessions.mockResolvedValue([{
+      chat_session_id: 'session-old', title: '旧会话', created_at: '1', updated_at: '1', message_count: 1,
+    }])
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: { chat_session_id: 'session-old', title: '旧会话', created_at: '1', updated_at: '1', message_count: 1 },
+      messages: [{ message_id: 1, role: 'user', content: '旧消息', created_at: '1' }],
+      pending_changes: [],
+    })
+    apiMocks.chatProject.mockResolvedValue({ task_id: 'task-new', chat_session_id: 'session-new' })
+    apiMocks.watchTask.mockReturnValue({ close: vi.fn() })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('.new-chat-button').trigger('click')
+    expect(wrapper.findAll('.message')).toHaveLength(0)
+    await wrapper.get('textarea').setValue('新问题')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMocks.chatProject).toHaveBeenCalledWith(
+      'default', 'project-1', '新问题', null, 'document-1',
+    )
+    expect(wrapper.get('.chat-session-select').element).toHaveProperty('value', 'session-new')
+  })
+
+  it('continues the same session stream after the document changes', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+    await wrapper.get('textarea').setValue('跨文档分析')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    await wrapper.setProps({ documentId: 'document-2' })
+    await callback(taskEvent('token', { text: '继续输出' }))
+    await nextTick()
+
+    expect(wrapper.get('.message.assistant').text()).toContain('继续输出')
+  })
+
+  it('appends streamed tokens to one assistant message', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('分析正文')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('token', { text: '正在' }))
+    await callback(taskEvent('token', { text: '处理。' }))
+    await nextTick()
+
+    expect(wrapper.findAll('.message.assistant')).toHaveLength(1)
+    expect(wrapper.get('.message.assistant p').text()).toBe('正在处理。')
+    expect(HTMLElement.prototype.scrollTo).toHaveBeenCalled()
+  })
+
+  it('removes the optimistic user message when the chat POST fails', async () => {
+    apiMocks.chatProject.mockRejectedValue(new Error('助手忙碌'))
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('未送达消息')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.message.user').exists()).toBe(false)
+    expect(wrapper.get('.inline-error').text()).toBe('助手忙碌')
+  })
+
+  it('shows project edit tool progress', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('精简正文')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('tool_call', { tool: 'propose_project_edits' }))
+    await nextTick()
+    expect(wrapper.get('.tool-status').text()).toContain('正在准备修改')
+
+    await callback(taskEvent('tool_result', {
+      tool: 'propose_project_edits',
+      ok: true,
+      summary: '已生成 1 处修改建议',
+    }))
+    await nextTick()
+    expect(wrapper.get('.tool-status').text()).toContain('修改建议已生成')
+
+    await callback(taskEvent('task_done'))
+    await nextTick()
+    expect(wrapper.find('.tool-status').exists()).toBe(false)
+  })
+
+  it('shows only the terminal error when the edit tool fails', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('生成首稿')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('tool_result', {
+      tool: 'propose_project_edits',
+      ok: false,
+      error: '修改建议参数无效，请重试',
+    }))
+    await callback(taskEvent('task_failed', { reason: '修改建议参数无效，请重试' }))
+    await nextTick()
+
+    expect(wrapper.find('.tool-status').exists()).toBe(false)
+    expect(wrapper.findAll('.inline-error')).toHaveLength(1)
+    expect(wrapper.get('.inline-error').text()).toBe('修改建议参数无效，请重试')
+  })
+
+  it('removes partial assistant text when the task fails', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('分析失败')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('token', { text: '未完成回答' }))
+    await callback(taskEvent('task_failed', { reason: 'stream down' }))
+    await nextTick()
+
+    expect(wrapper.find('.message.assistant').exists()).toBe(false)
+    expect(wrapper.get('.inline-error').text()).toBe('stream down')
+  })
+
+  it('retries the last instruction as a new visible user message', async () => {
     const callbacks: Array<(event: TaskEvent) => void | Promise<void>> = []
     apiMocks.watchTask.mockImplementation((_assistantId, _taskId, callback) => {
       callbacks.push(callback)
@@ -45,6 +295,7 @@ describe('AgentPanel', () => {
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('调整语气')
     await wrapper.get('form').trigger('submit')
@@ -58,9 +309,9 @@ describe('AgentPanel', () => {
 
     expect(apiMocks.chatProject).toHaveBeenCalledTimes(2)
     expect(apiMocks.chatProject).toHaveBeenLastCalledWith(
-      'default', 'project-1', '调整语气', 'document-1',
+      'default', 'project-1', '调整语气', 'session-1', 'document-1',
     )
-    expect(wrapper.findAll('.message.user')).toHaveLength(1)
+    expect(wrapper.findAll('.message.user')).toHaveLength(2)
   })
 
   it('keeps a reviewed change until the parent confirms success', async () => {
@@ -72,6 +323,7 @@ describe('AgentPanel', () => {
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('修改这段')
     await wrapper.get('form').trigger('submit')
@@ -104,6 +356,7 @@ describe('AgentPanel', () => {
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('第一条修改')
     await wrapper.get('form').trigger('submit')
@@ -125,6 +378,7 @@ describe('AgentPanel', () => {
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('修改')
     await wrapper.get('form').trigger('submit')
@@ -144,6 +398,7 @@ describe('AgentPanel', () => {
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('修改')
     await wrapper.get('form').trigger('submit')
@@ -163,6 +418,7 @@ describe('AgentPanel', () => {
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('执行失败的请求')
     await wrapper.get('form').trigger('submit')
@@ -174,12 +430,39 @@ describe('AgentPanel', () => {
     expect(wrapper.get('.inline-error').text()).toContain('模型不可用')
   })
 
+  it('tells the user that a disconnected stream can be recovered by refreshing', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    let onError: (error: Error) => void = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler, errorHandler) => {
+      callback = handler
+      onError = errorHandler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(AgentPanel, {
+      props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('长回复')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('token', { text: '未完成回答' }))
+    await nextTick()
+    expect(wrapper.find('.message.assistant').exists()).toBe(true)
+    onError(new Error('任务事件流连接失败'))
+    await nextTick()
+
+    expect(wrapper.find('.message.assistant').exists()).toBe(false)
+    expect(wrapper.get('.inline-error').text()).toContain('刷新可恢复')
+  })
+
   it('closes the old stream and clears the session when the project changes', async () => {
     const close = vi.fn()
     apiMocks.watchTask.mockImplementation((_assistantId, _taskId, _handler) => ({ close }))
     const wrapper = mount(AgentPanel, {
       props: { assistantId: 'default', projectId: 'project-1', documentId: 'document-1' },
     })
+    await flushPromises()
 
     await wrapper.get('textarea').setValue('先问一个问题')
     await wrapper.get('form').trigger('submit')

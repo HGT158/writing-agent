@@ -1,6 +1,7 @@
 """FastAPI 应用工厂：本地单用户接口、SSE 与静态前端托管。"""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -27,6 +28,8 @@ from .models import (
 )
 from .tasks import TaskBroker
 
+logger = logging.getLogger(__name__)
+
 
 def _raise_http(exc: Exception) -> None:
     if isinstance(exc, (KeyError, FileNotFoundError)):
@@ -36,6 +39,19 @@ def _raise_http(exc: Exception) -> None:
     if isinstance(exc, (ValueError, RuntimeError)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
+
+
+def _change_preview(change) -> dict:
+    return {
+        "change_set_id": change.change_set_id,
+        "project_id": change.project_id,
+        "document_id": change.document_id,
+        "range": {"from": change.start, "to": change.end},
+        "original": change.original_text,
+        "replacement": change.replacement_text,
+        "document_version": change.base_version,
+        "source": change.source,
+    }
 
 
 def create_app(
@@ -262,21 +278,110 @@ def create_app(
     @app.post("/api/projects/{project_id}/agent/messages", status_code=status.HTTP_202_ACCEPTED)
     async def project_chat(project_id: str, body: ProjectChatRequest):
         try:
+            if not body.message.strip():
+                raise ValueError("消息不能为空")
             validate_task_submission(body.assistant_id)
+            runtime.store.get_project_tree(body.assistant_id, project_id)
+            if body.current_document_id is not None:
+                runtime.store.get_document(
+                    body.assistant_id, project_id, body.current_document_id
+                )
+            if body.chat_session_id is None:
+                created_chat_session = True
+                chat_session_id = runtime.store.create_project_chat_session(
+                    body.assistant_id, project_id
+                ).chat_session_id
+            else:
+                created_chat_session = False
+                runtime.store.get_project_chat_session(
+                    body.assistant_id, project_id, body.chat_session_id
+                )
+                chat_session_id = body.chat_session_id
         except Exception as exc:
             _raise_http(exc)
 
         async def operation():
-            result = await runtime.chat_project(
-                body.assistant_id, project_id, body.message,
-                current_document_id=body.current_document_id,
+            try:
+                result = await runtime.chat_project(
+                    body.assistant_id, project_id, body.message,
+                    chat_session_id=chat_session_id,
+                    current_document_id=body.current_document_id,
+                )
+                return {
+                    "reply": result.reply,
+                    "change_set_ids": [item.change_set_id for item in result.changes],
+                }
+            finally:
+                if created_chat_session:
+                    try:
+                        runtime.store.delete_empty_project_chat_session(
+                            body.assistant_id, project_id, chat_session_id
+                        )
+                    except Exception:
+                        logger.warning(
+                            "清理空项目聊天会话失败（assistant=%s project=%s session=%s）",
+                            body.assistant_id,
+                            project_id,
+                            chat_session_id,
+                            exc_info=True,
+                        )
+
+        return {
+            "task_id": broker.start(body.assistant_id, operation),
+            "chat_session_id": chat_session_id,
+        }
+
+    @app.get("/api/projects/{project_id}/agent/sessions")
+    async def list_project_chat_sessions(
+        project_id: str, assistant_id: str = Query(...)
+    ):
+        try:
+            return [
+                asdict(item)
+                for item in runtime.store.list_project_chat_sessions(
+                    assistant_id, project_id
+                )
+            ]
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/projects/{project_id}/agent/sessions/{chat_session_id}")
+    async def get_project_chat_session(
+        project_id: str,
+        chat_session_id: str,
+        assistant_id: str = Query(...),
+    ):
+        try:
+            session = runtime.store.get_project_chat_session(
+                assistant_id, project_id, chat_session_id
+            )
+            messages = runtime.store.list_project_chat_messages(
+                assistant_id, project_id, chat_session_id
+            )
+            pending = runtime.store.list_pending_chat_changes(
+                assistant_id, project_id, chat_session_id
             )
             return {
-                "reply": result.reply,
-                "change_set_ids": [item.change_set_id for item in result.changes],
+                "session": asdict(session),
+                "messages": [asdict(item) for item in messages],
+                "pending_changes": [_change_preview(item) for item in pending],
             }
+        except Exception as exc:
+            _raise_http(exc)
 
-        return {"task_id": broker.start(body.assistant_id, operation)}
+    @app.delete("/api/projects/{project_id}/agent/sessions/{chat_session_id}")
+    async def delete_project_chat_session(
+        project_id: str,
+        chat_session_id: str,
+        assistant_id: str = Query(...),
+    ):
+        try:
+            runtime.store.delete_project_chat_session(
+                assistant_id, project_id, chat_session_id
+            )
+            return {"deleted": True}
+        except Exception as exc:
+            _raise_http(exc)
 
     @app.get("/api/tasks/{task_id}")
     async def task_status(task_id: str, assistant_id: str = Query(...)):

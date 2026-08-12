@@ -18,7 +18,8 @@ from typing import BinaryIO, Iterable, Literal
 
 import psutil
 
-from . import long_term, projects, short_term
+from . import long_term, project_chat, projects, short_term
+from .project_chat import ProjectChatMessageRecord, ProjectChatSessionRecord
 from .projects import ChangeSetRecord, DocumentRecord, ProjectRecord
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ class MemoryStore:
         self._conn.execute("PRAGMA busy_timeout=10000")
         short_term.create_tables(self._conn)
         projects.create_tables(self._conn)
+        project_chat.create_tables(self._conn)
         projects.recover_project_artifacts(self._conn, self.data_dir)
 
     def close(self) -> None:
@@ -120,6 +122,86 @@ class MemoryStore:
         """回查全文素材，返回 (url, title, fulltext)，供成文节点注入（审查 P1-4）。"""
         with self._lock:
             return short_term.get_sources(self._conn, assistant_id, session_id, limit)
+
+    # ---------- 项目 Agent 会话 ----------
+
+    def create_project_chat_session(
+        self, assistant_id: str, project_id: str
+    ) -> ProjectChatSessionRecord:
+        with self._lock:
+            return project_chat.create_session(self._conn, assistant_id, project_id)
+
+    def list_project_chat_sessions(
+        self, assistant_id: str, project_id: str
+    ) -> list[ProjectChatSessionRecord]:
+        with self._lock:
+            return project_chat.list_sessions(self._conn, assistant_id, project_id)
+
+    def get_project_chat_session(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> ProjectChatSessionRecord:
+        with self._lock:
+            return project_chat.get_session(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+
+    def list_project_chat_messages(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> list[ProjectChatMessageRecord]:
+        with self._lock:
+            return project_chat.list_messages(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+
+    def add_project_chat_message(
+        self,
+        assistant_id: str,
+        project_id: str,
+        chat_session_id: str,
+        role: str,
+        content: str,
+    ) -> ProjectChatMessageRecord:
+        with self._lock:
+            return project_chat.add_message(
+                self._conn,
+                assistant_id,
+                project_id,
+                chat_session_id,
+                role,
+                content,
+            )
+
+    def list_pending_chat_changes(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> list[ChangeSetRecord]:
+        with self._lock:
+            project_chat.get_session(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+            return projects.list_pending_chat_changes(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+
+    def delete_project_chat_session(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> None:
+        mutation_task = f"project-chat-delete-{uuid.uuid4().hex[:12]}"
+        self.acquire_lock(assistant_id, mutation_task)
+        try:
+            with self._lock:
+                project_chat.delete_session(
+                    self._conn, assistant_id, project_id, chat_session_id
+                )
+        finally:
+            self.release_lock(assistant_id, mutation_task)
+
+    def delete_empty_project_chat_session(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> bool:
+        with self._lock:
+            return project_chat.delete_empty_session(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
 
     # ---------- 长期 ----------
 
@@ -483,6 +565,7 @@ class MemoryStore:
             running = self._live_lock_locked(assistant_id)
             if running is not None and running[0] != owner_task_id:
                 raise AssistantBusyError(assistant_id, f"任务 {running[0]} 运行中，拒绝清除助手")
+            project_chat.delete_assistant_rows(self._conn, assistant_id)
             projects.delete_assistant_rows(self._conn, assistant_id)
             short_term.delete_assistant_rows(self._conn, assistant_id)
         shutil.rmtree(self.data_dir / "articles" / assistant_id, ignore_errors=True)

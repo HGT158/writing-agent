@@ -115,6 +115,23 @@ def test_project_files_and_metadata_are_isolated_between_assistants(tmp_path):
     store.close()
 
 
+def test_project_chat_history_isolated_between_assistants(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("tech-writer", "私有会话")
+    session = store.create_project_chat_session("tech-writer", project.project_id)
+    store.add_project_chat_message(
+        "tech-writer", project.project_id, session.chat_session_id,
+        "user", "科技助手私有对话",
+    )
+
+    with pytest.raises(KeyError):
+        store.get_project_chat_session(
+            "marketing", project.project_id, session.chat_session_id
+        )
+    assert store.list_projects("marketing") == []
+    store.close()
+
+
 def test_purge_assistant_rejects_running_lock_and_removes_article_files(tmp_path):
     store = MemoryStore(tmp_path)
     store.create_project("tech-writer", "项目")

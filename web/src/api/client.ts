@@ -1,4 +1,12 @@
-import type { Assistant, ChangeSetRecord, Project, ProjectDocument, TaskEvent } from '../types'
+import type {
+  Assistant,
+  ChangeSetRecord,
+  Project,
+  ProjectChatSession,
+  ProjectChatSessionDetail,
+  ProjectDocument,
+  TaskEvent,
+} from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
@@ -64,9 +72,25 @@ export const apiClient = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ assistant_id: assistantId }),
   }),
-  chatProject: (assistantId: string, projectId: string, message: string, currentDocumentId?: string) => request<{ task_id: string }>(`/api/projects/${projectId}/agent/messages`, {
+  listProjectChatSessions: (assistantId: string, projectId: string) => request<ProjectChatSession[]>(`/api/projects/${projectId}/agent/sessions?assistant_id=${encodeURIComponent(assistantId)}`),
+  getProjectChatSession: (assistantId: string, projectId: string, chatSessionId: string) => request<ProjectChatSessionDetail>(`/api/projects/${projectId}/agent/sessions/${chatSessionId}?assistant_id=${encodeURIComponent(assistantId)}`),
+  deleteProjectChatSession: (assistantId: string, projectId: string, chatSessionId: string) => request<{ deleted: boolean }>(`/api/projects/${projectId}/agent/sessions/${chatSessionId}?assistant_id=${encodeURIComponent(assistantId)}`, {
+    method: 'DELETE',
+  }),
+  chatProject: (
+    assistantId: string,
+    projectId: string,
+    message: string,
+    chatSessionId: string | null,
+    currentDocumentId?: string,
+  ) => request<{ task_id: string; chat_session_id: string }>(`/api/projects/${projectId}/agent/messages`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ assistant_id: assistantId, message, current_document_id: currentDocumentId }),
+    body: JSON.stringify({
+      assistant_id: assistantId,
+      message,
+      chat_session_id: chatSessionId,
+      current_document_id: currentDocumentId,
+    }),
   }),
   watchTask(
     assistantId: string,

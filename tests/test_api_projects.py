@@ -1,6 +1,7 @@
 """阶段 4 FastAPI 项目工作区接口。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -45,6 +46,43 @@ class FakeLLM:
 
     async def create(self, **kwargs):
         return _response(next(self.outputs))
+
+
+class FakeAsyncStream:
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def __aiter__(self):
+        self._iterator = iter(self.chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iterator)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+class StreamingFakeLLM:
+    def __init__(self, turns):
+        self.turns = iter(turns)
+        self.chat = SimpleNamespace(completions=self)
+
+    async def create(self, **kwargs):
+        return FakeAsyncStream(next(self.turns))
+
+
+def _stream_chunk(*, content=None, tool_calls=None):
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+
+def _tool_delta(index, *, call_id=None, name=None, arguments=None):
+    return SimpleNamespace(
+        index=index,
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
 
 
 def _wait_task(client: TestClient, task_id: str, assistant_id: str = "default") -> dict:
@@ -213,7 +251,7 @@ def test_selection_rewrite_task_sse_and_apply(tmp_path):
         assert applied.json()["document"]["content"] == "精简开头。后续内容。"
 
 
-def test_project_agent_chat_returns_reply_and_change_preview(tmp_path):
+def test_project_agent_chat_returns_streamed_reply_and_change_preview(tmp_path):
     settings = _settings(tmp_path)
     runtime = AgentRuntime(settings)
     project = runtime.store.create_project("default", "聊天修改")
@@ -221,17 +259,26 @@ def test_project_agent_chat_returns_reply_and_change_preview(tmp_path):
         "default", project.project_id, project.entry_document_id,
         "原始段落。", expected_version=1,
     )
-    runtime.llm = FakeLLM([json.dumps({
-        "reply": "我准备调整语气。",
+    arguments = json.dumps({
         "changes": [{
             "document_id": document.document_id,
-            "start": 0,
-            "end": 5,
-            "original_text": "原始段落。",
-            "replacement_text": "调整段落。",
+            "old_text": "原始段落。",
+            "new_text": "调整段落。",
             "document_version": document.version,
         }],
-    }, ensure_ascii=False)])
+    }, ensure_ascii=False)
+    runtime.llm = StreamingFakeLLM([
+        [_stream_chunk(tool_calls=[_tool_delta(
+            0,
+            call_id="call-api-edit",
+            name="propose_project_edits",
+            arguments=arguments,
+        )])],
+        [
+            _stream_chunk(content="我准备"),
+            _stream_chunk(content="调整语气。"),
+        ],
+    ])
 
     with TestClient(_app(tmp_path, runtime)) as client:
         started = client.post(
@@ -242,10 +289,212 @@ def test_project_agent_chat_returns_reply_and_change_preview(tmp_path):
                 "current_document_id": document.document_id,
             },
         )
+        assert started.status_code == 202
+        assert started.json()["chat_session_id"]
         task = _wait_task(client, started.json()["task_id"])
         assert task["status"] == "done"
         assert task["result"]["reply"] == "我准备调整语气。"
         assert len(task["result"]["change_set_ids"]) == 1
+        stream = client.get(
+            f"/api/tasks/{task['task_id']}/stream",
+            params={"assistant_id": "default"},
+        )
+        assert stream.status_code == 200
+        assert stream.text.count('"type": "token"') == 2
+        assert stream.text.count('"type": "tool_call"') == 1
+        assert stream.text.count('"type": "tool_result"') == 1
+        assert stream.text.count('"type": "change_preview"') == 1
+        assert stream.text.count('"type": "task_done"') == 1
+        detail = client.get(
+            f"/api/projects/{project.project_id}/agent/sessions/"
+            f"{started.json()['chat_session_id']}",
+            params={"assistant_id": "default"},
+        )
+        assert detail.status_code == 200
+        assert [item["content"] for item in detail.json()["messages"]] == [
+            "调整语气", "我准备调整语气。",
+        ]
+        assert len(detail.json()["pending_changes"]) == 1
+
+
+def test_project_chat_session_list_detail_delete_and_scope(tmp_path):
+    runtime = AgentRuntime(_settings(tmp_path))
+    project = runtime.store.create_project("default", "历史项目")
+    other_project = runtime.store.create_project("default", "其他项目")
+    session = runtime.store.create_project_chat_session("default", project.project_id)
+    runtime.store.add_project_chat_message(
+        "default", project.project_id, session.chat_session_id,
+        "user", "历史问题",
+    )
+    document = runtime.store.get_document(
+        "default", project.project_id, project.entry_document_id
+    )
+    change = runtime.store.create_change_set(
+        "default", project.project_id, document.document_id,
+        source="chat", start=0, end=0, original_text="",
+        replacement_text="建议正文", base_version=document.version,
+        session_id=session.chat_session_id,
+    )
+
+    with TestClient(_app(tmp_path, runtime)) as client:
+        listed = client.get(
+            f"/api/projects/{project.project_id}/agent/sessions",
+            params={"assistant_id": "default"},
+        )
+        assert listed.status_code == 200
+        assert listed.json()[0]["chat_session_id"] == session.chat_session_id
+        assert listed.json()[0]["title"] == "历史问题"
+
+        detail = client.get(
+            f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
+            params={"assistant_id": "default"},
+        )
+        assert detail.status_code == 200
+        assert detail.json()["messages"][0]["content"] == "历史问题"
+        assert detail.json()["pending_changes"][0]["change_set_id"] == change.change_set_id
+
+        cross_project = client.get(
+            f"/api/projects/{other_project.project_id}/agent/sessions/{session.chat_session_id}",
+            params={"assistant_id": "default"},
+        )
+        cross_assistant = client.get(
+            f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
+            params={"assistant_id": "ghost"},
+        )
+        assert cross_project.status_code == 404
+        assert cross_assistant.status_code == 404
+
+        blocked = client.delete(
+            f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
+            params={"assistant_id": "default"},
+        )
+        assert blocked.status_code == 409
+        runtime.store.reject_change_set(
+            "default", project.project_id, change.change_set_id
+        )
+        deleted = client.delete(
+            f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
+            params={"assistant_id": "default"},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {"deleted": True}
+
+
+def test_project_chat_rejects_invalid_session_or_document_before_enqueue(tmp_path):
+    app = _app(tmp_path)
+    runtime = app.state.runtime
+    project = runtime.store.create_project("default", "会话预检")
+    session = runtime.store.create_project_chat_session("default", project.project_id)
+
+    with TestClient(app) as client:
+        missing_session = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={
+                "assistant_id": "default",
+                "message": "继续",
+                "chat_session_id": "missing-session",
+            },
+        )
+        missing_document = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={
+                "assistant_id": "default",
+                "message": "分析",
+                "chat_session_id": session.chat_session_id,
+                "current_document_id": "missing-document",
+            },
+        )
+        blank_message = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={"assistant_id": "default", "message": "   \n  "},
+        )
+
+        assert missing_session.status_code == 404
+        assert missing_document.status_code == 404
+        assert blank_message.status_code == 400
+        assert len(runtime.store.list_project_chat_sessions(
+            "default", project.project_id
+        )) == 1
+        assert app.state.tasks.records == {}
+
+
+def test_failed_new_project_chat_does_not_leave_empty_session(tmp_path):
+    settings = _settings(tmp_path)
+    settings.openai_api_key = ""
+    runtime = AgentRuntime(settings)
+    project = runtime.store.create_project("default", "失败清理")
+
+    with TestClient(_app(tmp_path, runtime)) as client:
+        started = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={"assistant_id": "default", "message": "分析正文"},
+        )
+        assert started.status_code == 202
+        task = _wait_task(client, started.json()["task_id"])
+        assert task["status"] == "failed"
+        assert runtime.store.list_project_chat_sessions(
+            "default", project.project_id
+        ) == []
+
+
+def test_cancelled_new_project_chat_does_not_leave_empty_session(tmp_path):
+    app = _app(tmp_path)
+    runtime = app.state.runtime
+    project = runtime.store.create_project("default", "取消清理")
+
+    async def cancel_chat(*_args, **_kwargs):
+        raise asyncio.CancelledError
+
+    runtime.chat_project = cancel_chat
+    with TestClient(app) as client:
+        started = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={"assistant_id": "default", "message": "分析正文"},
+        )
+        assert started.status_code == 202
+        task = _wait_task(client, started.json()["task_id"])
+        assert task["status"] == "failed"
+        assert runtime.store.list_project_chat_sessions(
+            "default", project.project_id
+        ) == []
+
+
+def test_new_chat_cleanup_failure_does_not_mask_task_error(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    settings.openai_api_key = ""
+    runtime = AgentRuntime(settings)
+    project = runtime.store.create_project("default", "清理异常")
+    monkeypatch.setattr(
+        runtime.store,
+        "delete_empty_project_chat_session",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+    )
+
+    with TestClient(_app(tmp_path, runtime)) as client:
+        started = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={"assistant_id": "default", "message": "分析正文"},
+        )
+        task = _wait_task(client, started.json()["task_id"])
+
+    assert task["status"] == "failed"
+    assert "未配置 OPENAI_API_KEY" in task["error"]
+
+
+def test_project_chat_message_has_same_length_limit_as_agent_task(tmp_path):
+    app = _app(tmp_path)
+    runtime = app.state.runtime
+    project = runtime.store.create_project("default", "消息上限")
+
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/projects/{project.project_id}/agent/messages",
+            json={"assistant_id": "default", "message": "x" * 100_001},
+        )
+        assert response.status_code == 422
+        assert runtime.store.list_project_chat_sessions(
+            "default", project.project_id
+        ) == []
 
 
 def test_editing_task_endpoints_reject_unknown_or_busy_assistant_before_enqueue(tmp_path):
