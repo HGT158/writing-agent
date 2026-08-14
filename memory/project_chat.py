@@ -27,6 +27,16 @@ CREATE TABLE IF NOT EXISTS project_chat_messages (
     content TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS project_chat_summaries (
+    assistant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    chat_session_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    covered_through_message_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (assistant_id, project_id, chat_session_id)
+);
 CREATE INDEX IF NOT EXISTS idx_project_chat_messages_scope
     ON project_chat_messages(assistant_id, project_id, chat_session_id, message_id);
 CREATE INDEX IF NOT EXISTS idx_project_chat_sessions_recent
@@ -54,6 +64,19 @@ class ProjectChatMessageRecord:
     role: str
     content: str
     created_at: str
+
+
+@dataclass(frozen=True)
+class ProjectChatSummaryRecord:
+    """滑出保留窗口的早期对话压缩结果（架构 §3.3）；派生数据，不进可见历史。"""
+
+    assistant_id: str
+    project_id: str
+    chat_session_id: str
+    summary: str
+    covered_through_message_id: int
+    created_at: str
+    updated_at: str
 
 
 def _now() -> str:
@@ -219,6 +242,60 @@ def list_messages(
     return [ProjectChatMessageRecord(*row) for row in rows]
 
 
+def get_summary(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+) -> ProjectChatSummaryRecord | None:
+    row = conn.execute(
+        "SELECT assistant_id, project_id, chat_session_id, summary, "
+        "covered_through_message_id, created_at, updated_at "
+        "FROM project_chat_summaries "
+        "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
+        (assistant_id, project_id, chat_session_id),
+    ).fetchone()
+    return ProjectChatSummaryRecord(*row) if row is not None else None
+
+
+def save_summary(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+    summary: str,
+    covered_through_message_id: int,
+) -> ProjectChatSummaryRecord:
+    _session_row(conn, assistant_id, project_id, chat_session_id)
+    clean = summary.strip()
+    if not clean:
+        raise ValueError("上下文摘要不能为空")
+    now = _now()
+    conn.execute(
+        "INSERT INTO project_chat_summaries "
+        "(assistant_id, project_id, chat_session_id, summary, "
+        "covered_through_message_id, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?) "
+        "ON CONFLICT(assistant_id, project_id, chat_session_id) DO UPDATE SET "
+        "summary = excluded.summary, "
+        "covered_through_message_id = excluded.covered_through_message_id, "
+        "updated_at = excluded.updated_at",
+        (
+            assistant_id,
+            project_id,
+            chat_session_id,
+            clean,
+            covered_through_message_id,
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    record = get_summary(conn, assistant_id, project_id, chat_session_id)
+    assert record is not None
+    return record
+
+
 def delete_session(
     conn: sqlite3.Connection,
     assistant_id: str,
@@ -244,6 +321,11 @@ def delete_session(
         )
         conn.execute(
             "DELETE FROM project_chat_messages "
+            "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
+            (assistant_id, project_id, chat_session_id),
+        )
+        conn.execute(
+            "DELETE FROM project_chat_summaries "
             "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
             (assistant_id, project_id, chat_session_id),
         )
@@ -283,6 +365,12 @@ def delete_empty_session(
             ")",
             (assistant_id, project_id, chat_session_id),
         )
+        if cursor.rowcount == 1:
+            conn.execute(
+                "DELETE FROM project_chat_summaries "
+                "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
+                (assistant_id, project_id, chat_session_id),
+            )
         conn.commit()
         return cursor.rowcount == 1
     except Exception:
@@ -293,6 +381,9 @@ def delete_empty_session(
 def delete_assistant_rows(conn: sqlite3.Connection, assistant_id: str) -> None:
     conn.execute(
         "DELETE FROM project_chat_messages WHERE assistant_id = ?", (assistant_id,)
+    )
+    conn.execute(
+        "DELETE FROM project_chat_summaries WHERE assistant_id = ?", (assistant_id,)
     )
     conn.execute(
         "DELETE FROM project_chat_sessions WHERE assistant_id = ?", (assistant_id,)

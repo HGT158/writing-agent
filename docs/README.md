@@ -6,7 +6,7 @@
 
 | 文档 | 用途 |
 |---|---|
-| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.16） |
+| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.17） |
 | [architecture/project-agent-streaming-edit-design.md](architecture/project-agent-streaming-edit-design.md) | 项目 Agent 流式编辑工具设计（已实现） |
 | [architecture/project-chat-history-design.md](architecture/project-chat-history-design.md) | 项目 Agent 多会话历史设计（已实现） |
 | [../AGENTS.md](../AGENTS.md) | Agent 工作约定、环境和硬性规则 |

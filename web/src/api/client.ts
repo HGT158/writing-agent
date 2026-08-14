@@ -34,6 +34,14 @@ function parseTaskEvent(value: unknown): TaskEvent {
 
 export const apiClient = {
   listAssistants: () => request<Assistant[]>('/api/assistants'),
+  createAssistant: (id: string, name: string, description: string) => request<Assistant>('/api/assistants', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, name, description }),
+  }),
+  deleteAssistant: (assistantId: string) => request<{ archived_path: string; purged: boolean }>(
+    `/api/assistants/${encodeURIComponent(assistantId)}`,
+    { method: 'DELETE' },
+  ),
   listProjects: (assistantId: string) => request<Project[]>(`/api/projects?assistant_id=${encodeURIComponent(assistantId)}`),
   createProject: (assistantId: string, name: string) => request<Project>('/api/projects', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

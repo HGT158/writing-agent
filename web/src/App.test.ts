@@ -11,10 +11,20 @@ const document = {
   relative_path: 'article.md', version: 1, editable: true, content: '',
 }
 
+// 与 mock 文档的 version 一致，编辑器才会内联渲染而不是降级提示。
+const chatChange = {
+  change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
+  range: { from: 0, to: 0 }, original: '', replacement: 'Agent 修改',
+  document_version: 1, source: 'chat' as const,
+}
+
 const apiMocks = vi.hoisted(() => ({
-  listAssistants: vi.fn(), listProjects: vi.fn(), createProject: vi.fn(),
+  listAssistants: vi.fn(), createAssistant: vi.fn(), deleteAssistant: vi.fn(),
+  listProjects: vi.fn(), createProject: vi.fn(),
   getProjectTree: vi.fn(), getDocument: vi.fn(), saveDocument: vi.fn(),
   applyChange: vi.fn(), rejectChange: vi.fn(),
+  listProjectChatSessions: vi.fn(), getProjectChatSession: vi.fn(),
+  deleteProjectChatSession: vi.fn(), chatProject: vi.fn(), watchTask: vi.fn(),
 }))
 
 vi.mock('./api/client', () => ({ apiClient: apiMocks }))
@@ -26,6 +36,8 @@ describe('App project creation', () => {
     apiMocks.listAssistants.mockReset().mockResolvedValue([
       { id: 'default', name: '通用写作助手', description: '' },
     ])
+    apiMocks.createAssistant.mockReset()
+    apiMocks.deleteAssistant.mockReset()
     apiMocks.listProjects.mockReset().mockResolvedValueOnce([]).mockResolvedValue([project])
     apiMocks.createProject.mockReset().mockResolvedValue(project)
     apiMocks.getProjectTree.mockReset().mockResolvedValue([document])
@@ -33,6 +45,11 @@ describe('App project creation', () => {
     apiMocks.saveDocument.mockReset()
     apiMocks.applyChange.mockReset()
     apiMocks.rejectChange.mockReset()
+    apiMocks.listProjectChatSessions.mockReset().mockResolvedValue([])
+    apiMocks.getProjectChatSession.mockReset()
+    apiMocks.deleteProjectChatSession.mockReset()
+    apiMocks.chatProject.mockReset()
+    apiMocks.watchTask.mockReset()
   })
 
   it('disables the save command while a save request is running', async () => {
@@ -151,5 +168,122 @@ describe('App project creation', () => {
     expect(apiMocks.applyChange).toHaveBeenCalledWith(
       'default', 'project-1', 'change-1', 2,
     )
+  })
+
+  it('shows one pending change in both the editor and the agent panel', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit('changeAdded', chatChange)
+    await flushPromises()
+
+    expect(wrapper.findAll('.change-diff')).toHaveLength(1)
+    expect(wrapper.get('.cm-diff-inserted').text()).toBe('Agent 修改')
+  })
+
+  it('removes the change from both views once the parent applies it', async () => {
+    apiMocks.applyChange.mockResolvedValue({
+      document: { ...document, version: 3, content: 'Agent 修改' },
+      change_set: { change_set_id: 'change-1', status: 'applied' },
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit('changeAdded', chatChange)
+    await flushPromises()
+
+    await wrapper.get('.cm-diff-accept').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.applyChange).toHaveBeenCalledWith('default', 'project-1', 'change-1', 1)
+    expect(wrapper.find('.change-diff').exists()).toBe(false)
+    expect(wrapper.find('.cm-diff-inserted').exists()).toBe(false)
+  })
+
+  it('keeps the change in both views when applying fails', async () => {
+    apiMocks.applyChange.mockRejectedValue(new Error('版本冲突'))
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit('changeAdded', chatChange)
+    await flushPromises()
+
+    await wrapper.get('.cm-diff-accept').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.change-diff')).toHaveLength(1)
+    expect(wrapper.get('.global-error').text()).toBe('版本冲突')
+  })
+
+  it('creates an assistant and switches to it', async () => {
+    apiMocks.createAssistant.mockResolvedValue({ id: 'marketing', name: '营销文案', description: '' })
+    apiMocks.listAssistants
+      .mockResolvedValueOnce([{ id: 'default', name: '通用写作助手', description: '' }])
+      .mockResolvedValue([
+        { id: 'default', name: '通用写作助手', description: '' },
+        { id: 'marketing', name: '营销文案', description: '' },
+      ])
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[title="新建助手"]').trigger('click')
+    await wrapper.get('#assistant-id').setValue('marketing')
+    await wrapper.get('#assistant-name').setValue('营销文案')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMocks.createAssistant).toHaveBeenCalledWith('marketing', '营销文案', '')
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+    expect(apiMocks.listProjects).toHaveBeenLastCalledWith('marketing')
+  })
+
+  it('keeps the assistant dialog open and shows the server error', async () => {
+    apiMocks.createAssistant.mockRejectedValue(new Error('助手已存在'))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[title="新建助手"]').trigger('click')
+    await wrapper.get('#assistant-id').setValue('default')
+    await wrapper.get('#assistant-name').setValue('重复助手')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    expect(wrapper.get('[role="dialog"] .inline-error').text()).toBe('助手已存在')
+  })
+
+  it('refuses to delete the only assistant', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(wrapper.get('button[title="删除当前助手（归档）"]').attributes('disabled')).toBeDefined()
+    expect(apiMocks.deleteAssistant).not.toHaveBeenCalled()
+  })
+
+  it('archives the current assistant after confirmation', async () => {
+    apiMocks.listAssistants.mockResolvedValue([
+      { id: 'default', name: '通用写作助手', description: '' },
+      { id: 'marketing', name: '营销文案', description: '' },
+    ])
+    apiMocks.deleteAssistant.mockResolvedValue({ archived_path: 'archive/default-1', purged: false })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[title="删除当前助手（归档）"]').trigger('click')
+    await flushPromises()
+
+    expect(apiMocks.deleteAssistant).toHaveBeenCalledWith('default')
+    vi.mocked(window.confirm).mockRestore()
   })
 })

@@ -129,6 +129,57 @@ def test_project_chat_session_delete_blocks_pending_then_removes_settled_history
     store.close()
 
 
+def test_context_summary_is_scoped_and_reusable(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "摘要项目")
+    other = store.create_project("writer-b", "摘要项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    other_session = store.create_project_chat_session("writer-b", other.project_id)
+
+    assert store.get_project_chat_summary(
+        "writer-a", project.project_id, session.chat_session_id
+    ) is None
+    store.save_project_chat_summary(
+        "writer-a", project.project_id, session.chat_session_id, "第一版摘要", 4
+    )
+    store.save_project_chat_summary(
+        "writer-a", project.project_id, session.chat_session_id, "第二版摘要", 9
+    )
+
+    stored = store.get_project_chat_summary(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    assert stored is not None
+    assert (stored.summary, stored.covered_through_message_id) == ("第二版摘要", 9)
+    assert store.get_project_chat_summary(
+        "writer-b", other.project_id, other_session.chat_session_id
+    ) is None
+    store.close()
+
+
+def test_deleting_session_removes_its_context_summary(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "摘要清理")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    store.add_project_chat_message(
+        "writer-a", project.project_id, session.chat_session_id, "user", "问题"
+    )
+    store.save_project_chat_summary(
+        "writer-a", project.project_id, session.chat_session_id, "会被清理的摘要", 1
+    )
+
+    store.delete_project_chat_session(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+
+    rows = store._conn.execute(
+        "SELECT COUNT(*) FROM project_chat_summaries WHERE chat_session_id = ?",
+        (session.chat_session_id,),
+    ).fetchone()[0]
+    assert rows == 0
+    store.close()
+
+
 def test_project_and_assistant_purge_remove_project_chat_history(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "清理项目")
@@ -137,8 +188,15 @@ def test_project_and_assistant_purge_remove_project_chat_history(tmp_path):
         "writer-a", project.project_id, session.chat_session_id,
         "user", "需要清理",
     )
+    store.save_project_chat_summary(
+        "writer-a", project.project_id, session.chat_session_id, "项目摘要", 1
+    )
 
     store.purge_project("writer-a", project.project_id)
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM project_chat_summaries WHERE project_id = ?",
+        (project.project_id,),
+    ).fetchone()[0] == 0
     with pytest.raises(KeyError):
         store.get_project_chat_session(
             "writer-a", project.project_id, session.chat_session_id
@@ -152,9 +210,16 @@ def test_project_and_assistant_purge_remove_project_chat_history(tmp_path):
         "writer-a", second_project.project_id, second_session.chat_session_id,
         "user", "助手级清理",
     )
+    store.save_project_chat_summary(
+        "writer-a", second_project.project_id, second_session.chat_session_id, "助手摘要", 1
+    )
     store.purge_assistant("writer-a")
     with pytest.raises(KeyError):
         store.get_project_chat_session(
             "writer-a", second_project.project_id, second_session.chat_session_id
         )
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM project_chat_summaries WHERE assistant_id = ?",
+        ("writer-a",),
+    ).fetchone()[0] == 0
     store.close()

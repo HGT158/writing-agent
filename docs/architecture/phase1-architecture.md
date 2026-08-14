@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.16 · 2026-08-12
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史及 v1.16 失败路径加固均已完成
+> 版本：v1.17 · 2026-08-13
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固及 v1.17 流式可靠性、内联 diff 审阅与上下文压缩均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -22,6 +22,8 @@
 > v1.15 变更：每个助手的每个项目支持多个持久化 Agent 聊天会话；专用 `project_chat_sessions/project_chat_messages` 表按助手、项目、会话三层隔离，恢复最近会话、完整消息与关联 pending diff。模型每轮接收当前会话全部可见历史；上下文压缩列入后续待办，本版不截断。会话存在 pending diff 或助手任务运行中时禁止删除；chat diff 只在 AgentPanel 呈现，接受/拒绝成功后按服务端状态移除。会话加载期间禁止发送，失败流不保留未持久化的半截 assistant 文本，重新生成作为新的可见 user 消息呈现，避免 UI 与模型历史分叉（§4.7/§5.4/§5.7/§5.9/§5.10/§9）。
 
 > v1.16 变更：根据阶段 5 审查加固项目聊天失败路径。首次发送由 API 预建会话后，任务若在首条消息持久化前失败或取消，只补偿删除仍为 0 消息且无关联 diff 的新会话；已有消息或 diff 时必须保留，补偿异常不得覆盖原始任务错误。聊天消息与普通任务统一限制为 100,000 字符；流式工具参数通过 schema 校验后才发送 `tool_call`；异常退出显式关闭模型流；空白模型回复转为可见且持久化的提示。前端 POST 失败回滚未送达 user 气泡，终态清理工具状态，token 到达时自动滚动，SSE 断线提示刷新恢复（§5.4/§5.7/§5.9/§5.10/§9）。
+
+> v1.17 变更：三项修正与两项能力扩展。**（1）SSE 事件按单调递增序号寻址**：`TaskBroker` 的事件历史是有界滑窗，订阅者必须用全局序号而非列表下标定位，窗口裁剪只允许跳过已丢弃的历史事件，不得让活跃订阅者停止收流或漏发终态；每个事件携带 `seq`，重放从订阅者已知序号继续（§5.9/§6.2/§9）。**（2）待确认 change set 采用编辑器内联 + 侧栏卡片双视图**：同一 change set 在 CodeMirror 中以原文删除态、建议新增态和内联接受/拒绝控件呈现，同时在 Agent 面板保留可审阅卡片；两个视图共享 App 层的单一 pending 集合与单一 apply/reject 通道，禁止各自持有状态或重复发起请求（§5.10）。**（3）选区工具栏必须可输入**：浮层不得对输入控件调用 `preventDefault`，挂载后显式聚焦，并在编辑器失焦期间用装饰保持选区可见（§5.10）。**（4）项目聊天上下文分层压缩**：按 token 预算保留最近若干条消息全文，更早历史用一次 LLM 调用压缩为摘要并持久化到 `project_chat_summaries` 复用；注入的当前文档正文超限时按窗口截断并显式标注省略（§3.3/§5.4/§5.7）。**（5）助手管理进入前端**：助手选择器旁提供创建与归档删除入口，复用既有 `POST/DELETE /api/assistants`（§5.10）。
 
 ---
 
@@ -165,6 +167,15 @@ class AgentState(TypedDict, total=False):
 2. **观察滑窗**：Planner 每轮只看最近 8 条 Observation 全文；更早的压缩为一行索引（`[3] tavily_search("模型蒸馏") → 5 条结果`）。
 3. **强制压缩**：估算 prompt token 超阈值（默认 60k，可配）时，用一次 LLM 调用把滑窗外的观察总结成一段，替换原始条目。
 4. **正文不进循环上下文**：分段写作时，已完成的章节存 `state.draft` / 文件，下一节只带大纲和本章要点，不带全文。
+
+**项目聊天的分层压缩（v1.17）**：项目 Agent 面板不走 Agent Loop，但同样受上下文预算约束，规则独立定义如下。
+
+- **token 估算不引入外部分词依赖**：按字符类型估算——CJK 字符约 1 token/字，其余按约 4 字符/token 折算，另计每条消息的固定开销。估算只用于是否触发压缩的判定，不要求与服务端计费口径一致。
+- **保留窗口**：最近 `CHAT_CONTEXT_KEEP_RECENT` 条可见消息永远全文进入 prompt，保证最近几轮指令不失真。
+- **摘要复用**：窗口之外的历史压缩成一段中文摘要，连同"已覆盖到哪条 `message_id`"持久化。下一次只把"上次摘要 + 新滑出窗口的消息"交给模型再压缩一次，不重复压缩全量历史。摘要以独立的 `system` 消息注入，并显式标注这是早期对话摘要。
+- **压缩失败不阻断对话**：压缩调用异常时记 warning 并降级为直接丢弃最早消息，任务继续；不得因为压缩失败让用户的这一轮聊天失败。
+- **文档正文窗口**：注入 system prompt 的当前文档正文超过 `CHAT_CONTEXT_DOC_MAX_CHARS` 时，保留首尾片段并在中间插入显式省略标记，说明正文已截断、需要完整内容时应向用户确认；截断只影响 prompt，不影响 `propose_project_edits` 的服务端精确匹配。
+- **预算与开关可配**：`CHAT_CONTEXT_TOKEN_BUDGET`、`CHAT_CONTEXT_KEEP_RECENT`、`CHAT_CONTEXT_DOC_MAX_CHARS` 从 `.env` 读取；预算设为 0 表示关闭压缩，恢复 v1.15 的全量历史行为。
 
 ### 3.4 Reflect 质检清单（防自由心证）
 
@@ -365,6 +376,8 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 
 项目聊天入口 `runtime.chat_project(...)` 复用同一运行锁、LLM client、EventBus、Skill 与 MemoryStore。它把模型文本 delta 立即发为 `token`，累积并完成流式 tool-call 参数的 JSON/schema 校验后才发送 `tool_call` 并执行一次 `propose_project_edits`；异常路径显式关闭模型流。若发生工具调用，最多追加一个无工具的流式说明轮次。API 任务终态中的 `reply` 等于本次任务所有可见文本 delta 的顺序拼接，`change_set_ids` 来自工具执行结果；模型没有返回可见文本时，Runtime 发送并持久化明确提示，不能留下无反馈的连续 user 消息。
 
+聊天 prompt 的组装交给独立的 `agent/context.py`，Runtime 不内联裁剪逻辑：该模块负责 token 估算、当前文档正文窗口截断、保留窗口切分与摘要合并，并把是否需要新摘要、摘要覆盖到的 `message_id` 返回给 Runtime 决定是否落库（§3.3）。压缩发生时 Runtime 发出一条 `info` 事件说明本轮压缩了多少条历史，便于用户理解上下文被折叠；压缩自身的 LLM 调用不产生 `token` 事件，不污染可见回复。
+
 CLI 入口为 `agent/__main__.py`（`python -m agent` 的载体），子命令：`run`（默认）、`assistants list/create/delete`、`--resume`。`run` 命令从 Runtime 启动开始即进入 `try/finally` 清理边界：启动或任务执行发生未预期异常时发出 failed 事件并返回非零退出码，已分配的 Store/MCP 等资源仍由 `runtime.close()` 释放。
 
 ### 5.5 Skill 系统 — `skills/`
@@ -434,7 +447,8 @@ when_to_use: 任务涉及外部事实、时效性信息、需要引用来源时�
 | 长期 | `assistants/<id>/memory/profile.md`（写作风格/偏好/常用主题）+ SQLite `articles` 表（含 `assistant_id`） | 跨任务、跨会话沉淀 | **任务启动时 `recall` 一次，结果存 `state.memory_context`，Planner 每轮从 state 注入**；Reflect 判定有新偏好时 `memorize` |
 | 项目工作区 | `data/assistants/<id>/projects/<project_id>/` + SQLite `projects` / `project_documents`（均含 `assistant_id`） | 受管文件树、可编辑文档身份和 `document_version` | 导入/树查询/文件保存均经 API 与 MemoryStore；内容以受管文件为事实来源 |
 | AI 修改建议 | SQLite `change_sets`（含 `assistant_id`、`project_id`、`document_id`、`session_id`、原文范围/快照、替换文本、基准版本、来源模式、状态） | 选区改写或聊天产生的待确认修改 | 生成时写入 pending；应用/拒绝/过期均按助手、项目与文档归属校验 |
-| 项目 Agent 会话 | SQLite `project_chat_sessions` / `project_chat_messages`（均含 `assistant_id`、`project_id`、`chat_session_id`） | 每项目多会话标题、完整可见 user/assistant 历史 | 首次发送创建会话，消息成功产生时持久化；打开项目默认恢复最近会话，模型按顺序读取当前会话全部消息 |
+| 项目 Agent 会话 | SQLite `project_chat_sessions` / `project_chat_messages`（均含 `assistant_id`、`project_id`、`chat_session_id`） | 每项目多会话标题、完整可见 user/assistant 历史 | 首次发送创建会话，消息成功产生时持久化；打开项目默认恢复最近会话，UI 始终展示全部历史 |
+| 项目 Agent 上下文摘要 | SQLite `project_chat_summaries`（`assistant_id` + `project_id` + `chat_session_id` 三元组主键，含 `summary`、`covered_through_message_id`） | 滑出保留窗口的早期对话压缩结果 | 触发压缩时写入或覆盖；下次压缩以它为起点增量合并；会话删除、项目 purge 与助手 purge 必须级联清理 |
 
 - `store.py` 统一接口（`assistant_id` 恒为第一参数）：
 
@@ -456,7 +470,7 @@ def recall_semantic(assistant_id: str, query: str) -> str  # 预留向量接口�
 - **检索故障降级**：profile、文章 FTS、消息 FTS、文章 LIKE、消息 LIKE、最近文章六路读取分别隔离异常并记 warning；任一路损坏时继续组合其余可用结果。FTS 查询失败时最近文章仍可兜底，任何 recall 存储故障都不得阻断 Agent 写作主链路。
 - **同助手跨会话共享**：`recall` 的检索范围 = 本助手全部历史会话 + 本助手 profile.md；**跨助手隔离**：SQL 强制 `WHERE assistant_id = ?`，profile 按目录物理隔离。
 - **项目与建议隔离**：`projects`、`project_documents`、`change_sets`、`document_write_intents` 的所有查询必须同时校验 `assistant_id`；`project_id` / `document_id` 不能单独作为授权或查询条件。保存文档和应用 change set 必须在写事务内执行版本号、状态与原文快照校验，使用持久化写入意图 + 临时文件 + 原子替换更新正文；冲突方不得触碰磁盘，进程崩溃后的残留意图必须可恢复。聊天产生多条建议时使用 MemoryStore 批量接口原子创建。
-- **项目聊天隔离与生命周期**：项目会话和消息的所有查询必须同时过滤 `assistant_id + project_id + chat_session_id`，不得混入普通 Agent Loop 的 `sessions/messages` 或 FTS 索引。第一条用户消息自动生成会话标题；列表按更新时间倒序。会话详情同时返回 `source='chat'` 且仍为 pending 的关联 change set。存在 pending diff 或助手运行锁时删除会话返回冲突；无 pending 且成功获取助手级 mutation lock 时，删除消息、会话及已处理 chat change set 元数据，但不回滚已写入正文。消息正文按可见原文保存，只以 trim 后结果判断空值和生成标题。项目 purge 与助手 purge 必须级联清理项目聊天表，归档项目保留历史但不可访问。
+- **项目聊天隔离与生命周期**：项目会话、消息和上下文摘要的所有查询必须同时过滤 `assistant_id + project_id + chat_session_id`，不得混入普通 Agent Loop 的 `sessions/messages` 或 FTS 索引。摘要是可重建的派生数据，只影响发给模型的 prompt，永远不进入会话详情接口返回的可见历史，UI 展示的消息列表不受压缩影响。第一条用户消息自动生成会话标题；列表按更新时间倒序。会话详情同时返回 `source='chat'` 且仍为 pending 的关联 change set。存在 pending diff 或助手运行锁时删除会话返回冲突；无 pending 且成功获取助手级 mutation lock 时，删除消息、会话及已处理 chat change set 元数据，但不回滚已写入正文。消息正文按可见原文保存，只以 trim 后结果判断空值和生成标题。项目 purge 与助手 purge 必须级联清理项目聊天表，归档项目保留历史但不可访问。
 - **新会话失败补偿**：首次发送由 API 同步创建会话并返回 `chat_session_id`。后台任务成功、失败或取消后，API 都对本次新建会话执行幂等条件清理：会话仍存在、消息数为 0、且无任何关联 change set 时才删除；已有 user/assistant 消息或 diff 时必须保留，避免模型失败后丢失已送达内容。继续既有会话不得触发会话删除；补偿清理失败只记 warning，不得覆盖原始任务结果或错误。
 - **工具写边界**：`save_markdown` 只允许写 `data/` 下的非受管中间产物，必须拒绝 `assistants/<assistant_id>/projects/` 及任意其他助手项目路径；项目正文只能经项目文档/change set API 修改。
 
@@ -508,7 +522,9 @@ JOBS = [
 | `GET /api/articles/{id}?assistant_id=X` | 只读获取完成态文章；要继续编辑须复制/导入为项目，所有保存统一走项目文档 API |
 | `GET /` | 托管 `web/dist` 静态文件 |
 
-`TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按 TTL/容量有界保留，事件历史只为断线重放服务，不得无限增长。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）。正文只有在 apply 成功后更新。
+`TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按 TTL/容量有界保留，事件历史只为断线重放服务，不得无限增长。
+
+**事件寻址必须用单调递增序号，不能用列表下标**（v1.17）：事件历史是有界滑窗，一次流式回复的 `token` 事件数量很容易超过窗口容量。每个事件在记录时分配任务内唯一且递增的 `seq`，订阅者记录"已发送到哪个 `seq`"，从 `max(已发送 seq + 1, 窗口内最小 seq)` 继续读取。窗口裁剪只允许让重连的订阅者跳过已丢弃的历史事件，**不得导致活跃订阅者停止收流，也不得吞掉 `task_done` / `task_failed` 终态事件**——终态必须在 SSE 关闭前送达，否则前端会永久停留在发送中状态。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）。正文只有在 apply 成功后更新。
 
 API 层不通过错误文本猜测冲突类型。MemoryStore/项目存储以专用冲突异常表达版本冲突、待处理状态和跨进程写入占用，API 稳定映射为 HTTP 409；参数错误保持 400，资源不存在保持 404。
 
@@ -516,9 +532,19 @@ API 层不通过错误文本猜测冲突类型。MemoryStore/项目存储以专�
 
 Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部/活动栏提供**助手选择器**和项目导入；左侧资源管理器列出当前助手的项目及项目文件树；中间为多标签 CodeMirror 编辑器，可切换 Markdown 预览；右侧为绑定当前项目的 Agent 面板，显示对话、执行事件、来源和待确认修改。切换助手时必须关闭或重新加载不属于新助手的项目标签和 Agent 会话。
 
-选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡。`tool_call` / `tool_result` 显示为紧凑的“正在准备修改 / 修改建议已生成 / 失败”状态；若产生文件修改，同样进入 change set 预览，不直接覆盖。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
+助手选择器旁提供**创建助手**与**删除助手**入口，直接复用 `POST /api/assistants` 与 `DELETE /api/assistants/{id}`（默认归档语义）。创建对话框校验 id 只含小写字母、数字与连字符；删除必须二次确认并说明这是归档而非抹除，成功后重新拉取助手列表并切换到剩余助手；只剩一个助手时禁用删除。助手正忙（409）等服务端拒绝必须原样提示，前端不猜测原因。
 
-每个编辑标签必须保存自己的 `project_id`；保存使用标签页归属，应用/拒绝使用 change set 归属，不能依赖资源树当前选中的项目。chat diff 只由 AgentPanel 呈现，DocumentEditor 只呈现 selection rewrite，禁止复制同一 chat 卡片。接受修改始终提交 change set 自带的 `document_version`，不要求目标文档已打开；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。Agent 面板的待审卡片只能在父级确认 apply/reject 成功后移除，请求失败必须保留以便重试。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属 EventSource，网络/解析错误必须退出 loading 状态并提示可刷新恢复；聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
+选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。**工具栏必须可输入**：浮层只能对非输入控件区域调用 `preventDefault` 来保持编辑器选区，绝不能拦截输入框自身的 `mousedown`，否则浏览器不会给输入框聚焦；组件挂载后显式聚焦输入框，`Esc` 关闭。CodeMirror 原生选区在编辑器失焦后不可见，因此工具栏打开期间必须用装饰保持选区高亮，用户在输入提示词时仍能看到改写目标。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡；气泡内容按 Markdown 渲染，流式期间也保持渲染一致，渲染同样要经过 HTML 消毒。`tool_call` / `tool_result` 显示为紧凑的“正在准备修改 / 修改建议已生成 / 失败”状态；若产生文件修改，同样进入 change set 预览，不直接覆盖。消息区默认跟随最新内容滚动，但用户主动上滚查看历史时必须停止自动跟随，直到用户回到底部。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
+
+每个编辑标签必须保存自己的 `project_id`；保存使用标签页归属，应用/拒绝使用 change set 归属，不能依赖资源树当前选中的项目。
+
+**待确认 change set 采用双视图、单一状态源**（v1.17）。pending 集合由 App 层统一持有，DocumentEditor 与 AgentPanel 都是它的视图：
+
+- **编辑器内联视图**：目标文档已打开时，在 CodeMirror 中把原文范围渲染为删除态、把建议文本渲染为紧随其后的新增态，并附一个内联的接受/拒绝控件。内联装饰只读展示，不改写文档内容——正文仍然只在 apply 成功后由服务端返回的内容同步回编辑器。文档 `dirty` 或版本已不等于 change set 的 `base_version` 时，内联视图必须降级为"文档已变化，无法内联预览"的提示，不得在错误位置画 diff。
+- **侧栏卡片视图**：AgentPanel 始终列出本会话全部 pending change set，含目标文件相对路径、diff 与接受/拒绝按钮，并提供全部接受/全部拒绝。目标文档未打开时，侧栏是唯一入口。
+- **单一通道**：两个视图的接受/拒绝都调用同一个父级方法，同一 `change_set_id` 正在处理时两边同时置为忙，成功后两边同时移除，失败两边都保留以便重试。禁止任一视图各自调用 API 或各自维护 pending 列表。
+
+接受修改始终提交 change set 自带的 `document_version`，不要求目标文档已打开；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。待审卡片只能在父级确认 apply/reject 成功后移除，请求失败必须保留以便重试。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属 EventSource，网络/解析错误必须退出 loading 状态并提示可刷新恢复；聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
 
 前端只能通过 API 读写，不能直接读取 SQLite、助手目录或外部原路径。`npm run build` 产物由 FastAPI 托管，单进程交付。
 
@@ -559,6 +585,8 @@ sequenceDiagram
 
 ### 6.2 SSE 事件模型（阶段 4 用，阶段 2 先落日志）
 
+SSE 下发的每个事件都带任务内单调递增的 `seq`（示例中省略），订阅者据此定位重放起点，见 §5.9。
+
 ```json
 {"type": "thought",   "data": {"text": "需要先搜集资料，激活 research skill", "step": 2}}
 {"type": "tool_call", "data": {"tool": "tavily_search", "args": {}, "reason": "..."}}
@@ -594,6 +622,7 @@ sequenceDiagram
 writing-agent/
   agent/           ★ __main__.py / runtime.py / planner.py / executor.py / loop.py
                      ★ events.py / schemas.py / tools.py（内置沙箱工具）/ assistant_registry.py
+                     context.py（项目聊天上下文预算与压缩，v1.17）
   skills/          ★ research/ writing/ editing/（各含 SKILL.md + tools.yaml）
   mcp_client/      ★ client.py / registry.py（支持 ${VAR} 与 ${PROJECT_ROOT} 插值）
   memory/          ★ short_term.py / long_term.py / store.py（assistant_id 贯穿，阶段 3 充实）
@@ -633,6 +662,12 @@ RUN_LOCK_TTL=2
 PROJECT_IMPORT_MAX_FILES=5000
 PROJECT_IMPORT_MAX_TOTAL_MB=512
 PROJECT_IMPORT_MAX_FILE_MB=100
+# 项目聊天上下文预算（token 估算值）；设为 0 关闭压缩，见 §3.3
+CHAT_CONTEXT_TOKEN_BUDGET=24000
+# 永远全文保留的最近可见消息条数
+CHAT_CONTEXT_KEEP_RECENT=8
+# 注入 prompt 的当前文档正文字符上限，超出按窗口截断
+CHAT_CONTEXT_DOC_MAX_CHARS=12000
 ```
 
 > 注 1：内置工具与节点归属——observe/plan/act/reflect/write 节点在 `agent/loop.py` 装配；内置工具（save_markdown / read_file / finalize_article）在 `agent/tools.py`；助手注册在 `agent/assistant_registry.py`（代码模块不放顶层 `assistants/` 包，避免与数据目录 `data/assistants/` 同名混淆）。
@@ -677,6 +712,10 @@ PROJECT_IMPORT_MAX_FILE_MB=100
 | 项目聊天模型调用失败 | 用户消息已持久化并保留；不完整 assistant 流不写入历史，已成功创建的 pending diff 仍可在会话详情恢复 |
 | 首次项目聊天在写入用户消息前失败 | 仅当本次新会话仍为 0 消息且无关联 diff 时补偿删除；已有任何持久化内容则保留 |
 | 项目聊天模型返回空白回复 | Runtime 发送并持久化可见提示，避免历史出现无反馈的连续 user 消息 |
+| 单次任务事件数超过 broker 事件窗口 | 订阅者按 `seq` 定位，跳过已丢弃的历史事件后继续收流；终态事件必须送达，不得静默关闭 SSE（§5.9） |
+| 项目聊天上下文压缩调用失败 | 记 warning 并降级为丢弃最早的窗口外消息，本轮聊天继续；不得因压缩失败让用户消息失败（§3.3） |
+| 内联 diff 的目标文档已被编辑或版本变化 | 编辑器降级为"文档已变化，无法内联预览"提示，仅保留侧栏卡片入口；不得在错误位置渲染装饰（§5.10） |
+| 创建助手的 id 非法或已存在 | API 返回 400/409，前端在对话框内原样提示并保留已填内容，不关闭对话框（§5.10） |
 | OpenAI 兼容服务拒绝流式 tools 参数 | 任务明确失败并保留正文；不得退化为伪流式或直接写文件，错误信息指出当前模型服务不支持项目 Agent 编辑工具 |
 | 导入目录包含 `..`、绝对路径、符号链接或重解析点 | 拒绝对应导入并清理本次未完成的临时目录；不得在项目根外创建文件 |
 | 导入中途失败或项目同名 | 先写受管目录内的临时项目，全部完成后原子改名；显示名可相同，`project_id` 与物理目录不得覆盖 |
