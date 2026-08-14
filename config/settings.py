@@ -33,6 +33,10 @@ class Settings:
     project_import_max_files: int = 5000
     project_import_max_total_mb: int = 512
     project_import_max_file_mb: int = 100
+    # 项目聊天上下文预算（架构 §3.3）：预算设为 0 关闭压缩，恢复全量历史行为。
+    chat_context_token_budget: int = 24000
+    chat_context_keep_recent: int = 8
+    chat_context_doc_max_chars: int = 12000
     json_mode: bool = True  # LLM 是否优先用 response_format=json_object（失败自动回退纯文本+宽容解析）
     # Scheduler 长驻模式消费，见架构 §5.8。
     jobs: list[dict] = field(default_factory=list)
@@ -54,6 +58,9 @@ def load_settings() -> Settings:
         project_import_max_files=int(os.environ.get("PROJECT_IMPORT_MAX_FILES", "5000")),
         project_import_max_total_mb=int(os.environ.get("PROJECT_IMPORT_MAX_TOTAL_MB", "512")),
         project_import_max_file_mb=int(os.environ.get("PROJECT_IMPORT_MAX_FILE_MB", "100")),
+        chat_context_token_budget=max(0, int(os.environ.get("CHAT_CONTEXT_TOKEN_BUDGET", "24000"))),
+        chat_context_keep_recent=max(1, int(os.environ.get("CHAT_CONTEXT_KEEP_RECENT", "8"))),
+        chat_context_doc_max_chars=max(0, int(os.environ.get("CHAT_CONTEXT_DOC_MAX_CHARS", "12000"))),
         json_mode=os.environ.get("LLM_JSON_MODE", "true").lower() not in ("0", "false", "no"),
         jobs=[dict(job) for job in JOBS],
     )

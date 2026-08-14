@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { basicSetup } from 'codemirror'
 import { EditorView } from 'codemirror'
 import { EditorState } from '@codemirror/state'
 import { markdown } from '@codemirror/lang-markdown'
 
 import { apiClient } from '../api/client'
+import { frozenSelectionField, setFrozenSelection } from '../editor/frozenSelection'
+import { inlineDiffField, setInlineDiffs, type InlineDiff } from '../editor/inlineDiff'
 import { isChangePreview, type ChangePreview, type EditorTab, type TaskEvent } from '../types'
 import { codePointToUtf16Offset, utf16ToCodePointOffset } from '../utils/unicodeOffsets'
-import ChangeDiff from './ChangeDiff.vue'
 import MarkdownPreview from './MarkdownPreview.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 
@@ -16,9 +17,15 @@ const props = defineProps<{
   assistantId: string
   projectId: string
   tab: EditorTab
-  externalChange: ChangePreview | null
+  changes: ChangePreview[]
+  reviewing: string[]
 }>()
-const emit = defineEmits<{ update: [content: string]; saved: [document: EditorTab]; preview: [change: ChangePreview]; clearPreview: [] }>()
+const emit = defineEmits<{
+  update: [content: string]
+  preview: [change: ChangePreview]
+  apply: [change: ChangePreview]
+  reject: [change: ChangePreview]
+}>()
 
 const editorHost = ref<HTMLElement>()
 const editorView = ref<EditorView>()
@@ -27,34 +34,47 @@ const toolbar = ref<{ from: number; to: number; left: number; top: number; text:
 const prompt = ref('')
 const loading = ref(false)
 const error = ref('')
-const localChange = ref<ChangePreview | null>(null)
 let syncingExternalContent = false
-let selectingChangeRange = false
 let stream: EventSource | null = null
 let scopeGeneration = 0
+
+/**
+ * 内联 diff 依赖 change set 的原文位置，只有当标签页正文仍等于建议的基准版本
+ * 且没有未保存修改时才能对齐；否则降级为提示，交给侧栏卡片处理（架构 §5.10）。
+ */
+const inlineDiffs = computed<InlineDiff[]>(() => {
+  if (props.tab.dirty) return []
+  const reviewing = new Set(props.reviewing)
+  return props.changes
+    .filter((change) => change.document_version === props.tab.version)
+    .map((change) => ({
+      changeSetId: change.change_set_id,
+      from: codePointToUtf16Offset(props.tab.content, change.range.from),
+      to: codePointToUtf16Offset(props.tab.content, change.range.to),
+      replacement: change.replacement,
+      busy: reviewing.has(change.change_set_id),
+    }))
+})
+
+const staleChangeCount = computed(() => props.changes.length - inlineDiffs.value.length)
+
+const handlers = {
+  accept: (changeSetId: string) => {
+    const change = props.changes.find((item) => item.change_set_id === changeSetId)
+    if (change) emit('apply', change)
+  },
+  reject: (changeSetId: string) => {
+    const change = props.changes.find((item) => item.change_set_id === changeSetId)
+    if (change) emit('reject', change)
+  },
+}
 
 function stopStream() {
   stream?.close()
   stream = null
 }
 
-function currentChange() {
-  const local = localChange.value
-  if (local && local.project_id === props.tab.project_id && local.document_id === props.tab.document_id) {
-    return local
-  }
-  const change = props.externalChange
-  return change && change.project_id === props.tab.project_id && change.document_id === props.tab.document_id
-    ? change
-    : null
-}
-
-function scopeMatches(
-  generation: number,
-  assistantId: string,
-  projectId: string,
-  documentId: string,
-) {
+function scopeMatches(generation: number, assistantId: string, projectId: string, documentId: string) {
   return generation === scopeGeneration
     && props.assistantId === assistantId
     && props.projectId === projectId
@@ -62,24 +82,26 @@ function scopeMatches(
     && props.tab.document_id === documentId
 }
 
-function selectChangeRange(change: ChangePreview) {
+function pushInlineDiffs() {
   const view = editorView.value
-  if (!view || change.project_id !== props.tab.project_id || change.document_id !== props.tab.document_id) return
-  const from = codePointToUtf16Offset(props.tab.content, change.range.from)
-  const to = codePointToUtf16Offset(props.tab.content, change.range.to)
-  selectingChangeRange = true
-  try {
-    view.dispatch({ selection: { anchor: from, head: to }, scrollIntoView: true })
-  } finally {
-    selectingChangeRange = false
-  }
-  toolbar.value = null
+  if (!view) return
+  view.dispatch({ effects: setInlineDiffs.of(inlineDiffs.value) })
+}
+
+function pushFrozenSelection() {
+  const view = editorView.value
+  if (!view) return
+  const range = toolbar.value ? { from: toolbar.value.from, to: toolbar.value.to } : null
+  view.dispatch({ effects: setFrozenSelection.of(range) })
 }
 
 function updateSelection(view: EditorView) {
   const selection = view.state.selection.main
   if (selection.empty) {
-    toolbar.value = null
+    if (toolbar.value) {
+      toolbar.value = null
+      pushFrozenSelection()
+    }
     return
   }
   const coords = view.coordsAtPos(selection.from)
@@ -88,10 +110,17 @@ function updateSelection(view: EditorView) {
   toolbar.value = {
     from: selection.from,
     to: selection.to,
-    left: coords.left - host.left,
+    left: Math.max(8, coords.left - host.left),
     top: coords.bottom - host.top + 8,
     text: view.state.sliceDoc(selection.from, selection.to),
   }
+  pushFrozenSelection()
+}
+
+function closeToolbar() {
+  toolbar.value = null
+  prompt.value = ''
+  pushFrozenSelection()
 }
 
 function createEditor() {
@@ -102,14 +131,17 @@ function createEditor() {
       extensions: [
         basicSetup,
         markdown(),
+        frozenSelectionField,
+        inlineDiffField(handlers),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !syncingExternalContent) emit('update', update.state.doc.toString())
-          if (update.selectionSet && !selectingChangeRange) updateSelection(update.view)
+          if (update.selectionSet && !syncingExternalContent) updateSelection(update.view)
         }),
       ],
     }),
     parent: editorHost.value,
   })
+  pushInlineDiffs()
 }
 
 function destroyEditor() {
@@ -125,7 +157,6 @@ async function submitSelection() {
   const projectId = props.projectId
   const documentId = props.tab.document_id
   const content = props.tab.content
-  const documentVersion = props.tab.version
   loading.value = true
   error.value = ''
   try {
@@ -135,7 +166,7 @@ async function submitSelection() {
       end: utf16ToCodePointOffset(content, selection.to),
       selected_text: selection.text,
       instruction: prompt.value,
-      document_version: documentVersion,
+      document_version: props.tab.version,
     }, projectId, documentId)
     if (!scopeMatches(generation, assistantId, projectId, documentId)) return
     stopStream()
@@ -148,9 +179,8 @@ async function submitSelection() {
           return
         }
         if (event.data.project_id !== projectId || event.data.document_id !== documentId) return
-        localChange.value = event.data
-        selectChangeRange(localChange.value)
-        emit('preview', localChange.value)
+        emit('preview', event.data)
+        closeToolbar()
       }
       if (event.type === 'task_failed') {
         error.value = String(event.data.reason || '任务失败')
@@ -169,49 +199,6 @@ async function submitSelection() {
   }
 }
 
-async function applyChange() {
-  const change = currentChange()
-  if (!change) return
-  const generation = scopeGeneration
-  const assistantId = props.assistantId
-  const projectId = change.project_id
-  const documentId = change.document_id
-  const version = props.tab.version
-  if (props.tab.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) return
-  loading.value = true
-  try {
-    const result = await apiClient.applyChange(assistantId, projectId, change.change_set_id, version)
-    if (!scopeMatches(generation, assistantId, projectId, documentId)) return
-    editorView.value?.dispatch({ changes: { from: 0, to: editorView.value.state.doc.length, insert: result.document.content || '' } })
-    emit('saved', { ...props.tab, ...result.document, content: result.document.content || '', dirty: false })
-    localChange.value = null
-    emit('clearPreview')
-  } catch (cause) {
-    if (!scopeMatches(generation, assistantId, projectId, documentId)) return
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
-    if (scopeMatches(generation, assistantId, projectId, documentId)) loading.value = false
-  }
-}
-
-async function rejectChange() {
-  const change = currentChange()
-  if (!change) return
-  const generation = scopeGeneration
-  const assistantId = props.assistantId
-  const projectId = change.project_id
-  const documentId = change.document_id
-  try {
-    await apiClient.rejectChange(assistantId, projectId, change.change_set_id)
-    if (!scopeMatches(generation, assistantId, projectId, documentId)) return
-    localChange.value = null
-    emit('clearPreview')
-  } catch (cause) {
-    if (!scopeMatches(generation, assistantId, projectId, documentId)) return
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  }
-}
-
 onMounted(createEditor)
 onBeforeUnmount(() => {
   stopStream()
@@ -222,25 +209,25 @@ watch(() => [props.assistantId, props.tab.project_id, props.tab.document_id] as 
   stopStream()
   destroyEditor()
   toolbar.value = null
-  localChange.value = null
+  prompt.value = ''
   error.value = ''
   loading.value = false
   showPreview.value = false
   createEditor()
 })
-watch(() => props.externalChange, (change) => {
-  if (change) selectChangeRange(change)
-})
 watch(() => [props.tab.version, props.tab.content] as const, () => {
   const view = editorView.value
-  if (!view || view.state.doc.toString() === props.tab.content) return
-  syncingExternalContent = true
-  try {
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: props.tab.content } })
-  } finally {
-    syncingExternalContent = false
+  if (view && view.state.doc.toString() !== props.tab.content) {
+    syncingExternalContent = true
+    try {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: props.tab.content } })
+    } finally {
+      syncingExternalContent = false
+    }
   }
+  pushInlineDiffs()
 })
+watch(inlineDiffs, pushInlineDiffs, { deep: true })
 </script>
 
 <template>
@@ -248,8 +235,17 @@ watch(() => [props.tab.version, props.tab.content] as const, () => {
     <div ref="editorHost" class="code-editor" :class="{ hidden: showPreview }" />
     <MarkdownPreview v-if="showPreview" :content="tab.content" />
     <button class="preview-toggle" title="切换 Markdown 预览" @click="showPreview = !showPreview">{{ showPreview ? '编辑' : '预览' }}</button>
-    <SelectionToolbar v-if="toolbar" v-model="prompt" :loading="loading" :style="{ left: `${toolbar.left}px`, top: `${toolbar.top}px` }" @submit="submitSelection" @cancel="toolbar = null" />
-    <ChangeDiff :change="currentChange()" :busy="loading" @apply="applyChange" @reject="rejectChange" @regenerate="submitSelection" />
+    <SelectionToolbar
+      v-if="toolbar"
+      v-model="prompt"
+      :loading="loading"
+      :style="{ left: `${toolbar.left}px`, top: `${toolbar.top}px` }"
+      @submit="submitSelection"
+      @cancel="closeToolbar"
+    />
+    <p v-if="staleChangeCount" class="editor-notice">
+      有 {{ staleChangeCount }} 处修改建议基于旧版本正文，已停止内联预览，请在右侧 Agent 面板处理。
+    </p>
     <p v-if="error" class="editor-error">{{ error }}</p>
   </section>
 </template>

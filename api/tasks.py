@@ -11,6 +11,9 @@ from typing import Any, Awaitable, Callable
 from agent.events import Event, EventBus
 
 
+TERMINAL_EVENT_TYPES = {"task_done", "task_failed"}
+
+
 @dataclass
 class TaskRecord:
     task_id: str
@@ -22,10 +25,19 @@ class TaskRecord:
     subscribers: set[asyncio.Queue[Event]] = field(default_factory=set)
     handle: asyncio.Task | None = None
     completed_at: datetime | None = None
+    next_seq: int = 0
+    dropped: int = 0
 
 
 class TaskBroker:
-    def __init__(self, bus: EventBus, *, max_records: int = 128, max_events: int = 512) -> None:
+    """事件按任务内单调递增的 seq 寻址（架构 §5.9）。
+
+    `events` 是有界重放窗口，一次流式回复的 token 事件数很容易超过窗口容量，
+    因此订阅者不能用列表下标定位：活跃订阅者从自己的队列取事件，窗口裁剪只让
+    重连订阅者跳过已丢弃的历史，不会让任何订阅者停流或漏掉终态事件。
+    """
+
+    def __init__(self, bus: EventBus, *, max_records: int = 128, max_events: int = 4096) -> None:
         self.bus = bus
         self.max_records = max_records
         self.max_events = max_events
@@ -33,11 +45,15 @@ class TaskBroker:
         self.bus.subscribe(self._on_event)
 
     def _record_event(self, record: TaskRecord, event: Event) -> None:
-        record.events.append(event)
-        if len(record.events) > self.max_events:
-            del record.events[: len(record.events) - self.max_events]
+        stamped: Event = {**event, "seq": record.next_seq}
+        record.next_seq += 1
+        record.events.append(stamped)
+        overflow = len(record.events) - self.max_events
+        if overflow > 0:
+            del record.events[:overflow]
+            record.dropped += overflow
         for queue in tuple(record.subscribers):
-            queue.put_nowait(event)
+            queue.put_nowait(stamped)
 
     def _on_event(self, event: Event) -> None:
         task_id = event.get("task_id")
@@ -100,19 +116,29 @@ class TaskBroker:
         record = self.get(task_id, assistant_id)
         queue: asyncio.Queue[Event] = asyncio.Queue()
         record.subscribers.add(queue)
-        index = 0
+        cursor = record.dropped  # 已裁剪的历史无法重放，从窗口最早事件开始
         try:
+            for event in list(record.events):
+                if event["seq"] < cursor:
+                    continue
+                cursor = event["seq"] + 1
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event["type"] in TERMINAL_EVENT_TYPES:
+                    return
             while True:
-                while index < len(record.events):
-                    event = record.events[index]
-                    index += 1
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                if record.status in {"done", "failed"}:
+                if record.status in {"done", "failed"} and cursor >= record.next_seq:
                     break
                 try:
-                    await asyncio.wait_for(queue.get(), timeout=15)
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
                     yield ": keepalive\n\n"
+                    continue
+                if event["seq"] < cursor:
+                    continue
+                cursor = event["seq"] + 1
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event["type"] in TERMINAL_EVENT_TYPES:
+                    break
         finally:
             record.subscribers.discard(queue)
             self._trim_records()

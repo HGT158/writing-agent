@@ -4,9 +4,10 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.16**。
-- 阶段 2、3、4、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成、v1.15 项目 Agent 多会话历史及 v1.16 失败路径加固均已完成；当前基线：Python **162/162**、记忆隔离 **10/10**、前端 **43/43**。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.17**。
+- 阶段 2、3、4 及 v1.13–v1.17 均已完成；当前基线：Python **180/180**、记忆隔离 **10/10**、前端 **60/60**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑与每项目多会话历史。
+- v1.17 补齐：SSE 事件按 `seq` 寻址（修复长回复流式中断）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读
@@ -21,18 +22,20 @@
 
 ## 环境与验证
 
-- Python 只能使用 `C:\miniconda\envs\writing-agent\python.exe`，禁止系统 Python、禁止新建 venv。
-- pip 使用 `C:\miniconda\envs\writing-agent\python.exe -m pip ...`。
-- 本机重建环境需设置 `CONDA_NO_PLUGINS=true` 并使用 `--solver=classic`。
+- Python 只能使用仓库内虚拟环境 `.venv\Scripts\python.exe`（Python 3.13），禁止系统 Python，禁止在仓库外另建环境。
+- pip 使用 `.venv\Scripts\python.exe -m pip ...`；依赖清单为 `requirements-dev.txt`（已包含 `requirements.txt`）。
+- 环境缺失时重建：`py -3.13 -m venv .venv` 后安装 `requirements-dev.txt`。
+- Node 命令走 `D:\Program Files\nodejs\npm.cmd`（`npm` 未进 PATH）。
 - 无 API Key 冒烟测试设置 `MCP_SERVERS_JSON=config/mcp_servers.empty.json`。
+- pytest 的 `--basetemp` 目录 `D:\test_agent\pytest-temp-writing-agent` 需事先存在。
 
 ```powershell
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
+.venv\Scripts\python.exe -m pytest tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
+.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
 Set-Location web
-npm test
-npm run typecheck
-npm run build
+& "D:\Program Files\nodejs\npm.cmd" test
+& "D:\Program Files\nodejs\npm.cmd" run typecheck
+& "D:\Program Files\nodejs\npm.cmd" run build
 ```
 
 ## 代码边界
@@ -45,6 +48,9 @@ npm run build
 | `api/`        | FastAPI、SSE；只调用 MemoryStore/Runtime      |
 | `web/`        | Vue 3 + TypeScript + CodeMirror 写作 IDE   |
 | `mcp_client/` | 官方 MCP SDK stdio 客户端                     |
+
+`agent/context.py` 负责项目聊天的 token 预算、历史压缩与文档窗口截断；Runtime 不内联裁剪逻辑。
+`web/src/editor/` 存放 CodeMirror 扩展（内联 diff、选区持久高亮），组件不直接构造装饰。
 
 `memory/store.py` 是业务层唯一持久化门面。SQL 只能位于 `memory/`，`agent/`、`scheduler/`、`api/` 禁止直接执行 SQL。
 
@@ -74,3 +80,5 @@ npm run build
 
 - CLI 运行中按 Ctrl+C 可能显示 `KeyboardInterrupt` traceback，属于后续体验优化。
 - 长短混合查询存在三字词元时只走 FTS，不额外为短词元增加 LIKE；这是架构 §5.7 的既定取舍。
+- 上下文压缩的 token 估算是按字符类型折算的近似值，不接服务端计费口径；预算需要精确时再引入分词器。
+- 编辑器内联 diff 只在标签页版本等于建议基准版本且无未保存修改时渲染，其余情况降级到侧栏卡片。

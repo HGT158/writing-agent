@@ -15,6 +15,7 @@ from memory.store import MemoryStore
 from scheduler import RuntimeScheduler
 
 from .assistant_registry import AssistantRegistry
+from .context import build_chat_context, clip_document_content, estimate_tokens
 from .events import EventBus
 from .executor import ToolRegistry
 from .llm import chat_text, stream_chat_turn
@@ -205,6 +206,31 @@ class AgentRuntime:
         finally:
             self.store.release_lock(assistant_id, task_id)
 
+    async def _summarize_chat_history(self, transcript: str) -> str:
+        """压缩项目聊天的早期历史；不发 token 事件，不污染可见回复（架构 §3.3）。"""
+        return await chat_text(
+            self.llm,
+            self.settings.model_name,
+            [
+                {
+                    "role": "system",
+                    "content": "你在压缩一段写作助手与用户的对话历史，供后续轮次做背景参考。",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "用中文把下面的对话压缩成一段不超过 400 字的摘要。"
+                        "保留用户的写作目标、已确认的风格与结构决定、已完成和待办的修改，"
+                        "以及任何具体的事实、数字与命名约定；丢弃寒暄和重复内容。"
+                        "只输出摘要正文。\n\n"
+                        f"{transcript}"
+                    ),
+                },
+            ],
+            temperature=0.2,
+            json_mode=False,
+        )
+
     async def chat_project(
         self,
         assistant_id: str,
@@ -232,11 +258,15 @@ class AgentRuntime:
                 document = self.store.get_document(
                     assistant_id, project_id, current_document_id
                 )
+                body, clipped = clip_document_content(
+                    document.content or "", self.settings.chat_context_doc_max_chars
+                )
                 context = (
                     f"document_id={document.document_id}\n"
                     f"document_version={document.version}\n"
                     f"relative_path={document.relative_path}\n"
-                    f"content:\n{document.content or ''}"
+                    + ("content（已按上下文预算截断）:\n" if clipped else "content:\n")
+                    + body
                 )
             editing = self.skills.get("editing")
             skill_prompt = editing.body if editing is not None else "帮助用户审校和改写项目文本。"
@@ -258,12 +288,37 @@ class AgentRuntime:
             history = self.store.list_project_chat_messages(
                 assistant_id, project_id, chat_session_id
             )
+            existing = self.store.get_project_chat_summary(
+                assistant_id, project_id, chat_session_id
+            )
+            chat_context = await build_chat_context(
+                history,
+                system_tokens=estimate_tokens(system_prompt),
+                token_budget=self.settings.chat_context_token_budget,
+                keep_recent=self.settings.chat_context_keep_recent,
+                existing_summary=existing.summary if existing else None,
+                existing_summary_through=existing.covered_through_message_id if existing else None,
+                summarize=self._summarize_chat_history,
+            )
+            for warning in chat_context.warnings:
+                self.bus.emit("warning", text=warning)
+            if chat_context.summary_changed:
+                assert chat_context.summary is not None
+                assert chat_context.summary_through_message_id is not None
+                self.store.save_project_chat_summary(
+                    assistant_id,
+                    project_id,
+                    chat_session_id,
+                    chat_context.summary,
+                    chat_context.summary_through_message_id,
+                )
+                self.bus.emit(
+                    "info",
+                    text=f"已把较早的 {chat_context.compacted_message_count} 条对话压缩为摘要以控制上下文",
+                )
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
-                *[
-                    {"role": item.role, "content": item.content}
-                    for item in history
-                ],
+                *chat_context.messages,
             ]
             visible: list[str] = []
 

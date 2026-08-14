@@ -747,3 +747,154 @@ def test_project_chat_releases_lock_when_stream_fails(tmp_path):
     assert any(event["type"] == "failed" for event in events)
     assert not runtime.store.is_locked("default")
     asyncio.run(runtime.close())
+
+
+class HybridLLM:
+    """流式轮次走 stream_chat_turn，压缩调用走 chat_text（架构 §3.3）。"""
+
+    def __init__(self, turns, summaries):
+        self.turns = iter(turns)
+        self.summaries = iter(summaries)
+        self.stream_calls = []
+        self.summary_calls = []
+        self.chat = SimpleNamespace(completions=self)
+
+    async def create(self, **kwargs):
+        if kwargs.get("stream"):
+            self.stream_calls.append(kwargs)
+            turn = next(self.turns)
+            if isinstance(turn, Exception):
+                raise turn
+            return FakeAsyncStream(turn)
+        self.summary_calls.append(kwargs)
+        summary = next(self.summaries)
+        if isinstance(summary, Exception):
+            raise summary
+        return _response(summary)
+
+
+def _seed_long_history(runtime, project, count: int) -> str:
+    session_id = _chat_session(runtime, project)
+    for index in range(count):
+        runtime.store.add_project_chat_message(
+            "default", project.project_id, session_id,
+            "user" if index % 2 == 0 else "assistant",
+            f"历史第{index + 1}条" + "内" * 200,
+        )
+    return session_id
+
+
+def test_project_chat_compacts_long_history_and_persists_summary(tmp_path):
+    runtime, project, document, events = _prepared_runtime(tmp_path, [])
+    runtime.settings.chat_context_token_budget = 900
+    runtime.settings.chat_context_keep_recent = 2
+    session_id = _seed_long_history(runtime, project, 8)
+    runtime.llm = HybridLLM([[_stream_chunk(content="回答")]], ["早期讨论摘要"])
+
+    result = asyncio.run(runtime.chat_project(
+        "default", project.project_id, "继续",
+        chat_session_id=session_id,
+        current_document_id=document.document_id,
+    ))
+
+    assert result.reply == "回答"
+    assert len(runtime.llm.summary_calls) == 1
+    sent = runtime.llm.stream_calls[0]["messages"]
+    assert sent[1]["role"] == "system"
+    assert "早期讨论摘要" in sent[1]["content"]
+    assert [item["content"] for item in sent[2:]] == [
+        "历史第8条" + "内" * 200,
+        "继续",
+    ]
+    stored = runtime.store.get_project_chat_summary(
+        "default", project.project_id, session_id
+    )
+    assert stored is not None
+    assert stored.summary == "早期讨论摘要"
+    assert any(
+        event["type"] == "info" and "压缩" in event["data"]["text"] for event in events
+    )
+    # 压缩是派生数据：可见历史必须保持完整
+    assert len(runtime.store.list_project_chat_messages(
+        "default", project.project_id, session_id
+    )) == 10
+    asyncio.run(runtime.close())
+
+
+def test_project_chat_reuses_persisted_summary_without_recompressing(tmp_path):
+    runtime, project, document, _ = _prepared_runtime(tmp_path, [])
+    runtime.settings.chat_context_keep_recent = 2
+    session_id = _seed_long_history(runtime, project, 4)
+    runtime.store.save_project_chat_summary(
+        "default", project.project_id, session_id, "已有摘要", 3
+    )
+    runtime.llm = HybridLLM([[_stream_chunk(content="回答")]], [])
+
+    asyncio.run(runtime.chat_project(
+        "default", project.project_id, "继续",
+        chat_session_id=session_id,
+        current_document_id=document.document_id,
+    ))
+
+    assert runtime.llm.summary_calls == []
+    sent = runtime.llm.stream_calls[0]["messages"]
+    assert "已有摘要" in sent[1]["content"]
+    assert [item["content"] for item in sent[2:]] == [
+        "历史第4条" + "内" * 200,
+        "继续",
+    ]
+    asyncio.run(runtime.close())
+
+
+def test_project_chat_survives_context_compaction_failure(tmp_path):
+    runtime, project, document, events = _prepared_runtime(tmp_path, [])
+    runtime.settings.chat_context_token_budget = 900
+    runtime.settings.chat_context_keep_recent = 2
+    session_id = _seed_long_history(runtime, project, 8)
+    runtime.llm = HybridLLM(
+        [[_stream_chunk(content="仍然回答")]],
+        [RuntimeError("压缩服务不可用")],
+    )
+
+    result = asyncio.run(runtime.chat_project(
+        "default", project.project_id, "继续",
+        chat_session_id=session_id,
+        current_document_id=document.document_id,
+    ))
+
+    assert result.reply == "仍然回答"
+    assert runtime.store.get_project_chat_summary(
+        "default", project.project_id, session_id
+    ) is None
+    assert any(
+        event["type"] == "warning" and "压缩" in event["data"]["text"] for event in events
+    )
+    sent = runtime.llm.stream_calls[0]["messages"]
+    assert [item["content"] for item in sent[1:]] == [
+        "历史第8条" + "内" * 200,
+        "继续",
+    ]
+    asyncio.run(runtime.close())
+
+
+def test_project_chat_clips_oversized_document_into_prompt_window(tmp_path):
+    runtime, project, _, _ = _prepared_runtime(tmp_path, [])
+    runtime.settings.chat_context_doc_max_chars = 120
+    document = runtime.store.save_document(
+        "default", project.project_id, project.entry_document_id,
+        "开头标记" + "正" * 2000 + "结尾标记", expected_version=2,
+    )
+    runtime.llm = HybridLLM([[_stream_chunk(content="回答")]], [])
+
+    asyncio.run(runtime.chat_project(
+        "default", project.project_id, "总结正文",
+        chat_session_id=_chat_session(runtime, project),
+        current_document_id=document.document_id,
+    ))
+
+    system_prompt = runtime.llm.stream_calls[0]["messages"][0]["content"]
+    assert "已按上下文预算截断" in system_prompt
+    assert "开头标记" in system_prompt
+    assert "结尾标记" in system_prompt
+    assert "正" * 500 not in system_prompt
+    asyncio.run(runtime.close())

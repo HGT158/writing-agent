@@ -19,7 +19,11 @@ from typing import BinaryIO, Iterable, Literal
 import psutil
 
 from . import long_term, project_chat, projects, short_term
-from .project_chat import ProjectChatMessageRecord, ProjectChatSessionRecord
+from .project_chat import (
+    ProjectChatMessageRecord,
+    ProjectChatSessionRecord,
+    ProjectChatSummaryRecord,
+)
 from .projects import ChangeSetRecord, DocumentRecord, ProjectRecord
 
 logger = logging.getLogger(__name__)
@@ -169,6 +173,32 @@ class MemoryStore:
                 chat_session_id,
                 role,
                 content,
+            )
+
+    def get_project_chat_summary(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> ProjectChatSummaryRecord | None:
+        with self._lock:
+            return project_chat.get_summary(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+
+    def save_project_chat_summary(
+        self,
+        assistant_id: str,
+        project_id: str,
+        chat_session_id: str,
+        summary: str,
+        covered_through_message_id: int,
+    ) -> ProjectChatSummaryRecord:
+        with self._lock:
+            return project_chat.save_summary(
+                self._conn,
+                assistant_id,
+                project_id,
+                chat_session_id,
+                summary,
+                covered_through_message_id,
             )
 
     def list_pending_chat_changes(
