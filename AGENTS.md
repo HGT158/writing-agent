@@ -25,6 +25,7 @@
 
 - Python 只能使用 `C:\miniconda\envs\writing-agent\python.exe`（Python 3.13），禁止系统 Python、禁止新建 venv。
 - pip 使用 `C:\miniconda\envs\writing-agent\python.exe -m pip ...`；依赖清单为 `requirements-dev.txt`（已包含 `requirements.txt`）。
+- 包下载慢或超时：PyPI 优先走清华镜像（pip 加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`，uv 用 `UV_DEFAULT_INDEX`），GitHub 等被墙资源走本地代理 `http://127.0.0.1:7890`（设置 `HTTP_PROXY`/`HTTPS_PROXY`）。本机 uvx 转发的子进程 stdio 不可靠，MCP server 一律用 conda 环境直跑。
 - 本机重建环境需设置 `CONDA_NO_PLUGINS=true` 并使用 `--solver=classic`。
 - Node.js 与 npm 已通过 `C:\nvm4w\nodejs` 加入 PATH，直接使用 `node` 和 `npm` 命令。
 - 无 API Key 冒烟测试设置 `MCP_SERVERS_JSON=config/mcp_servers.empty.json`。

@@ -25,7 +25,7 @@
 
 > v1.17 变更：三项修正与两项能力扩展。**（1）活动 SSE 流按单调递增序号跨越事件滑窗**：`TaskBroker` 的事件历史是有界滑窗，活动订阅者必须用任务内 `seq` 而非列表下标定位，窗口裁剪不得让活动订阅者停止收流或漏发终态；网络断线后的游标续传不属于本版完成范围，列入待办（§5.9/§6.2/§9）。**（2）待确认 change set 采用编辑器内联 + 侧栏卡片双视图**：同一 change set 在 CodeMirror 中以原文删除态、建议新增态和内联接受/拒绝控件呈现，同时在 Agent 面板保留可审阅卡片；两个视图共享 App 层的单一 pending 集合与单一 apply/reject 通道，禁止各自持有状态或重复发起请求（§5.10）。**（3）选区工具栏必须可输入**：浮层不得对输入控件调用 `preventDefault`，挂载后显式聚焦，并在编辑器失焦期间用装饰保持选区可见（§5.10）。**（4）项目聊天上下文分层压缩**：按 token 预算保留最近若干条消息全文，更早历史用一次 LLM 调用压缩为摘要并持久化到 `project_chat_summaries` 复用；注入的当前文档正文超限时按窗口截断并显式标注省略（§3.3/§5.4/§5.7）。**（5）助手管理进入前端**：助手选择器旁提供创建与归档删除入口，复用既有 `POST/DELETE /api/assistants`（§5.10）。
 
-> v1.18 变更：补齐 SSE 断线游标续传（v1.17 遗留待办）。每个 SSE 数据帧携带标准 `id: <seq>` 行；`GET /api/tasks/{id}/stream` 接受显式 `after_seq` 参数或标准 `Last-Event-ID` 请求头恢复游标，参数优先，非法头按全新订阅处理。游标仍被重放窗口覆盖时从游标之后精确补发，不重复不遗漏；游标落后于窗口时先发送一条不带 `seq` 的 `reconnect_gap` 控制事件再继续活动流，终态事件始终送达；超出已记录范围的未来游标回拨重发末尾事件，避免空流。前端 `watchTask` 返回可恢复订阅句柄：网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带游标重连并按 `seq` 去重，仅在终态、作用域切换或重连耗尽时关闭；收到 `reconnect_gap` 后丢弃非终态事件并移除半截回复，Agent 面板在任务终态后重载持久化会话以恢复完整回复与漏发的 pending diff，选区改写在编辑器保留可重试提示（§5.9/§5.10/§6.2/§9）。
+> v1.18 变更：补齐 SSE 断线游标续传（v1.17 遗留待办）。每个 SSE 数据帧携带标准 `id: <seq>` 行；`GET /api/tasks/{id}/stream` 接受显式 `after_seq` 参数或标准 `Last-Event-ID` 请求头恢复游标，参数优先，非法头按全新订阅处理。游标仍被重放窗口覆盖时从游标之后精确补发，不重复不遗漏；游标落后于窗口时先发送一条不带 `seq` 的 `reconnect_gap` 控制事件再继续活动流，终态事件始终送达；超出已记录范围的未来游标回拨重发末尾事件，避免空流。前端 `watchTask` 返回可恢复订阅句柄：网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带游标重连并按 `seq` 去重，仅在终态、作用域切换或重连耗尽时关闭；收到 `reconnect_gap` 后丢弃非终态事件并移除半截回复，Agent 面板在任务终态后重载持久化会话以恢复完整回复与漏发的 pending diff，选区改写在编辑器保留可重试提示（§5.9/§5.10/§6.2/§9）。同版附带 fetch MCP server 部署方式调整：改由项目 Python 环境直跑（§5.6）。
 
 ---
 
@@ -429,8 +429,13 @@ when_to_use: 任务涉及外部事实、时效性信息、需要引用来源时�
       "env": { "TAVILY_API_KEY": "${TAVILY_API_KEY}" }
     },
     "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"]
+      "command": "C:/miniconda/envs/writing-agent/python.exe",
+      "args": ["-m", "mcp_server_fetch"],
+      "env": {
+        "HTTP_PROXY": "${LOCAL_PROXY}",
+        "HTTPS_PROXY": "${LOCAL_PROXY}",
+        "NO_PROXY": "127.0.0.1,localhost"
+      }
     }
   }
 }
@@ -438,7 +443,7 @@ when_to_use: 任务涉及外部事实、时效性信息、需要引用来源时�
 
 > **filesystem MCP 为何移出默认配置**：内置工具已覆盖 `data/` 目录的全部读写需求，且 `finalize_article` 会同步登记 articles 索引——若 Planner 改用 filesystem 的 `write_file` 直接写文章，会**绕过索引表**，导致文章管理功能看不到该文章。需要让 Agent 访问 `data/` 之外的目录时，可自行添加 filesystem server（作用域建议仍限制在 `${PROJECT_ROOT}/data`）。
 >
-> 外部前置依赖：Node（npx，跑 tavily）与 uv（uvx，跑官方 Python fetch server）；`requirements.txt` 含 `uv`，README 写明 Node 需自装。
+> 外部前置依赖：Node（npx，跑 tavily）。fetch server 自 v1.18 起不再经 `uvx` 隔离运行，而是随 `requirements.txt` 安装进项目 Python 环境，由 `python -m mcp_server_fetch` 直启；`mcp` SDK 钉在 `>=1.10,<2`（2.0 将异常类改名 `MCPError`，已发布的 mcp-server-fetch 各版均未跟上），`${LOCAL_PROXY}` 提供运行期抓取网页所用的本机代理（`.env` 定义，可不设置）。uvx 方案在本机废弃的原因：其转发的子进程 stdio 不可靠，且托管解释器依赖 GitHub 下载、官方 PyPI CDN 过慢。
 
 ### 5.7 Memory 层 — `memory/`
 

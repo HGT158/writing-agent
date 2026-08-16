@@ -5,8 +5,11 @@ openai>=2.0,<3
 langgraph>=1.0
 langgraph-checkpoint-sqlite>=3.0
 
-# MCP 官方 SDK（stdio 传输）
-mcp>=1.10
+# MCP 官方 SDK（stdio 传输）；<2 上限：mcp-server-fetch 依赖 2.0 改名前的 McpError 异常名
+mcp>=1.10,<2
+
+# fetch MCP server（官方 Python 实现，与项目共用本环境 Python 直跑，不再经 uvx）
+mcp-server-fetch>=2025.1
 
 # 数据与配置
 pydantic>=2.6
@@ -24,6 +27,3 @@ APScheduler>=3.10,<4
 fastapi>=0.115,<1
 uvicorn[standard]>=0.34,<1
 python-multipart>=0.0.20,<1
-
-# uv（提供 uvx，用于运行 mcp-server-fetch）
-uv>=0.4
