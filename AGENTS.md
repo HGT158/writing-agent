@@ -32,11 +32,12 @@
 - 本机重建环境需设置 `CONDA_NO_PLUGINS=true` 并使用 `--solver=classic`。
 - Node.js 与 npm 已通过 `C:\nvm4w\nodejs` 加入 PATH，直接使用 `node` 和 `npm` 命令。
 - 无 API Key 冒烟测试设置 `MCP_SERVERS_JSON=config/mcp_servers.empty.json`。
-- pytest 的 `--basetemp` 目录 `D:\test_agent\pytest-temp-writing-agent` 需事先存在。
+- pytest 的 `--basetemp` 目录 `D:\test_agent\pytest-temp-writing-agent` 需事先存在；红线与全量两轮连跑时建议分别使用 `pytest-temp-isolation` / `pytest-temp-full` 两个目录——Windows 上 SQLite WAL 句柄未及时释放会让第二轮的 basetemp 清理偶发 PermissionError（受影响测试随机、单独跑恒绿），属环境竞态而非代码缺陷。
+- 注：`pytest-temp-*` 临时目录由 pytest 每次自建自清，不应提交。
 
 ```powershell
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-isolation
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-full
 Set-Location web
 npm test
 npm run typecheck
