@@ -3,6 +3,7 @@
 > 日期：2026-08-11
 > 状态：已实现并完成回归（Python 156/156、记忆隔离 10/10、前端 41/41，类型检查与生产构建通过）
 > 架构基线：`docs/architecture/phase1-architecture.md` v1.14
+> 文档定位：本文件冻结记录 v1.15 多会话历史的设计与当时测试基线，不是当前架构的单一事实来源。v1.17 已加入上下文分层压缩和 diff 双视图；现行契约以 `phase1-architecture.md` 为准。
 
 ## 1. 问题
 
@@ -190,9 +191,11 @@ AgentPanel 点击接受/拒绝后仍通过事件调用 App：
 5. 卡片回归：chat preview 不复制到 DocumentEditor；已打开/未打开目标文档均可接受；成功后卡片移除，失败时保留。
 6. 先运行 `tests/test_memory_isolation.py`，再运行 Python 全量、前端全量、类型检查和生产构建。
 
-## 12. 后续待办
+## 12. v1.17 后续演进
 
-在 `docs/guides/backlog.md` 登记“长会话上下文压缩”：未来按 token 预算对较早消息生成可审计摘要，保留最近原始消息与未处理 diff 上下文。该能力必须另行设计、升架构版本和回归，v1.15 不预留伪实现或静默截断。
+本设计在 v1.15 交付时登记的“长会话上下文压缩”已于 v1.17 完成：可见消息仍完整持久化并返回 UI，发给模型的 prompt 则按 token 预算保留最近窗口，将更早历史压缩到 `project_chat_summaries` 并增量复用。
+
+v1.17 还把 pending change set 提升为 App 层单一状态源，同时在 DocumentEditor 内联视图与 AgentPanel 侧栏卡片中呈现。因而本文件 §2、§7 和 §9 中“全部历史直接进入模型”“不实现压缩”“chat preview 只在 AgentPanel 保存”的描述仅适用于 v1.15 交付范围，不再是现行契约。
 
 ## 13. 预计改动范围
 

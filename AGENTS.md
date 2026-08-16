@@ -7,7 +7,7 @@
 - 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.17**。
 - 阶段 2、3、4 及 v1.13–v1.17 均已完成；当前基线：Python **180/180**、记忆隔离 **10/10**、前端 **60/60**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑与每项目多会话历史。
-- v1.17 补齐：SSE 事件按 `seq` 寻址（修复长回复流式中断）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
+- v1.17 补齐：活动 SSE 订阅者按 `seq` 跨越事件滑窗（修复长回复超过窗口后停流）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删；网络断线后的游标续传尚未实现。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读
@@ -22,20 +22,20 @@
 
 ## 环境与验证
 
-- Python 只能使用仓库内虚拟环境 `.venv\Scripts\python.exe`（Python 3.13），禁止系统 Python，禁止在仓库外另建环境。
-- pip 使用 `.venv\Scripts\python.exe -m pip ...`；依赖清单为 `requirements-dev.txt`（已包含 `requirements.txt`）。
-- 环境缺失时重建：`py -3.13 -m venv .venv` 后安装 `requirements-dev.txt`。
-- Node 命令走 `D:\Program Files\nodejs\npm.cmd`（`npm` 未进 PATH）。
+- Python 只能使用 `C:\miniconda\envs\writing-agent\python.exe`（Python 3.13），禁止系统 Python、禁止新建 venv。
+- pip 使用 `C:\miniconda\envs\writing-agent\python.exe -m pip ...`；依赖清单为 `requirements-dev.txt`（已包含 `requirements.txt`）。
+- 本机重建环境需设置 `CONDA_NO_PLUGINS=true` 并使用 `--solver=classic`。
+- Node.js 与 npm 已通过 `C:\nvm4w\nodejs` 加入 PATH，直接使用 `node` 和 `npm` 命令。
 - 无 API Key 冒烟测试设置 `MCP_SERVERS_JSON=config/mcp_servers.empty.json`。
 - pytest 的 `--basetemp` 目录 `D:\test_agent\pytest-temp-writing-agent` 需事先存在。
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
-.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
 Set-Location web
-& "D:\Program Files\nodejs\npm.cmd" test
-& "D:\Program Files\nodejs\npm.cmd" run typecheck
-& "D:\Program Files\nodejs\npm.cmd" run build
+npm test
+npm run typecheck
+npm run build
 ```
 
 ## 代码边界
@@ -82,3 +82,4 @@ Set-Location web
 - 长短混合查询存在三字词元时只走 FTS，不额外为短词元增加 LIKE；这是架构 §5.7 的既定取舍。
 - 上下文压缩的 token 估算是按字符类型折算的近似值，不接服务端计费口径；预算需要精确时再引入分词器。
 - 编辑器内联 diff 只在标签页版本等于建议基准版本且无未保存修改时渲染，其余情况降级到侧栏卡片。
+- SSE 目前只保证活动连接跨越事件滑窗；浏览器网络断线后会关闭 EventSource，尚未基于 `Last-Event-ID` 或显式游标自动续传，见 `docs/guides/backlog.md`。

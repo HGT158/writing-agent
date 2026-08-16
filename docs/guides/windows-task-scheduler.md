@@ -36,9 +36,9 @@ APScheduler 运行在 `python -m agent schedule` 的 asyncio 事件循环中。W
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>D:\VSC-Project\writing-agent\.venv\Scripts\python.exe</Command>
+      <Command>C:\miniconda\envs\writing-agent\python.exe</Command>
       <Arguments>-m agent schedule</Arguments>
-      <WorkingDirectory>D:\VSC-Project\writing-agent</WorkingDirectory>
+      <WorkingDirectory>D:\test_agent\writing-agent</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>

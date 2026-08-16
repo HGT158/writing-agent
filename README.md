@@ -3,7 +3,7 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.17；流式可靠性、内联 diff 审阅与上下文压缩已实现）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.17；长回复活动连接的事件滑窗修复、内联 diff 审阅与上下文压缩已实现；SSE 断线续传仍在待办）。
 
 ## 核心能力
 
@@ -20,17 +20,19 @@ Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已�
 ## 环境要求
 
 - Windows 11
-- Python 3.13，使用仓库内虚拟环境 `.venv`
+- Python 3.13，固定使用 `C:\miniconda\envs\writing-agent\python.exe`
 - Node.js 20+
 - OpenAI 兼容 LLM API Key；Tavily API Key 可选
 
 ## 快速安装
 
 ```powershell
-cd D:\VSC-Project\writing-agent
+cd D:\test_agent\writing-agent
 
-py -3.13 -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+# 本机 conda 需要禁用插件并使用 classic solver
+$env:CONDA_NO_PLUGINS = "true"
+C:\miniconda\Scripts\conda.exe create -n writing-agent python=3.13 -y --solver=classic
+C:\miniconda\envs\writing-agent\python.exe -m pip install -r requirements-dev.txt
 
 Set-Location web
 npm install
@@ -45,11 +47,11 @@ Copy-Item .env.example .env
 生产模式由 FastAPI 同源托管构建后的前端：
 
 ```powershell
-Set-Location D:\VSC-Project\writing-agent\web
+Set-Location D:\test_agent\writing-agent\web
 npm run build
 
 Set-Location ..
-.venv\Scripts\python.exe -m uvicorn api.server:app --host 127.0.0.1 --port 8000
+C:\miniconda\envs\writing-agent\python.exe -m uvicorn api.server:app --host 127.0.0.1 --port 8000
 ```
 
 打开 `http://127.0.0.1:8000`。
@@ -58,10 +60,10 @@ Set-Location ..
 
 ```powershell
 # 终端 1：API
-.venv\Scripts\python.exe -m uvicorn api.server:app --host 127.0.0.1 --port 8000
+C:\miniconda\envs\writing-agent\python.exe -m uvicorn api.server:app --host 127.0.0.1 --port 8000
 
 # 终端 2：Vite
-Set-Location D:\VSC-Project\writing-agent\web
+Set-Location D:\test_agent\writing-agent\web
 npm run dev
 ```
 
@@ -71,18 +73,18 @@ npm run dev
 
 ```powershell
 # 单次写作任务
-.venv\Scripts\python.exe -m agent run "写一篇关于模型蒸馏的文章" --assistant tech-writer
+C:\miniconda\envs\writing-agent\python.exe -m agent run "写一篇关于模型蒸馏的文章" --assistant tech-writer
 
 # 续接会话
-.venv\Scripts\python.exe -m agent run "继续补充案例" --assistant tech-writer --resume <session_id>
+C:\miniconda\envs\writing-agent\python.exe -m agent run "继续补充案例" --assistant tech-writer --resume <session_id>
 
 # 助手管理
-.venv\Scripts\python.exe -m agent assistants list
-.venv\Scripts\python.exe -m agent assistants create marketing --name 营销文案 --description 短平快风格
-.venv\Scripts\python.exe -m agent assistants delete marketing
+C:\miniconda\envs\writing-agent\python.exe -m agent assistants list
+C:\miniconda\envs\writing-agent\python.exe -m agent assistants create marketing --name 营销文案 --description 短平快风格
+C:\miniconda\envs\writing-agent\python.exe -m agent assistants delete marketing
 
 # 长驻 Scheduler，任务定义见 config/settings.py
-.venv\Scripts\python.exe -m agent schedule
+C:\miniconda\envs\writing-agent\python.exe -m agent schedule
 ```
 
 Windows 登录时自动启动 Scheduler 的完整配置见 [docs/guides/windows-task-scheduler.md](docs/guides/windows-task-scheduler.md)。
@@ -90,8 +92,8 @@ Windows 登录时自动启动 Scheduler 的完整配置见 [docs/guides/windows-
 ## 验证
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests -q
-.venv\Scripts\python.exe -m pytest tests\test_memory_isolation.py -q
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests -q
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_memory_isolation.py -q
 
 Set-Location web
 npm test

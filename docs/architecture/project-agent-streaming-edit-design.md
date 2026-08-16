@@ -3,6 +3,7 @@
 > 日期：2026-08-11
 > 状态：已实现并完成回归（含 v1.14 空白文档首稿生成修复）
 > 架构依据：`docs/architecture/phase1-architecture.md` v1.14
+> 文档定位：本文件记录 v1.13–v1.14 的专题设计。v1.15 的多会话作用域和 v1.17 的 diff 双视图、事件滑窗契约已在主架构中继续演进；冲突时以 `phase1-architecture.md` 为准。
 
 ## 1. 问题
 
@@ -43,7 +44,7 @@
 模型参数只有一个 `changes` 数组。每项包含：
 
 - `document_id`
-- `old_text`，必须非空
+- `old_text`，通常必须非空；仅当目标文档正文为空时允许 `old_text=""`，固定表示在 `[0, 0)` 插入首稿（v1.14）
 - `new_text`，允许为空以表示删除
 - `document_version`
 
@@ -90,7 +91,7 @@
 - `change_preview`：沿用 `ChangeDiff`，接受/拒绝行为不变。
 - `task_done` / `task_failed`：结束 sending 状态并关闭流。
 
-事件仍受发起时 `assistant_id`、`project_id` 和 `document_id` 作用域保护。切换作用域或卸载组件必须关闭 EventSource；旧任务 delta、工具状态和预览都不得进入新上下文。
+v1.13 最初按发起时的 `assistant_id`、`project_id` 和 `document_id` 保护事件作用域。v1.15 引入持久化多会话后，项目聊天改为校验 `assistant_id + project_id + chat_session_id`，切换同项目文档不得丢弃同一会话事件；selection rewrite 仍按文档作用域校验。切换真正的作用域或卸载组件必须关闭 EventSource，旧任务 delta、工具状态和预览不得进入新上下文。
 
 ## 5. 测试策略
 
