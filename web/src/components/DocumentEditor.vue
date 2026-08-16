@@ -9,7 +9,14 @@ import { apiClient } from '../api/client'
 import type { TaskStream } from '../api/client'
 import { frozenSelectionField, setFrozenSelection } from '../editor/frozenSelection'
 import { inlineDiffField, setInlineDiffs, type InlineDiff } from '../editor/inlineDiff'
-import { isChangePreview, type ChangePreview, type EditorTab, type TaskEvent } from '../types'
+import {
+  isChangePreview,
+  type ChangeHunkPreview,
+  type ChangePreview,
+  type ChangeSetPreview,
+  type EditorTab,
+  type TaskEvent,
+} from '../types'
 import { codePointToUtf16Offset, utf16ToCodePointOffset } from '../utils/unicodeOffsets'
 import MarkdownPreview from './MarkdownPreview.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
@@ -18,14 +25,14 @@ const props = defineProps<{
   assistantId: string
   projectId: string
   tab: EditorTab
-  changes: ChangePreview[]
+  changes: ChangeSetPreview[]
   reviewing: string[]
 }>()
 const emit = defineEmits<{
   update: [content: string]
-  preview: [change: ChangePreview]
-  apply: [change: ChangePreview]
-  reject: [change: ChangePreview]
+  preview: [change: ChangeSetPreview]
+  apply: [change: ChangeSetPreview, hunk: ChangeHunkPreview]
+  reject: [change: ChangeSetPreview, hunk: ChangeHunkPreview]
 }>()
 
 const editorHost = ref<HTMLElement>()
@@ -40,33 +47,71 @@ let stream: TaskStream | null = null
 let scopeGeneration = 0
 
 /**
- * 内联 diff 依赖 change set 的原文位置，只有当标签页正文仍等于建议的基准版本
- * 且没有未保存修改时才能对齐；否则降级为提示，交给侧栏卡片处理（架构 §5.10）。
+ * 内联 diff 逐 hunk 定位（架构 §5.10 v1.20）：标签页正文等于基准版本时按存储
+ * 范围对齐；版本推进后以 hunk 原文在当前正文唯一匹配重定位（服务端内容复检
+ * 的客户端镜像）；dirty 或无法定位的 hunk 计入降级提示，交给侧栏处理。
  */
-const inlineDiffs = computed<InlineDiff[]>(() => {
-  if (props.tab.dirty) return []
+const locatedHunks = computed<{ diffs: InlineDiff[]; staleCount: number }>(() => {
   const reviewing = new Set(props.reviewing)
-  return props.changes
-    .filter((change) => change.document_version === props.tab.version)
-    .map((change) => ({
-      changeSetId: change.change_set_id,
-      from: codePointToUtf16Offset(props.tab.content, change.range.from),
-      to: codePointToUtf16Offset(props.tab.content, change.range.to),
-      replacement: change.replacement,
-      busy: reviewing.has(change.change_set_id),
-    }))
+  const diffs: InlineDiff[] = []
+  let staleCount = 0
+  if (!props.tab.dirty) {
+    const content = props.tab.content
+    for (const change of props.changes) {
+      for (const hunk of change.hunks) {
+        if (hunk.status !== 'pending') {
+          if (hunk.status === 'stale') staleCount += 1
+          continue
+        }
+        let from: number
+        let to: number
+        if (change.document_version === props.tab.version) {
+          from = codePointToUtf16Offset(content, hunk.range.from)
+          to = codePointToUtf16Offset(content, hunk.range.to)
+        } else {
+          const index = content.indexOf(hunk.original)
+          if (index < 0 || content.indexOf(hunk.original, index + 1) >= 0) {
+            staleCount += 1
+            continue
+          }
+          from = index
+          to = index + hunk.original.length
+        }
+        diffs.push({
+          changeSetId: change.change_set_id,
+          hunkId: hunk.hunk_id,
+          from,
+          to,
+          replacement: hunk.replacement,
+          busy: reviewing.has(change.change_set_id),
+        })
+      }
+    }
+    diffs.sort((a, b) => a.from - b.from)
+  } else {
+    staleCount = props.changes.reduce(
+      (total, change) => total + change.hunks.filter(
+        (hunk) => hunk.status === 'pending' || hunk.status === 'stale',
+      ).length,
+      0,
+    )
+  }
+  return { diffs, staleCount }
 })
 
-const staleChangeCount = computed(() => props.changes.length - inlineDiffs.value.length)
+const inlineDiffs = computed(() => locatedHunks.value.diffs)
+const staleChangeCount = computed(() => locatedHunks.value.staleCount)
 
 const handlers = {
-  accept: (changeSetId: string) => {
+  accept: (changeSetId: string, hunkId: string) => {
     const change = props.changes.find((item) => item.change_set_id === changeSetId)
-    if (change) emit('apply', change)
+    const hunk = change?.hunks.find((item) => item.hunk_id === hunkId)
+    if (change && hunk) emit('apply', change, hunk)
   },
-  reject: (changeSetId: string) => {
+  reject: (changeSetId: string, hunkId: string) => {
     const change = props.changes.find((item) => item.change_set_id === changeSetId)
-    if (change) emit('reject', change)
+    const hunk = change?.hunks.find((item) => item.hunk_id === hunkId)
+    if (change && hunk) emit('reject', change, hunk)
   },
 }
 
@@ -252,7 +297,7 @@ watch(inlineDiffs, pushInlineDiffs, { deep: true })
       @cancel="closeToolbar"
     />
     <p v-if="staleChangeCount" class="editor-notice">
-      有 {{ staleChangeCount }} 处修改建议基于旧版本正文，已停止内联预览，请在右侧 Agent 面板处理。
+      有 {{ staleChangeCount }} 处修改建议无法内联预览（已失效或正文已变化），请在右侧 Agent 面板处理。
     </p>
     <p v-if="error" class="editor-error">{{ error }}</p>
   </section>

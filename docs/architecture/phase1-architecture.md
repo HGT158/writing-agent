@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.19 · 2026-08-16
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传及 v1.19 项目聊天持久化工作记录均已完成
+> 版本：v1.20 · 2026-08-16
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录及 v1.20 多 hunk change set 与逐 hunk 审查均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -28,6 +28,8 @@
 > v1.18 变更：补齐 SSE 断线游标续传（v1.17 遗留待办）。每个 SSE 数据帧携带标准 `id: <seq>` 行；`GET /api/tasks/{id}/stream` 接受显式 `after_seq` 参数或标准 `Last-Event-ID` 请求头恢复游标，参数优先，非法头按全新订阅处理。游标仍被重放窗口覆盖时从游标之后精确补发，不重复不遗漏；游标落后于窗口时先发送一条不带 `seq` 的 `reconnect_gap` 控制事件再继续活动流，终态事件始终送达；超出已记录范围的未来游标回拨重发末尾事件，避免空流。前端 `watchTask` 返回可恢复订阅句柄：网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带游标重连并按 `seq` 去重，仅在终态、作用域切换或重连耗尽时关闭；收到 `reconnect_gap` 后丢弃非终态事件并移除半截回复，Agent 面板在任务终态后重载持久化会话以恢复完整回复与漏发的 pending diff，选区改写在编辑器保留可重试提示（§5.9/§5.10/§6.2/§9）。同版附带 fetch MCP server 部署方式调整：改由项目 Python 环境直跑（§5.6）。
 
 > v1.19 变更：实现项目 Agent 聊天的持久化工作记录。新增 `project_chat_work_events` 表（按助手、项目、会话三层隔离，`(task_id, event_seq)` 唯一、`kind=task` 终态按 `(assistant_id, project_id, task_id)` 唯一部分索引幂等）；Runtime 在项目聊天全程发射 `work_item_start` / `work_item_delta` / `work_item_done` SSE 事件，`delta` 只走流不落库，明细事件仅在 `done` 时落库且单任务上限 199 条、第 200 条固定为溢出摘要（按被省略事件的类型合并计数）、任务终态不受限；工具参数摘要 4,000 字符、结果 8,000 字符（前 6,000 + 后 2,000）截断并递归脱敏敏感字段；任务失败/取消时运行中工作项统一以 `interrupted` 终结落库，终态落库自身失败只记 warning、不得掩盖原始任务错误；会话详情接口返回工作记录并按 TaskBroker 活动状态与助手运行锁对账补写 `interrupted` 终态（无 broker 作用域的直连任务以运行锁 task_id 标识，锁未释放视为仍在运行）；前端在用户消息与最终回复之间渲染工作记录：运行中默认展开、终态自动折叠（标题含耗时、工具数、建议数、状态）、历史默认折叠可展开、无终态组显示为运行中、`changes` 项可定位文档；工作记录与聊天消息、模型上下文和上下文摘要完全隔离，不进 FTS、长期记忆与 prompt（§5.4/§5.7/§5.9/§5.10/§6.2/§9）。
+
+> v1.20 变更：change set 拆分为"hunk 容器"模型，编辑器审查对齐 TRAE。`change_sets` 改存父级信息（含 `task_id`，`(task_id, document_id)` 唯一），修改片段落`change_set_hunks`（code point 半开区间、`display_order`、hunk 级状态），历史单范围记录单事务迁移为"父级 + 单 hunk"并生成 `legacy-<id>` 合成任务 id。`propose_project_edits` 输入改为按文档分组的`hunks` 列表（拒绝模型提供 offset），一次调用可对同一文档提交多处修改——修复"同一次编辑调用中每个文档只能出现一次"的已知缺陷；服务端原子完成定位、快照、排序、不重叠与容量校验（≤100 hunk、≤1 MiB），创建即冻结。审查交互为逐 hunk 独立接受/放弃：接受单个 hunk 是唯一应用原语（三段式写入、版本 +1），同组其余 hunk 以 `old_text` 内容复检保持可审，其他任务建议整组 stale；API 提供 hunk 级 accept/reject、整组 accept-all 与按文档分页的 change set 查询，稳定错误码区分 stale/already_applied/already_rejected/conflict，保存与应用响应携带 `staled_change_set_ids`；前端内联 diff 一次渲染全部 hunk、每个 hunk 自带独立接受/放弃按钮，侧栏保留批量入口并按 hunk 摘要展示（§4.7/§5.2/§5.7/§5.9/§5.10/§6.2/§9）。
 
 ---
 
@@ -310,7 +312,9 @@ Scheduler、CLI、API 三个入口都可能让同一个助手同时跑两个 Loo
 
 右侧 Agent 面板绑定当前助手与项目。聊天可读取当前文件、明确附加的其他项目文件和本助手记忆；涉及内容修改时也必须返回 change set/diff，经用户确认后才写入。项目聊天采用**最多两个模型轮次**的有界工具调用：第一轮流式返回普通文本，或调用项目作用域的 `propose_project_edits`；工具调用结束后可再进行一个禁用工具的流式轮次，向用户说明已生成的修改建议，不允许继续递归调用工具。
 
-`propose_project_edits` 的单次调用携带一组修改，每项包含 `document_id`、`old_text`、`new_text` 与 `document_version`。工具在服务端绑定已校验的 `assistant_id` 和 `project_id`，模型不能覆盖归属；`old_text` 必须在目标版本正文中精确且唯一匹配，零匹配或多匹配均使整批失败。唯一例外是目标正文为空时允许 `old_text=""`，固定生成 `[0, 0)` 插入建议；非空正文使用空旧文本仍整批失败。同一调用对每个文档最多生成一条建议；同一文档的多处调整必须合并为一个覆盖范围，避免接受第一条后版本递增使同批其余建议失效。工具根据匹配位置计算 Unicode code point 半开区间，MemoryStore 在单个事务中验证全部目标文档、版本和原文快照后创建 pending change set；任何一项非法则整批失败，不留下部分建议。该工具只创建建议，**不得直接保存或替换项目文件**。
+`propose_project_edits` 的单次调用按文档分组（v1.20）：`documents` 列表中每项包含 `document_id`、`document_version` 与一个 `hunks` 列表，每个 hunk 只提供 `old_text` 和 `new_text`，不接受模型提供 offset。工具在服务端绑定已校验的 `assistant_id` 和 `project_id`，模型不能覆盖归属；每个 hunk 的 `old_text` 必须在目标版本正文中精确且唯一匹配，零匹配或多匹配均使整批失败。唯一例外是目标正文为空时允许 `old_text=""`，固定生成 `[0, 0)` 插入建议；非空正文使用空旧文本仍整批失败。同一任务对同一文档只允许一次编辑工具调用，该次调用必须包含该文档的全部 hunk，原子创建一个 change set（`(task_id, document_id)` 唯一，重复提交返回冲突）；TaskBroker 的任务 id 必须向选区改写、项目聊天与编辑工具完整透传。服务端在单个事务中完成 JSON/schema 校验、文档归属与版本校验、全部 hunk 定位与原文快照校验、排序（`display_order` 按 `range_start` 从 0 连续编号）、不重叠校验（相邻合法、重叠非法、两个零长度插入不得同位）与容量校验（每 change set 最多 100 个 hunk，全部 hunk 的 `original_text + new_text` 按 UTF-8 合计最多 1 MiB）；任何一项非法则整批失败，不留下部分建议。change set 创建即冻结，不允许追加或改写 hunk。该工具只创建建议，**不得直接保存或替换项目文件**。
+
+**change set 为"hunk 容器"（v1.20）**：`change_sets` 保存父级信息（归属、来源、`base_version`、聚合规约状态），修改片段保存在 `change_set_hunks`（`range_start/range_end` 为 Unicode code point 半开区间、`original_text/new_text`、`display_order`、hunk 级 `status`：`pending/applied/rejected/stale`）。历史单范围记录由单事务迁移为"父级 + 单 hunk"，无任务 id 的旧行生成合成值 `legacy-<change_set_id>`。**逐 hunk 独立审查（对齐 TRAE）**：接受单个 hunk 是唯一应用原语——首次应用（文档版本等于 `base_version`）按存储范围并复核快照；此后接受任一 hunk 使版本 +1，同组其余 pending hunk 不连带失效，下次操作时以 `old_text` 对当前正文重新唯一匹配（编辑工具既有定位机制的复用，不是 rebase），零匹配或多匹配则该 hunk 转 `stale`。**其他任务**对同一文档的 change set 不享受内容复检，版本超过其 `base_version` 后整组 hunk 转 stale。放弃单个 hunk 只改元数据；侧栏"全部接受"按范围倒序在服务端串行应用上述原语，任一 hunk 复检失败即停止、已应用不回滚。每次应用沿用 `document_write_intents` 三段式写入与 `UNIQUE(document)` 并发边界；保存文档同样使版本不匹配的其他建议 stale。选区改写复用同一模型生成单 hunk change set，使用服务端已掌握的选区范围并校验快照。
 
 聊天不能在未明确项目时修改文件，也不能访问其他助手项目。选区改写、聊天修改和普通写作任务共享 AgentRuntime、EventBus、AssistantRegistry、MemoryStore、MCP/Skill 注册表及运行锁，不另建独立持久化或并发链路。
 
@@ -457,7 +461,7 @@ when_to_use: 任务涉及外部事实、时效性信息、需要引用来源时�
 | 素材 | SQLite `sources` 表（含 `assistant_id` + `session_id`；字段：url / title / fulltext / fetched_at） | fetch 抓取的网页全文，供 Reflect 核查与事后备查 | Executor 抓取后写入；不进对话上下文（§3.3）；查询同样强制按 `assistant_id` 过滤 |
 | 长期 | `assistants/<id>/memory/profile.md`（写作风格/偏好/常用主题）+ SQLite `articles` 表（含 `assistant_id`） | 跨任务、跨会话沉淀 | **任务启动时 `recall` 一次，结果存 `state.memory_context`，Planner 每轮从 state 注入**；Reflect 判定有新偏好时 `memorize` |
 | 项目工作区 | `data/assistants/<id>/projects/<project_id>/` + SQLite `projects` / `project_documents`（均含 `assistant_id`） | 受管文件树、可编辑文档身份和 `document_version` | 导入/树查询/文件保存均经 API 与 MemoryStore；内容以受管文件为事实来源 |
-| AI 修改建议 | SQLite `change_sets`（含 `assistant_id`、`project_id`、`document_id`、`session_id`、原文范围/快照、替换文本、基准版本、来源模式、状态） | 选区改写或聊天产生的待确认修改 | 生成时写入 pending；应用/拒绝/过期均按助手、项目与文档归属校验 |
+| AI 修改建议 | SQLite `change_sets`（父级：`assistant_id`、`project_id`、`document_id`、`session_id`、`task_id`、`base_version`、来源、聚合状态）+ `change_set_hunks`（`range_start/range_end`、`original_text/new_text`、`display_order`、hunk 级 `pending/applied/rejected/stale`） | 选区改写或聊天产生的待确认修改，`(task_id, document_id)` 唯一、单 change set ≤100 hunk / ≤1 MiB | 生成时原子写入并冻结；逐 hunk 接受/放弃/复检转 stale 均按助手、项目与文档归属校验 |
 | 项目 Agent 会话 | SQLite `project_chat_sessions` / `project_chat_messages`（均含 `assistant_id`、`project_id`、`chat_session_id`） | 每项目多会话标题、完整可见 user/assistant 历史 | 首次发送创建会话，消息成功产生时持久化；打开项目默认恢复最近会话，UI 始终展示全部历史 |
 | 项目 Agent 上下文摘要 | SQLite `project_chat_summaries`（`assistant_id` + `project_id` + `chat_session_id` 三元组主键，含 `summary`、`covered_through_message_id`） | 滑出保留窗口的早期对话压缩结果 | 触发压缩时写入或覆盖；下次压缩以它为起点增量合并；会话删除、项目 purge 与助手 purge 必须级联清理 |
 | 项目聊天工作记录 | SQLite `project_chat_work_events`（`assistant_id` + `project_id` + `chat_session_id` + `task_id` + `user_message_id` + `event_seq` + `kind` + `status` + `change_set_id`/`document_id` + `title`/`detail` + `tool_name`/`args_summary`/`result_summary` + `created_at`/`completed_at`） | 每轮聊天任务的可展开执行记录：进度、工具、警告、修改建议与任务终态 | 工作项 `work_item_done` 时写入，任务终态与对账补写始终尽力写入；读取经会话详情接口 |
@@ -525,8 +529,10 @@ JOBS = [
 | `GET /api/projects/{project_id}/documents/{document_id}?assistant_id=X` | 读取可编辑文件及当前 `document_version` |
 | `PUT /api/projects/{project_id}/documents/{document_id}` | 保存手工编辑；body 必含 `assistant_id`、正文和期望版本，冲突返回 409 |
 | `POST /api/projects/{project_id}/documents/{document_id}/selection-rewrites` | 创建选区局部改写任务；body 必含 `assistant_id`、选区文本/范围、指令和版本；返回 `task_id`/`change_set_id` |
-| `POST /api/projects/{project_id}/change-sets/{change_set_id}/apply` | 显式应用选区或聊天 change set；body 必含 `assistant_id` 和期望版本；快照或版本不匹配返回 409 |
-| `POST /api/projects/{project_id}/change-sets/{change_set_id}/reject` | 拒绝 change set；必须校验助手、项目和文档归属 |
+| `POST /api/projects/{project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/accept` | 接受单个 hunk（唯一应用原语）：首次应用按存储范围复核快照，其后按 `old_text` 对当前正文唯一匹配复检；写意图三段式写入、版本 +1，同文档其他任务的建议整组 stale；响应含更新后文档、change set、hunk 与 `staled_change_set_ids` |
+| `POST /api/projects/{project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/reject` | 放弃单个 hunk：仅元数据变更，存在活跃写意图时返回 409 |
+| `POST /api/projects/{project_id}/change-sets/{change_set_id}/accept-all` | 按范围倒序串行接受全部 pending hunk；任一复检失败则停止、已应用不回滚，返回逐 hunk 结果 |
+| `GET /api/projects/{project_id}/change-sets?assistant_id=X&document_id=Y` | 按文档分页查询 change set（含全部 hunk 与状态），供页面加载、SSE 重连后做 hunk 级状态对账 |
 | `POST /api/projects/{project_id}/agent/messages` | 向项目 Agent 面板发送消息；body 必含 `assistant_id`，消息最长 100,000 字符，可带当前 `document_id`、选区及显式附件；返回任务 id，文本通过 SSE 流式发送，修改类结果由 `propose_project_edits` 生成 change set |
 | `GET /api/projects/{project_id}/agent/sessions?assistant_id=X` | 按更新时间倒序返回该助手项目的聊天会话 |
 | `GET /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 返回完整可见消息、该会话 pending chat diff 与按任务分组的工作记录；返回前先对无终态且已不活动的工作事件组幂等补写 `interrupted` 终态——"活动"指 TaskBroker 中仍在运行，或该助手当前运行锁的 `task_id` 即该任务（无 broker 作用域的直连运行） |
@@ -539,7 +545,7 @@ JOBS = [
 
 **活动连接的事件寻址必须使用单调递增序号，不能使用列表下标**（v1.17）：事件历史是有界滑窗，一次流式回复的 `token` 事件数量很容易超过窗口容量。每个事件在记录时分配任务内唯一且递增的 `seq`；活动订阅者从独立队列收取事件，并用自身游标跳过已经发送的序号。窗口裁剪不得导致活动订阅者停止收流，也不得吞掉 `task_done` / `task_failed` 终态事件。
 
-**断线重连按游标续传**（v1.18）：每个数据帧以标准 SSE `id: <seq>` 行加 `data` JSON 下发。流端点接受显式 `after_seq` 查询参数或 `Last-Event-ID` 请求头，语义为"客户端已消费 `seq <= 游标` 的一切事件"，参数优先于请求头，无法解析的头按全新订阅处理。游标仍被重放窗口覆盖时，服务端从游标之后精确补发，不重复不遗漏，尤其不能重复追加 `token`；游标落后于窗口（请求位置早于窗口起点）时，先发送一条不带 `seq` 的 `reconnect_gap` 控制事件（携带 `after_seq` 与 `available_from`），再从窗口起点继续活动流——客户端据此得知回复已不可完整重建，不得静默拼接残缺回复，应等待终态后从持久化会话恢复；超出已记录范围的未来游标回拨为重发末尾事件，保证终态送达而非返回空流，重复帧由客户端按 `seq` 去重。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）。正文只有在 apply 成功后更新。项目聊天同时下发工作记录事件（v1.19）：`work_item_start`（携带 `work_id`、`kind`、`title`、可选 `tool_name`/`args_summary`/`change_set_id`/`document_id`）、`work_item_delta`（对同一 `work_id` 追加进度文本，不落库）、`work_item_done`（更新同一 `work_id` 的 `status` 与摘要，此刻才落库）。**工作记录终态对账**：应用加载、页面恢复或客户端重连请求会话详情时，服务端对本会话中缺少 `kind='task'` 终态的工作事件组逐个核对 TaskBroker——任务仍处于 running 时保持运行中不得提前终结；任务不存在或已结束时，在短事务内以 `event_seq = max(event_seq) + 1` 幂等补写一条 `status='interrupted'` 的任务终态。正常终态与对账补写共用 `(assistant_id, project_id, task_id)` 上的唯一部分索引，并发时只有第一条写入成功，后续写入复用既有终态。
+**断线重连按游标续传**（v1.18）：每个数据帧以标准 SSE `id: <seq>` 行加 `data` JSON 下发。流端点接受显式 `after_seq` 查询参数或 `Last-Event-ID` 请求头，语义为"客户端已消费 `seq <= 游标` 的一切事件"，参数优先于请求头，无法解析的头按全新订阅处理。游标仍被重放窗口覆盖时，服务端从游标之后精确补发，不重复不遗漏，尤其不能重复追加 `token`；游标落后于窗口（请求位置早于窗口起点）时，先发送一条不带 `seq` 的 `reconnect_gap` 控制事件（携带 `after_seq` 与 `available_from`），再从窗口起点继续活动流——客户端据此得知回复已不可完整重建，不得静默拼接残缺回复，应等待终态后从持久化会话恢复；超出已记录范围的未来游标回拨为重发末尾事件，保证终态送达而非返回空流，重复帧由客户端按 `seq` 去重。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（v1.20 起携带 `change_set_id`、项目/文档 id、`hunks` 数组——每项含 `hunk_id`、code point 范围、原文、建议文本与状态——和基准版本）。正文只有在接受单个 hunk 成功后更新。项目聊天同时下发工作记录事件（v1.19）：`work_item_start`（携带 `work_id`、`kind`、`title`、可选 `tool_name`/`args_summary`/`change_set_id`/`document_id`）、`work_item_delta`（对同一 `work_id` 追加进度文本，不落库）、`work_item_done`（更新同一 `work_id` 的 `status` 与摘要，此刻才落库）。**工作记录终态对账**：应用加载、页面恢复或客户端重连请求会话详情时，服务端对本会话中缺少 `kind='task'` 终态的工作事件组逐个核对 TaskBroker——任务仍处于 running 时保持运行中不得提前终结；任务不存在或已结束时，在短事务内以 `event_seq = max(event_seq) + 1` 幂等补写一条 `status='interrupted'` 的任务终态。正常终态与对账补写共用 `(assistant_id, project_id, task_id)` 上的唯一部分索引，并发时只有第一条写入成功，后续写入复用既有终态。
 
 API 层不通过错误文本猜测冲突类型。MemoryStore/项目存储以专用冲突异常表达版本冲突、待处理状态和跨进程写入占用，API 稳定映射为 HTTP 409；参数错误保持 400，资源不存在保持 404。
 
@@ -561,13 +567,13 @@ Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部
 - **changes 条目**：点击时定位到对应 change set——目标文档未打开先打开；版本匹配时内联 diff 呈现，stale 或 dirty 时按既有降级规则展示，不尝试 rebase。
 - 工作记录状态由 AgentPanel 内部持有，仅服务展示；它不进入消息列表、不参与 change set 的 pending 集合，也不与工具的紧凑状态行重复呈现（原 `tool_call` 紧凑状态由工作记录取代）。
 
-**待确认 change set 采用双视图、单一状态源**（v1.17）。pending 集合由 App 层统一持有，DocumentEditor 与 AgentPanel 都是它的视图：
+**待确认 change set 采用双视图、单一状态源**（v1.17；v1.20 起以 hunk 为最小审查单元）。pending 集合由 App 层统一持有，DocumentEditor 与 AgentPanel 都是它的视图：
 
-- **编辑器内联视图**：目标文档已打开时，在 CodeMirror 中把原文范围渲染为删除态、把建议文本渲染为紧随其后的新增态，并附一个内联的接受/拒绝控件。内联装饰只读展示，不改写文档内容——正文仍然只在 apply 成功后由服务端返回的内容同步回编辑器。文档 `dirty` 或版本已不等于 change set 的 `base_version` 时，内联视图必须降级为"文档已变化，无法内联预览"的提示，不得在错误位置画 diff。
-- **侧栏卡片视图**：AgentPanel 始终列出本会话全部 pending change set，含目标文件相对路径、diff 与接受/拒绝按钮，并在存在多项建议时提供全部接受。目标文档未打开时，侧栏是唯一入口。
-- **单一通道**：两个视图的接受/拒绝都调用同一个父级方法，同一 `change_set_id` 正在处理时两边同时置为忙，成功后两边同时移除，失败两边都保留以便重试。禁止任一视图各自调用 API 或各自维护 pending 列表。
+- **编辑器内联视图**：目标文档已打开时，CodeMirror 一次渲染该 change set 的全部可定位 hunk——每处把原文渲染为删除态、建议渲染为新增态，**并各自附带独立的接受/放弃按钮（TRAE 式逐处审查）**；接受/放弃均以 hunk 为粒度调用父级通道，成功后按服务端返回状态更新。内联装饰只读展示，不改写文档内容——正文仍然只在接受成功后由服务端返回的内容同步回编辑器。文档 `dirty` 时撤下全部装饰并提示；版本超过 `base_version` 后不再按存储范围定位，改以 hunk 的 `original_text` 在当前正文唯一匹配重定位，匹配零次或多次的 hunk 显示"建议已失效"并保留放弃/重新生成入口。
+- **侧栏卡片视图**：AgentPanel 始终列出本会话全部含 pending/stale hunk 的 change set，卡片展示目标文件相对路径与 hunk 摘要（各 hunk 状态），并提供"全部接受/全部放弃"批量入口（全部接受 = 服务端倒序串行应用）。目标文档未打开时，侧栏是唯一入口；点击卡片打开目标文档，点击具体 hunk 滚动定位。
+- **单一通道**：两个视图的接受/放弃都调用同一个父级方法（hunk 粒度），同一 hunk 正在处理时两边同时置为忙，终态后两边同步移除该 hunk，失败保留以便重试；`staled_change_set_ids` 只是低延迟优化，页面加载与 SSE 重连时必须通过 change set 查询 API 遍历全部分页完成 hunk 级状态对账。禁止任一视图各自调用 API 或各自维护 pending 列表。
 
-接受修改始终提交 change set 自带的 `document_version`，不要求目标文档已打开；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。待审卡片只能在父级确认 apply/reject 成功后移除，请求失败必须保留以便重试。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属事件流订阅；任务事件流的订阅由统一的 `watchTask` 封装（v1.18）：连接只在任务终态或调用方主动关闭（作用域切换/卸载）时结束，可恢复的网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带最后 `seq` 游标自动重连并按 `seq` 去重，重连成功后退避计数复位，多次重连耗尽或流解析错误才退出 loading 状态并提示可刷新恢复。收到 `reconnect_gap` 后订阅层丢弃一切非终态事件并通知组件：聊天面板移除半截 assistant 回复、提示回复不完整，任务终态（无论成功或失败）到达后从服务端重载持久化会话，恢复完整回复与漏发的 pending diff；选区改写在编辑器保留"建议可能未送达，可重新生成"的提示。聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
+接受/放弃以 hunk 为粒度（v1.20），客户端无需提交文档版本：首次应用按存储范围复核快照，之后由服务端以 hunk 的 `old_text` 对当前正文唯一匹配复检，目标文档未打开也可以操作；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。hunk 终态（applied/rejected/stale）只在父级操作成功后更新并移除，请求失败必须保留以便重试；页面加载与 SSE 重连后按查询 API 分页全量对账。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属事件流订阅；任务事件流的订阅由统一的 `watchTask` 封装（v1.18）：连接只在任务终态或调用方主动关闭（作用域切换/卸载）时结束，可恢复的网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带最后 `seq` 游标自动重连并按 `seq` 去重，重连成功后退避计数复位，多次重连耗尽或流解析错误才退出 loading 状态并提示可刷新恢复。收到 `reconnect_gap` 后订阅层丢弃一切非终态事件并通知组件：聊天面板移除半截 assistant 回复、提示回复不完整，任务终态（无论成功或失败）到达后从服务端重载持久化会话，恢复完整回复与漏发的 pending diff；选区改写在编辑器保留"建议可能未送达，可重新生成"的提示。聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
 
 前端只能通过 API 读写，不能直接读取 SQLite、助手目录或外部原路径。`npm run build` 产物由 FastAPI 托管，单进程交付。
 
@@ -615,12 +621,12 @@ SSE 下发的每个数据帧为标准 `id: <seq>` 行加 `data` JSON（示例中
 {"type": "tool_call", "data": {"tool": "tavily_search", "args": {}, "reason": "..."}}
 {"type": "tool_result","data": {"tool": "tavily_search", "ok": true, "summary": "..."}}
 {"type": "token",     "data": {"text": "…正文流式片段…"}}
-{"type": "tool_call", "data": {"tool": "propose_project_edits", "args": {"changes": 2}}}
-{"type": "tool_result","data": {"tool": "propose_project_edits", "ok": true, "summary": "已生成 2 处修改建议"}}
-{"type": "change_preview", "data": {"change_set_id": "...", "project_id": "...", "document_id": "...", "range": {"from": 10, "to": 24}, "replacement": "…建议替换文本…", "document_version": 7}}
-{"type": "work_item_start", "data": {"work_id": "w3", "kind": "tool", "title": "正在准备修改", "tool_name": "propose_project_edits", "args_summary": "{\"changes\": 2}"}}
+{"type": "tool_call", "data": {"tool": "propose_project_edits", "args": {"documents": 1, "hunks": 3}}}
+{"type": "tool_result","data": {"tool": "propose_project_edits", "ok": true, "summary": "已生成 3 处修改建议"}}
+{"type": "change_preview", "data": {"change_set_id": "...", "project_id": "...", "document_id": "...", "hunks": [{"hunk_id": "...", "range": {"from": 10, "to": 24}, "original": "…原文…", "replacement": "…建议替换文本…", "status": "pending"}, {"hunk_id": "...", "range": {"from": 40, "to": 52}, "original": "…原文二…", "replacement": "…建议二…", "status": "pending"}], "document_version": 7}}
+{"type": "work_item_start", "data": {"work_id": "w3", "kind": "tool", "title": "正在准备修改", "tool_name": "propose_project_edits", "args_summary": "{\"documents\": 1, \"hunks\": 3}"}}
 {"type": "work_item_delta", "data": {"work_id": "w3", "text": "正在校验修改范围"}}
-{"type": "work_item_done",  "data": {"work_id": "w3", "kind": "tool", "status": "succeeded", "result_summary": "已生成 2 处修改建议"}}
+{"type": "work_item_done",  "data": {"work_id": "w3", "kind": "tool", "status": "succeeded", "result_summary": "已生成 3 处修改建议"}}
 {"type": "reconnect_gap", "data": {"after_seq": 12, "available_from": 40}}
 {"type": "done",      "data": {"path": "data/articles/tech-writer/模型蒸馏-20260806-0934.md"}}
 {"type": "failed",    "data": {"reason": "..."}}
@@ -725,13 +731,16 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 | 助手目录损坏（YAML 解析失败） | 该助手标记不可用并 warning，不影响其他助手与系统启动 |
 | 文章同名 | `finalize_article` 自动加时间戳后缀，不覆盖（§8 注 2） |
 | 项目或文档不属于请求助手 | API 与 MemoryStore 均返回 404，不暴露其他助手资源是否存在 |
-| AI change set 返回后正文已被编辑 | apply 校验 `document_version` 与原文快照；任一不匹配返回 409，前端重新读取正文和选区后再生成 |
+| AI change set 返回后正文已被编辑 | 首次应用校验版本与快照，其后以 hunk 的 `old_text` 对当前正文唯一匹配复检；失败该 hunk 转 stale 并返回 409 `stale`，前端按失效规则展示 |
+| 同一任务重复提交同一文档的修改 | `(task_id, document_id)` 唯一键冲突，工具调用整批失败，不创建半成品 |
+| 逐 hunk 接受产生并发竞争 | 同一文档活跃写意图唯一；后到者在 intent 登记层收到 409 `conflict`，正文不变 |
+| 重复接受/放弃同一 hunk | 稳定错误码 `already_applied` / `already_rejected`（409），正文不变 |
 | 文档保存/apply 在并发校验时发现版本冲突 | 写事务失败且不得创建/替换正文文件；返回 409，不执行“恢复旧内容”覆盖其他进程已提交结果 |
 | 文件原子替换后进程退出或 SQLite 元数据未终结 | 保留 `document_write_intents`；下次 MemoryStore 读取/写入按目标内容摘要恢复并完成版本/change set 状态终结，不允许永久分叉 |
 | 选区改写任务与同助手长任务并发 | 复用 `run_locks`；后来者遵循既有 API 409 / CLI 报错 / Scheduler 跳过语义，不排队 |
 | AI 改写输出非法或为空 | 标记该局部任务 failed，保留原选区与正文，不创建可应用建议 |
 | 项目聊天流在 tool-call 参数完成前中断 | 丢弃未完成参数，任务 failed；不得执行工具或创建 change set |
-| `propose_project_edits` 的旧文本不存在或匹配多处 | 整批工具调用失败并发送 `tool_result(ok=false)`；不创建部分 change set，提示模型/用户提供更精确上下文 |
+| `propose_project_edits` 的任一 hunk 旧文本不存在或匹配多处 | 整批工具调用失败并发送 `tool_result(ok=false)`；不创建部分 change set，提示模型/用户提供更精确上下文；hunk 数量 >100 或总量 >1 MiB 同样整批拒绝 |
 | `propose_project_edits` 对空白文档生成首稿 | 仅当当前正文为空且 `old_text=""` 时创建 `[0, 0)` pending change set；非空正文的空旧文本整批拒绝 |
 | 删除仍有 pending diff 的项目聊天会话 | MemoryStore 在事务内检查并返回专用冲突；API 映射 409，消息、会话和 change set 均不删除 |
 | 删除正在运行任务所属助手的项目聊天会话 | 会话删除先获取助手级 mutation lock；锁冲突映射 409，运行中会话与消息保持不变 |

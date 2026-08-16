@@ -193,10 +193,10 @@ def test_project_archive_returns_conflict_for_pending_change_set(tmp_path):
     app = _app(tmp_path)
     runtime = app.state.runtime
     project = runtime.store.create_project("default", "待确认项目")
-    change = runtime.store.create_change_set(
+    change = runtime.store.create_selection_change_set(
         "default", project.project_id, project.entry_document_id,
-        source="selection", start=0, end=0, original_text="",
-        replacement_text="建议正文", base_version=1,
+        task_id="task-archive", start=0, end=0, original_text="",
+        replacement_text="建议正文", base_version=1, source="selection",
     )
 
     with TestClient(app) as client:
@@ -214,7 +214,7 @@ def test_selection_rewrite_task_sse_and_apply(tmp_path):
     runtime = AgentRuntime(settings)
     runtime.llm = FakeLLM(["精简开头。"])
     project = runtime.store.create_project("default", "AI 改写")
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "这是原文。后续内容。", expected_version=1,
     )
@@ -243,28 +243,38 @@ def test_selection_rewrite_task_sse_and_apply(tmp_path):
         assert stream.status_code == 200
         assert "change_preview" in stream.text
 
+        query = client.get(
+            f"/api/projects/{project.project_id}/change-sets",
+            params={
+                "assistant_id": "default", "document_id": document.document_id,
+            },
+        )
+        assert query.status_code == 200
+        assert query.json()["total"] == 1
+        hunk_id = query.json()["items"][0]["hunks"][0]["hunk_id"]
         applied = client.post(
-            f"/api/projects/{project.project_id}/change-sets/{change_set_id}/apply",
-            json={"assistant_id": "default", "document_version": document.version},
+            f"/api/projects/{project.project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/accept",
+            json={"assistant_id": "default"},
         )
         assert applied.status_code == 200
         assert applied.json()["document"]["content"] == "精简开头。后续内容。"
+        assert applied.json()["hunk"]["status"] == "applied"
+        assert applied.json()["staled_change_set_ids"] == []
 
 
 def test_project_agent_chat_returns_streamed_reply_and_change_preview(tmp_path):
     settings = _settings(tmp_path)
     runtime = AgentRuntime(settings)
     project = runtime.store.create_project("default", "聊天修改")
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "原始段落。", expected_version=1,
     )
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": "原始段落。",
-            "new_text": "调整段落。",
             "document_version": document.version,
+            "hunks": [{"old_text": "原始段落。", "new_text": "调整段落。"}],
         }],
     }, ensure_ascii=False)
     runtime.llm = StreamingFakeLLM([
@@ -329,11 +339,11 @@ def test_project_chat_session_list_detail_delete_and_scope(tmp_path):
     document = runtime.store.get_document(
         "default", project.project_id, project.entry_document_id
     )
-    change = runtime.store.create_change_set(
+    change = runtime.store.create_selection_change_set(
         "default", project.project_id, document.document_id,
-        source="chat", start=0, end=0, original_text="",
+        task_id="task-history", start=0, end=0, original_text="",
         replacement_text="建议正文", base_version=document.version,
-        session_id=session.chat_session_id,
+        source="chat", session_id=session.chat_session_id,
     )
 
     with TestClient(_app(tmp_path, runtime)) as client:
@@ -369,8 +379,9 @@ def test_project_chat_session_list_detail_delete_and_scope(tmp_path):
             params={"assistant_id": "default"},
         )
         assert blocked.status_code == 409
-        runtime.store.reject_change_set(
-            "default", project.project_id, change.change_set_id
+        runtime.store.reject_change_hunk(
+            "default", project.project_id, change.change_set_id,
+            change.hunks[0].hunk_id,
         )
         deleted = client.delete(
             f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
@@ -544,7 +555,7 @@ def test_openapi_declares_code_point_offsets_and_required_apply_version(tmp_path
     selection = schemas["SelectionRewriteRequest"]
     assert "Unicode code point" in selection["properties"]["start"]["description"]
     assert "Unicode code point" in selection["properties"]["end"]["description"]
-    assert "document_version" in schemas["ChangeSetAction"]["required"]
+    assert schemas["ChangeSetHunkAction"]["required"] == ["assistant_id"]
 
 
 def test_live_document_write_conflict_maps_to_http_409(tmp_path, monkeypatch):

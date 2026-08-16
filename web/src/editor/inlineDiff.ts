@@ -2,12 +2,14 @@ import { StateEffect, StateField } from '@codemirror/state'
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view'
 
 /**
- * 待确认 change set 的编辑器内联视图（架构 §5.10）：原文标为删除态，
- * 建议文本以新增态紧随其后，并附内联接受/放弃控件。
- * 装饰只读展示，正文仍然只在 apply 成功后由服务端返回内容同步回编辑器。
+ * 待确认 hunk 的编辑器内联视图（架构 §5.10 v1.20）：原文标为删除态，
+ * 建议文本以新增态紧随其后，并附内联接受/放弃控件（TRAE 式逐处审查）。
+ * 每个 hunk 自带独立按钮；装饰只读展示，正文仍然只在接受成功后
+ * 由服务端返回内容同步回编辑器。
  */
 export interface InlineDiff {
   changeSetId: string
+  hunkId: string
   from: number
   to: number
   replacement: string
@@ -15,8 +17,8 @@ export interface InlineDiff {
 }
 
 export interface InlineDiffHandlers {
-  accept: (changeSetId: string) => void
-  reject: (changeSetId: string) => void
+  accept: (changeSetId: string, hunkId: string) => void
+  reject: (changeSetId: string, hunkId: string) => void
 }
 
 export const setInlineDiffs = StateEffect.define<InlineDiff[]>()
@@ -31,6 +33,7 @@ class ProposalWidget extends WidgetType {
 
   eq(other: ProposalWidget) {
     return other.diff.changeSetId === this.diff.changeSetId
+      && other.diff.hunkId === this.diff.hunkId
       && other.diff.replacement === this.diff.replacement
       && other.diff.busy === this.diff.busy
   }
@@ -39,6 +42,7 @@ class ProposalWidget extends WidgetType {
     const host = document.createElement('span')
     host.className = 'cm-diff-proposal'
     host.setAttribute('data-change-set-id', this.diff.changeSetId)
+    host.setAttribute('data-hunk-id', this.diff.hunkId)
 
     const body = document.createElement('span')
     body.className = 'cm-diff-inserted'
@@ -47,8 +51,8 @@ class ProposalWidget extends WidgetType {
 
     const actions = document.createElement('span')
     actions.className = 'cm-diff-inline-actions'
-    actions.appendChild(this.button('接受', 'cm-diff-accept', () => this.handlers.accept(this.diff.changeSetId)))
-    actions.appendChild(this.button('放弃', 'cm-diff-reject', () => this.handlers.reject(this.diff.changeSetId)))
+    actions.appendChild(this.button('接受', 'cm-diff-accept', () => this.handlers.accept(this.diff.changeSetId, this.diff.hunkId)))
+    actions.appendChild(this.button('放弃', 'cm-diff-reject', () => this.handlers.reject(this.diff.changeSetId, this.diff.hunkId)))
     host.appendChild(actions)
     return host
   }

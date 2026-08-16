@@ -261,7 +261,7 @@ def _prepared_runtime(tmp_path: Path, outputs: list[str | Exception]):
     runtime = AgentRuntime(_settings(tmp_path), bus)
     runtime.llm = FakeLLM(outputs)
     project = runtime.store.create_project("default", "改写项目")
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "第一段原文。第二段原文。", expected_version=1,
     )
@@ -284,7 +284,7 @@ def test_rewrite_selection_creates_preview_without_mutating_document(tmp_path):
     ))
 
     current = runtime.store.get_document("default", project.project_id, document.document_id)
-    assert change.replacement_text == "第一段改写。"
+    assert change.hunks[0].new_text == "第一段改写。"
     assert change.status == "pending"
     assert current.content == "第一段原文。第二段原文。"
     assert any(event["type"] == "change_preview" for event in events)
@@ -419,12 +419,11 @@ def test_project_chat_failure_persists_user_without_partial_assistant(tmp_path):
 def test_project_chat_returns_reply_and_pending_change_sets(tmp_path):
     runtime, project, document, events = _prepared_runtime(tmp_path, [])
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": "第一段原文。",
-            "new_text": "首段精简。",
             "document_version": document.version,
-        }],
+            "hunks": [{"old_text": "第一段原文。", "new_text": "首段精简。"}],
+            }],
     }, ensure_ascii=False)
     runtime.llm = MultiTurnStreamLLM([
         [_stream_chunk(tool_calls=[_tool_delta(
@@ -473,12 +472,11 @@ def test_project_chat_creates_preview_for_empty_document(tmp_path):
         "default", project.project_id, project.entry_document_id
     )
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": "",
-            "new_text": "# 小锅鱼的深圳奇遇\n\n故事正文。",
             "document_version": document.version,
-        }],
+            "hunks": [{"old_text": "", "new_text": "# 小锅鱼的深圳奇遇\n\n故事正文。"}],
+            }],
     }, ensure_ascii=False)
     runtime.llm = MultiTurnStreamLLM([
         [_stream_chunk(tool_calls=[_tool_delta(
@@ -498,7 +496,8 @@ def test_project_chat_creates_preview_for_empty_document(tmp_path):
 
     assert result.reply == "首稿已生成，请审核。"
     assert len(result.changes) == 1
-    assert result.changes[0].start == result.changes[0].end == 0
+    hunk = result.changes[0].hunks[0]
+    assert hunk.start == hunk.end == 0
     assert any(event["type"] == "change_preview" for event in events)
     assert runtime.store.get_document(
         "default", project.project_id, document.document_id
@@ -509,18 +508,16 @@ def test_project_chat_creates_preview_for_empty_document(tmp_path):
 def test_project_chat_rolls_back_all_changes_when_one_change_is_invalid(tmp_path):
     runtime, project, document, _ = _prepared_runtime(tmp_path, [])
     arguments = json.dumps({
-        "changes": [
+        "documents": [
             {
                 "document_id": document.document_id,
-                "old_text": "第一段原文。",
-                "new_text": "首段精简。",
                 "document_version": document.version,
+                "hunks": [{"old_text": "第一段原文。", "new_text": "首段精简。"}],
             },
             {
                 "document_id": "missing-document",
-                "old_text": "x",
-                "new_text": "y",
                 "document_version": 1,
+                "hunks": [{"old_text": "x", "new_text": "y"}],
             },
         ],
     }, ensure_ascii=False)
@@ -579,12 +576,11 @@ def test_project_chat_validates_project_scope_without_current_document(
 def test_project_chat_rejects_multiple_tool_calls_without_changes(tmp_path):
     runtime, project, document, events = _prepared_runtime(tmp_path, [])
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": document.content,
-            "new_text": "replacement",
             "document_version": document.version,
-        }],
+            "hunks": [{"old_text": document.content, "new_text": "replacement"}],
+            }],
     }, ensure_ascii=False)
     runtime.llm = MultiTurnStreamLLM([[
         _stream_chunk(tool_calls=[
@@ -619,12 +615,11 @@ def test_project_chat_rejects_multiple_tool_calls_without_changes(tmp_path):
 def test_project_chat_emits_failed_tool_result_for_invalid_edit(tmp_path):
     runtime, project, document, events = _prepared_runtime(tmp_path, [])
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": "missing text",
-            "new_text": "replacement",
             "document_version": document.version,
-        }],
+            "hunks": [{"old_text": "missing text", "new_text": "replacement"}],
+            }],
     })
     runtime.llm = MultiTurnStreamLLM([[
         _stream_chunk(tool_calls=[_tool_delta(
@@ -657,7 +652,7 @@ def test_project_chat_does_not_emit_tool_call_before_schema_validation(tmp_path)
             0,
             call_id="call-invalid-schema",
             name="propose_project_edits",
-            arguments=json.dumps({"changes": []}),
+            arguments=json.dumps({"documents": []}),
         )]),
     ]])
 
@@ -698,12 +693,11 @@ def test_project_chat_persists_visible_message_when_model_reply_is_blank(tmp_pat
 def test_project_chat_keeps_pending_change_when_followup_stream_fails(tmp_path):
     runtime, project, document, events = _prepared_runtime(tmp_path, [])
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": document.content,
-            "new_text": "replacement",
             "document_version": document.version,
-        }],
+            "hunks": [{"old_text": document.content, "new_text": "replacement"}],
+            }],
     }, ensure_ascii=False)
     runtime.llm = MultiTurnStreamLLM([
         [_stream_chunk(tool_calls=[_tool_delta(
@@ -880,7 +874,7 @@ def test_project_chat_survives_context_compaction_failure(tmp_path):
 def test_project_chat_clips_oversized_document_into_prompt_window(tmp_path):
     runtime, project, _, _ = _prepared_runtime(tmp_path, [])
     runtime.settings.chat_context_doc_max_chars = 120
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "开头标记" + "正" * 2000 + "结尾标记", expected_version=2,
     )

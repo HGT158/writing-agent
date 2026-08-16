@@ -1,5 +1,6 @@
 import type {
   Assistant,
+  ChangeSetPreview,
   ChangeSetRecord,
   Project,
   ProjectChatSession,
@@ -13,8 +14,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`
     try {
-      const body = await response.json() as { detail?: string }
-      detail = body.detail || detail
+      const body = await response.json() as {
+        detail?: string | { code?: string; message?: string }
+      }
+      if (typeof body.detail === 'string') {
+        detail = body.detail || detail
+      } else if (body.detail && typeof body.detail === 'object' && body.detail.message) {
+        // 稳定错误码（stale / already_applied / already_rejected / conflict）取可读消息。
+        detail = body.detail.message
+      }
     } catch {
       // Non-JSON server errors keep the HTTP status text.
     }
@@ -57,7 +65,7 @@ export const apiClient = {
   }),
   getProjectTree: (assistantId: string, projectId: string) => request<ProjectDocument[]>(`/api/projects/${projectId}/tree?assistant_id=${encodeURIComponent(assistantId)}`),
   getDocument: (assistantId: string, projectId: string, documentId: string) => request<ProjectDocument>(`/api/projects/${projectId}/documents/${documentId}?assistant_id=${encodeURIComponent(assistantId)}`),
-  saveDocument: (assistantId: string, projectId: string, documentId: string, content: string, version: number) => request<ProjectDocument>(`/api/projects/${projectId}/documents/${documentId}`, {
+  saveDocument: (assistantId: string, projectId: string, documentId: string, content: string, version: number) => request<ProjectDocument & { staled_change_set_ids?: string[] }>(`/api/projects/${projectId}/documents/${documentId}`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ assistant_id: assistantId, content, document_version: version }),
   }),
@@ -80,14 +88,35 @@ export const apiClient = {
   rewriteSelection: (payload: Record<string, unknown>, projectId: string, documentId: string) => request<{ task_id: string }>(`/api/projects/${projectId}/documents/${documentId}/selection-rewrites`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   }),
-  applyChange: (assistantId: string, projectId: string, changeSetId: string, version: number) => request<{ document: ProjectDocument; change_set: ChangeSetRecord }>(`/api/projects/${projectId}/change-sets/${changeSetId}/apply`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ assistant_id: assistantId, document_version: version }),
-  }),
-  rejectChange: (assistantId: string, projectId: string, changeSetId: string) => request(`/api/projects/${projectId}/change-sets/${changeSetId}/reject`, {
+  acceptChangeHunk: (assistantId: string, projectId: string, changeSetId: string, hunkId: string) => request<{
+    document: ProjectDocument
+    change_set: ChangeSetRecord
+    hunk: ChangeSetRecord['hunks'][number]
+    staled_change_set_ids: string[]
+  }>(`/api/projects/${projectId}/change-sets/${changeSetId}/hunks/${hunkId}/accept`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ assistant_id: assistantId }),
   }),
+  rejectChangeHunk: (assistantId: string, projectId: string, changeSetId: string, hunkId: string) => request<{ change_set: ChangeSetRecord }>(`/api/projects/${projectId}/change-sets/${changeSetId}/hunks/${hunkId}/reject`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assistant_id: assistantId }),
+  }),
+  acceptAllChangeHunks: (assistantId: string, projectId: string, changeSetId: string) => request<{
+    document: ProjectDocument
+    change_set: ChangeSetRecord
+    applied_hunk_ids: string[]
+    stopped: { hunk_id: string; reason: string } | null
+    staled_change_set_ids: string[]
+  }>(`/api/projects/${projectId}/change-sets/${changeSetId}/accept-all`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assistant_id: assistantId }),
+  }),
+  listChangeSets: (assistantId: string, projectId: string, documentId: string, page = 1, pageSize = 20) => request<{
+    items: ChangeSetPreview[]
+    total: number
+    page: number
+    page_size: number
+  }>(`/api/projects/${projectId}/change-sets?assistant_id=${encodeURIComponent(assistantId)}&document_id=${encodeURIComponent(documentId)}&page=${page}&page_size=${pageSize}`),
   listProjectChatSessions: (assistantId: string, projectId: string) => request<ProjectChatSession[]>(`/api/projects/${projectId}/agent/sessions?assistant_id=${encodeURIComponent(assistantId)}`),
   getProjectChatSession: (assistantId: string, projectId: string, chatSessionId: string) => request<ProjectChatSessionDetail>(`/api/projects/${projectId}/agent/sessions/${chatSessionId}?assistant_id=${encodeURIComponent(assistantId)}`),
   deleteProjectChatSession: (assistantId: string, projectId: string, chatSessionId: string) => request<{ deleted: boolean }>(`/api/projects/${projectId}/agent/sessions/${chatSessionId}?assistant_id=${encodeURIComponent(assistantId)}`, {

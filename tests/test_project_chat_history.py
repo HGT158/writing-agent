@@ -87,16 +87,17 @@ def test_project_chat_session_delete_blocks_pending_then_removes_settled_history
         "writer-a", project.project_id, session.chat_session_id,
         "user", "生成首稿",
     )
-    change = store.create_change_set(
+    change = store.create_selection_change_set(
         "writer-a",
         project.project_id,
         document.document_id,
-        source="chat",
+        task_id="task-history",
         start=0,
         end=0,
         original_text="",
         replacement_text="首稿正文",
         base_version=document.version,
+        source="chat",
         session_id=session.chat_session_id,
     )
 
@@ -109,11 +110,11 @@ def test_project_chat_session_delete_blocks_pending_then_removes_settled_history
             "writer-a", project.project_id, session.chat_session_id
         )
 
-    applied, _ = store.apply_change_set(
+    applied, _applied_set, _applied_hunk, _staled = store.accept_change_hunk(
         "writer-a",
         project.project_id,
         change.change_set_id,
-        expected_version=document.version,
+        change.hunks[0].hunk_id,
     )
     store.delete_project_chat_session(
         "writer-a", project.project_id, session.chat_session_id

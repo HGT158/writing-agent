@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChangePreview, TaskEvent } from '../types'
+import type { ChangeSetPreview, TaskEvent } from '../types'
 
 const apiMocks = vi.hoisted(() => ({
   chatProject: vi.fn(),
@@ -16,13 +16,17 @@ vi.mock('../api/client', () => ({ apiClient: apiMocks }))
 
 import AgentPanel from './AgentPanel.vue'
 
-const change: ChangePreview = {
+const change: ChangeSetPreview = {
   change_set_id: 'change-1',
   project_id: 'project-1',
   document_id: 'document-1',
-  range: { from: 0, to: 4 },
-  original: '原文',
-  replacement: '改文',
+  hunks: [{
+    hunk_id: 'hunk-1',
+    range: { from: 0, to: 2 },
+    original: '原文',
+    replacement: '改文',
+    status: 'pending',
+  }],
   document_version: 2,
   source: 'chat',
 }
@@ -37,7 +41,7 @@ function mountPanel(overrides: Record<string, unknown> = {}) {
       assistantId: 'default',
       projectId: 'project-1',
       documentId: 'document-1',
-      changes: [] as ChangePreview[],
+      changes: [] as ChangeSetPreview[],
       reviewing: [] as string[],
       documentLabels: {} as Record<string, string>,
       ...overrides,
@@ -301,6 +305,26 @@ describe('AgentPanel', () => {
     await nextTick()
     expect(wrapper.find('.work-item').exists()).toBe(false)  // 终态自动折叠
     expect(wrapper.get('.work-record-header').text()).toContain('工具 1')
+  })
+
+  it('shows hunk summaries and batch actions per change set card', async () => {
+    const multi: ChangeSetPreview = {
+      change_set_id: 'change-multi', project_id: 'project-1', document_id: 'document-1',
+      hunks: [
+        { hunk_id: 'h1', range: { from: 0, to: 2 }, original: '旧一', replacement: '新一', status: 'pending' },
+        { hunk_id: 'h2', range: { from: 5, to: 7 }, original: '旧二', replacement: '新二', status: 'stale' },
+      ],
+      document_version: 2, source: 'chat',
+    }
+    const wrapper = mountPanel({ changes: [multi] })
+    await flushPromises()
+
+    const card = wrapper.get('.change-diff')
+    expect(card.text()).toContain('2 处')
+    expect(card.text()).toContain('旧一')
+    expect(card.text()).toContain('新二')
+    expect(card.text()).toContain('已失效')
+    expect(card.get('.primary-action').text()).toContain('全部接受')
   })
 
   it('renders persisted work records collapsed and expands on click', async () => {

@@ -465,44 +465,37 @@ class MemoryStore:
     def save_document(
         self, assistant_id: str, project_id: str, document_id: str,
         content: str, *, expected_version: int,
-    ) -> DocumentRecord:
+    ) -> tuple[DocumentRecord, list[str]]:
         with self._lock:
             return projects.save_document(
                 self._conn, self.data_dir, assistant_id, project_id,
                 document_id, content, expected_version,
             )
 
-    def create_change_set(
-        self, assistant_id: str, project_id: str, document_id: str,
-        *, source: str, start: int, end: int, original_text: str,
-        replacement_text: str, base_version: int, session_id: str | None = None,
-    ) -> ChangeSetRecord:
-        with self._lock:
-            return projects.create_change_set(
-                self._conn, self.data_dir, assistant_id, project_id, document_id,
-                source=source, start=start, end=end, original_text=original_text,
-                replacement_text=replacement_text, base_version=base_version,
-                session_id=session_id,
-            )
-
-    def create_change_sets(
-        self,
-        assistant_id: str,
-        project_id: str,
-        drafts: Iterable[dict[str, object]],
-        *,
-        source: str,
+    def create_change_set_hunks(
+        self, assistant_id: str, project_id: str, *,
+        task_id: str, source: str, documents: list[dict],
         session_id: str | None = None,
     ) -> list[ChangeSetRecord]:
         with self._lock:
-            return projects.create_change_sets(
-                self._conn,
-                self.data_dir,
-                assistant_id,
-                project_id,
-                drafts,
-                source=source,
+            return projects.create_change_set_hunks(
+                self._conn, self.data_dir, assistant_id, project_id,
+                task_id=task_id, source=source, documents=documents,
                 session_id=session_id,
+            )
+
+    def create_selection_change_set(
+        self, assistant_id: str, project_id: str, document_id: str, *,
+        task_id: str, start: int, end: int, original_text: str,
+        replacement_text: str, base_version: int, source: str,
+        session_id: str | None = None,
+    ) -> ChangeSetRecord:
+        with self._lock:
+            return projects.create_selection_change_set(
+                self._conn, self.data_dir, assistant_id, project_id, document_id,
+                task_id=task_id, start=start, end=end, original_text=original_text,
+                replacement_text=replacement_text, base_version=base_version,
+                source=source, session_id=session_id,
             )
 
     def get_change_set(
@@ -513,22 +506,39 @@ class MemoryStore:
                 self._conn, assistant_id, project_id, change_set_id
             )
 
-    def reject_change_set(
-        self, assistant_id: str, project_id: str, change_set_id: str
-    ) -> ChangeSetRecord:
+    def accept_change_hunk(
+        self, assistant_id: str, project_id: str, change_set_id: str, hunk_id: str
+    ) -> tuple[DocumentRecord, ChangeSetRecord, "projects.ChangeSetHunkRecord", list[str]]:
         with self._lock:
-            return projects.reject_change_set(
-                self._conn, assistant_id, project_id, change_set_id
+            return projects.accept_change_hunk(
+                self._conn, self.data_dir, assistant_id, project_id,
+                change_set_id, hunk_id,
             )
 
-    def apply_change_set(
-        self, assistant_id: str, project_id: str, change_set_id: str,
-        *, expected_version: int,
-    ) -> tuple[DocumentRecord, ChangeSetRecord]:
+    def reject_change_hunk(
+        self, assistant_id: str, project_id: str, change_set_id: str, hunk_id: str
+    ) -> ChangeSetRecord:
         with self._lock:
-            return projects.apply_change_set(
-                self._conn, self.data_dir, assistant_id, project_id,
-                change_set_id, expected_version,
+            return projects.reject_change_hunk(
+                self._conn, assistant_id, project_id, change_set_id, hunk_id
+            )
+
+    def accept_all_change_hunks(
+        self, assistant_id: str, project_id: str, change_set_id: str
+    ) -> dict:
+        with self._lock:
+            return projects.accept_all_change_hunks(
+                self._conn, self.data_dir, assistant_id, project_id, change_set_id
+            )
+
+    def list_change_sets_for_document(
+        self, assistant_id: str, project_id: str, document_id: str, *,
+        page: int = 1, page_size: int = 20,
+    ) -> dict:
+        with self._lock:
+            return projects.list_change_sets_for_document(
+                self._conn, assistant_id, project_id, document_id,
+                page=page, page_size=page_size,
             )
 
     # ---------- 运行锁（架构 §4.6：跨进程，TTL + PID 存活校验） ----------

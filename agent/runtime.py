@@ -22,7 +22,7 @@ from .events import EventBus, current_task_id
 from .executor import ToolRegistry
 from .llm import chat_text, stream_chat_turn
 from .loop import RuntimeServices, build_graph
-from .project_editing import ProjectChatResult, ProjectEditBatch
+from .project_editing import ProjectChatResult, ProjectEditBatch, hunk_count
 from .schemas import AgentState, ToolContext
 from .skills import load_skills
 from .tools import make_builtin_tools, make_project_edit_tool
@@ -181,26 +181,31 @@ class AgentRuntime:
             )).strip()
             if not replacement:
                 raise RuntimeError("AI 改写结果为空")
-            change = self.store.create_change_set(
+            change = self.store.create_selection_change_set(
                 assistant_id,
                 project_id,
                 document_id,
-                source="selection",
+                task_id=current_task_id() or task_id,
                 start=start,
                 end=end,
                 original_text=selected_text,
                 replacement_text=replacement,
                 base_version=document_version,
+                source="selection",
                 session_id=session_id,
             )
+            hunk = change.hunks[0]
             self.bus.emit(
                 "change_preview",
                 change_set_id=change.change_set_id,
                 project_id=project_id,
                 document_id=document_id,
-                range={"from": start, "to": end},
-                original=selected_text,
-                replacement=replacement,
+                hunks=[{
+                    "hunk_id": hunk.hunk_id,
+                    "range": {"from": hunk.start, "to": hunk.end},
+                    "original": hunk.original_text,
+                    "replacement": hunk.new_text,
+                }],
                 document_version=document_version,
                 source="selection",
             )
@@ -281,6 +286,7 @@ class AgentRuntime:
                 "你正在项目 Agent 面板中回答用户。回答应简洁、具体。"
                 "用户要求改写、增删或替换正文时，必须调用 propose_project_edits，"
                 "不要声称已经修改文件，也不要在工具调用前输出解释。"
+                "同一文档的多处修改必须放进同一次调用的 hunks 列表，不要分多次调用。"
                 "普通问答不调用工具。\n\n"
                 f"当前项目文档：\n{context}"
             )
@@ -411,7 +417,10 @@ class AgentRuntime:
             self.bus.emit(
                 "tool_call",
                 tool=call.name,
-                args={"changes": len(validated.changes)},
+                args={
+                    "documents": len(validated.documents),
+                    "hunks": hunk_count(validated),
+                },
             )
             try:
                 output = await edit_tool.call(args, ctx)
@@ -425,11 +434,12 @@ class AgentRuntime:
                 self.store.get_change_set(assistant_id, project_id, change_set_id)
                 for change_set_id in result_data["change_set_ids"]
             ]
+            total_hunks = sum(len(change.hunks) for change in changes)
             self.bus.emit(
                 "tool_result",
                 tool=call.name,
                 ok=True,
-                summary=f"已生成 {len(changes)} 处修改建议",
+                summary=f"已生成 {total_hunks} 处修改建议",
             )
             for change in changes:
                 document = self.store.get_document(
@@ -437,19 +447,24 @@ class AgentRuntime:
                 )
                 work = recorder.start(
                     "changes",
-                    f"为 {document.relative_path} 生成修改建议",
+                    f"为 {document.relative_path} 生成 {len(change.hunks)} 处修改建议",
                     change_set_id=change.change_set_id,
                     document_id=change.document_id,
                 )
-                recorder.done(work, detail=f"基于正文版本 {change.base_version}")
+                recorder.done(
+                    work, detail=f"基于正文版本 {change.base_version}，逐处确认后写入"
+                )
                 self.bus.emit(
                     "change_preview",
                     change_set_id=change.change_set_id,
                     project_id=project_id,
                     document_id=change.document_id,
-                    range={"from": change.start, "to": change.end},
-                    original=change.original_text,
-                    replacement=change.replacement_text,
+                    hunks=[{
+                        "hunk_id": hunk.hunk_id,
+                        "range": {"from": hunk.start, "to": hunk.end},
+                        "original": hunk.original_text,
+                        "replacement": hunk.new_text,
+                    } for hunk in change.hunks],
                     document_version=change.base_version,
                     source="chat",
                 )
@@ -494,7 +509,10 @@ class AgentRuntime:
             recorder.finish_task(
                 "succeeded",
                 title=message.strip()[:80],
-                detail=f"工具 1 次；修改建议 {len(changes)} 条" if changes else "无工具调用",
+                detail=(
+                    f"工具 1 次；修改建议 {sum(len(item.hunks) for item in changes)} 条"
+                    if changes else "无工具调用"
+                ),
             )
             return ProjectChatResult(reply=reply, changes=changes)
         except asyncio.CancelledError:

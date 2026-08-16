@@ -11,7 +11,8 @@ import DocumentEditor from './components/DocumentEditor.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import ProjectExplorer from './components/ProjectExplorer.vue'
 import { createWorkspaceStore } from './stores/workspace'
-import type { Assistant, ChangePreview, ProjectDocument } from './types'
+import type { Assistant, ChangeHunkPreview, ChangeSetPreview, ProjectDocument } from './types'
+import { toChangeSetPreview } from './types'
 
 const workspace = createWorkspaceStore()
 const assistants = ref<Assistant[]>([])
@@ -30,10 +31,11 @@ const saving = ref(false)
 let projectRequestGeneration = 0
 
 /**
- * 待确认 change set 的唯一状态源：编辑器内联视图与 Agent 面板卡片都是它的视图，
- * apply/reject 也只经过这里一条通道（架构 §5.10）。
+ * 待确认 change set（hunk 容器）的唯一状态源：编辑器内联视图与 Agent 面板
+ * 卡片都是它的视图；接受/放弃以 hunk 为最小单元，也只经过这里一条通道
+ * （架构 §5.10 v1.20）。
  */
-const pendingChanges = ref<ChangePreview[]>([])
+const pendingChanges = ref<ChangeSetPreview[]>([])
 const reviewingIds = ref<string[]>([])
 
 const activeTab = computed(() => workspace.activeTab)
@@ -49,14 +51,14 @@ const documentLabels = computed(() => Object.fromEntries(
   projectTree.value.map((item) => [item.document_id, item.relative_path]),
 ))
 
-function setChatChanges(changes: ChangePreview[]) {
+function setChatChanges(changes: ChangeSetPreview[]) {
   pendingChanges.value = [
     ...pendingChanges.value.filter((change) => change.source !== 'chat'),
     ...changes,
   ]
 }
 
-function addChange(change: ChangePreview) {
+function addChange(change: ChangeSetPreview) {
   if (pendingChanges.value.some((item) => item.change_set_id === change.change_set_id)) return
   pendingChanges.value = [...pendingChanges.value, change]
 }
@@ -129,8 +131,35 @@ async function openDocument(projectId: string, documentId: string) {
   try {
     await workspace.openDocument(projectId, documentId)
     activeSidePanel.value = null
+    void reconcileChanges(projectId, documentId)
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+/** 页面加载/打开文档时按查询 API 全量分页对账 hunk 级状态（架构 §5.9 v1.20）。 */
+async function reconcileChanges(projectId: string, documentId: string) {
+  const assistantId = workspace.assistantId
+  try {
+    const collected: ChangeSetPreview[] = []
+    let page = 1
+    for (;;) {
+      const result = await apiClient.listChangeSets(assistantId, projectId, documentId, page)
+      if (workspace.assistantId !== assistantId) return
+      collected.push(
+        ...result.items.filter((set) => set.hunks.some((hunk) => hunk.status === 'pending' || hunk.status === 'stale')),
+      )
+      if (collected.length >= result.total || result.items.length === 0) break
+      page += 1
+    }
+    pendingChanges.value = [
+      ...pendingChanges.value.filter(
+        (item) => !(item.project_id === projectId && item.document_id === documentId),
+      ),
+      ...collected,
+    ]
+  } catch {
+    // 对账失败不阻断打开文档；后续操作仍以服务端校验为准。
   }
 }
 
@@ -187,6 +216,7 @@ async function saveActive() {
     )
     workspace.replaceTab({ ...tab, ...document, content: document.content || '', dirty: false })
     statusText.value = '已保存'
+    void reconcileChanges(tab.project_id, tab.document_id)
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
     statusText.value = '保存失败'
@@ -195,54 +225,153 @@ async function saveActive() {
   }
 }
 
-async function applyAgentChange(change: ChangePreview, complete: (success: boolean) => void = () => undefined) {
+function upsertChangeSet(set: ChangeSetPreview) {
+  const openable = set.hunks.some((hunk) => hunk.status === 'pending' || hunk.status === 'stale')
+  pendingChanges.value = [
+    ...pendingChanges.value.filter((item) => item.change_set_id !== set.change_set_id),
+    ...(openable ? [set] : []),
+  ]
+}
+
+function markChangeSetsStaled(changeSetIds: string[]) {
+  if (!changeSetIds.length) return
+  pendingChanges.value = pendingChanges.value.map((item) => (
+    changeSetIds.includes(item.change_set_id)
+      ? {
+          ...item,
+          hunks: item.hunks.map((hunk) => (
+            hunk.status === 'pending' ? { ...hunk, status: 'stale' as const } : hunk
+          )),
+        }
+      : item
+  ))
+}
+
+function syncAfterMutation(projectId: string, documentId: string) {
+  void reconcileChanges(projectId, documentId)
+}
+
+async function applyAgentHunk(change: ChangeSetPreview, hunk: ChangeHunkPreview) {
   const tab = workspace.getTab(change.project_id, change.document_id)
-  if (tab?.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) {
-    complete(false)
-    return
-  }
+  if (tab?.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) return
   markReviewing(change.change_set_id, true)
   try {
-    const result = await apiClient.applyChange(
+    const result = await apiClient.acceptChangeHunk(
       workspace.assistantId,
       change.project_id,
       change.change_set_id,
-      change.document_version,
+      hunk.hunk_id,
     )
     if (tab) {
       workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
     }
-    pendingChanges.value = pendingChanges.value.filter((item) => item.change_set_id !== change.change_set_id)
+    upsertChangeSet(toChangeSetPreview(result.change_set))
+    markChangeSetsStaled(result.staled_change_set_ids)
     statusText.value = '已应用修改'
-    complete(true)
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
-    complete(false)
+    syncAfterMutation(change.project_id, change.document_id)
   } finally {
     markReviewing(change.change_set_id, false)
   }
 }
 
-async function rejectAgentChange(change: ChangePreview, complete: (success: boolean) => void = () => undefined) {
+async function rejectAgentHunk(change: ChangeSetPreview, hunk: ChangeHunkPreview) {
   markReviewing(change.change_set_id, true)
   try {
-    await apiClient.rejectChange(workspace.assistantId, change.project_id, change.change_set_id)
-    pendingChanges.value = pendingChanges.value.filter((item) => item.change_set_id !== change.change_set_id)
-    complete(true)
+    const result = await apiClient.rejectChangeHunk(
+      workspace.assistantId,
+      change.project_id,
+      change.change_set_id,
+      hunk.hunk_id,
+    )
+    upsertChangeSet(toChangeSetPreview(result.change_set))
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
-    complete(false)
+    syncAfterMutation(change.project_id, change.document_id)
   } finally {
     markReviewing(change.change_set_id, false)
   }
 }
 
-async function applyAllChanges(changes: ChangePreview[]) {
-  // 一旦某条失败（例如同一文档的第二条建议已因版本递增失效）就停下，
+/** 侧栏卡片"全部接受"：服务端按范围倒序串行应用，失配即停、已应用不回滚。 */
+async function applyAgentChangeSet(change: ChangeSetPreview) {
+  const tab = workspace.getTab(change.project_id, change.document_id)
+  if (tab?.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) return
+  markReviewing(change.change_set_id, true)
+  try {
+    const result = await apiClient.acceptAllChangeHunks(
+      workspace.assistantId,
+      change.project_id,
+      change.change_set_id,
+    )
+    if (tab) {
+      workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
+    }
+    upsertChangeSet(toChangeSetPreview(result.change_set))
+    markChangeSetsStaled(result.staled_change_set_ids)
+    if (result.stopped) {
+      globalError.value = `第 ${result.stopped.reason === 'stale' ? '部分' : ''}修改建议已失效，其余建议请逐处确认。`
+    } else {
+      statusText.value = '已应用全部修改'
+    }
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+    syncAfterMutation(change.project_id, change.document_id)
+  } finally {
+    markReviewing(change.change_set_id, false)
+  }
+}
+
+/** 侧栏卡片"全部放弃"：逐个放弃剩余 pending hunk，仅元数据变更。 */
+async function rejectAgentChangeSet(change: ChangeSetPreview) {
+  markReviewing(change.change_set_id, true)
+  try {
+    for (const hunk of change.hunks.filter((item) => item.status === 'pending')) {
+      const result = await apiClient.rejectChangeHunk(
+        workspace.assistantId,
+        change.project_id,
+        change.change_set_id,
+        hunk.hunk_id,
+      )
+      upsertChangeSet(toChangeSetPreview(result.change_set))
+    }
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+    syncAfterMutation(change.project_id, change.document_id)
+  } finally {
+    markReviewing(change.change_set_id, false)
+  }
+}
+
+async function applyAllChanges(changes: ChangeSetPreview[]) {
+  // 一旦某个 change set 失败（例如建议已因版本递增失效）就停下，
   // 避免连续 409 把错误提示刷成噪音，剩余卡片保留以便用户重新生成。
   for (const change of changes) {
-    let ok = false
-    await applyAgentChange(change, (success) => { ok = success })
+    const current = pendingChanges.value.find((item) => item.change_set_id === change.change_set_id)
+    if (!current) continue
+    let ok = true
+    markReviewing(change.change_set_id, true)
+    try {
+      const result = await apiClient.acceptAllChangeHunks(
+        workspace.assistantId,
+        change.project_id,
+        change.change_set_id,
+      )
+      const tab = workspace.getTab(change.project_id, change.document_id)
+      if (tab) {
+        workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
+      }
+      upsertChangeSet(toChangeSetPreview(result.change_set))
+      markChangeSetsStaled(result.staled_change_set_ids)
+      if (result.stopped) ok = false
+    } catch (error) {
+      globalError.value = error instanceof Error ? error.message : String(error)
+      syncAfterMutation(change.project_id, change.document_id)
+      ok = false
+    } finally {
+      markReviewing(change.change_set_id, false)
+    }
     if (!ok) return
   }
 }
@@ -317,8 +446,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
           :reviewing="reviewingIds"
           @update="workspace.updateActiveContent"
           @preview="addChange"
-          @apply="applyAgentChange"
-          @reject="rejectAgentChange"
+          @apply="applyAgentHunk"
+          @reject="rejectAgentHunk"
         />
         <div v-else class="editor-welcome">
           <h1>写作工作区</h1>
@@ -333,8 +462,8 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         :changes="pendingChanges"
         :reviewing="reviewingIds"
         :document-labels="documentLabels"
-        @apply="applyAgentChange"
-        @reject="rejectAgentChange"
+        @apply="applyAgentChangeSet"
+        @reject="rejectAgentChangeSet"
         @apply-all="applyAllChanges"
         @changes-loaded="setChatChanges"
         @change-added="addChange"

@@ -374,6 +374,13 @@ def delete_session(
         if pending is not None:
             raise ResourceConflictError("会话存在待处理修改，拒绝删除")
         conn.execute(
+            "DELETE FROM change_set_hunks WHERE change_set_id IN ("
+            "SELECT change_set_id FROM change_sets "
+            "WHERE assistant_id = ? AND project_id = ? AND session_id = ? "
+            "AND source = 'chat' AND status != 'pending')",
+            (assistant_id, project_id, chat_session_id),
+        )
+        conn.execute(
             "DELETE FROM change_sets "
             "WHERE assistant_id = ? AND project_id = ? AND session_id = ? "
             "AND source = 'chat' AND status != 'pending'",

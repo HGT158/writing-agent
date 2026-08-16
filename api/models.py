@@ -46,12 +46,7 @@ class SelectionRewriteRequest(BaseModel):
     document_version: int = Field(ge=1)
 
 
-class ChangeSetAction(BaseModel):
-    assistant_id: str
-    document_version: int = Field(ge=1)
-
-
-class ChangeSetReject(BaseModel):
+class ChangeSetHunkAction(BaseModel):
     assistant_id: str
 
 

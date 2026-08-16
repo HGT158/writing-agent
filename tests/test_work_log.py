@@ -345,17 +345,16 @@ def test_chat_project_persists_work_log_and_keeps_it_out_of_prompt(tmp_path):
     bus.subscribe(events.append)
     runtime = AgentRuntime(_settings(tmp_path), bus)
     project = runtime.store.create_project("default", "工作记录运行时")
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "第一段原文。第二段原文。", expected_version=1,
     )
     session = runtime.store.create_project_chat_session("default", project.project_id)
     arguments = json.dumps({
-        "changes": [{
+        "documents": [{
             "document_id": document.document_id,
-            "old_text": "第一段原文。",
-            "new_text": "第一段改写。",
             "document_version": document.version,
+            "hunks": [{"old_text": "第一段原文。", "new_text": "第一段改写。"}],
         }],
     }, ensure_ascii=False)
     runtime.llm = MultiTurnStreamLLM([
@@ -391,7 +390,7 @@ def test_chat_project_persists_work_log_and_keeps_it_out_of_prompt(tmp_path):
     assert changes_item.document_id == document.document_id
     tool_item = next(item for item in work if item.kind == "tool")
     assert tool_item.tool_name == "propose_project_edits"
-    assert tool_item.args_summary and "changes" in tool_item.args_summary
+    assert tool_item.args_summary and "hunks" in tool_item.args_summary
 
     sse_types = [event["type"] for event in events]
     assert "work_item_start" in sse_types and "work_item_done" in sse_types
@@ -405,7 +404,7 @@ def test_chat_project_marks_work_log_failed_and_interrupts_running(tmp_path):
 
     runtime = AgentRuntime(_settings(tmp_path))
     project = runtime.store.create_project("default", "失败工作记录")
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "正文", expected_version=1,
     )
@@ -435,7 +434,7 @@ def test_chat_project_work_log_failure_does_not_mask_task_error(tmp_path, monkey
 
     runtime = AgentRuntime(_settings(tmp_path))
     project = runtime.store.create_project("default", "掩盖错误项目")
-    document = runtime.store.save_document(
+    document, _staled = runtime.store.save_document(
         "default", project.project_id, project.entry_document_id,
         "正文", expected_version=1,
     )

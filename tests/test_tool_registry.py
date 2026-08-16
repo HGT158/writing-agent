@@ -64,10 +64,22 @@ def test_finalize_article_uses_tool_context(tmp_path):
     store.close()
 
 
+def _hunk(old: str, new: str) -> dict:
+    return {"old_text": old, "new_text": new}
+
+
+def _documents(document, hunks: list[dict]) -> list[dict]:
+    return [{
+        "document_id": document.document_id,
+        "document_version": document.version,
+        "hunks": hunks,
+    }]
+
+
 def test_project_edit_tool_creates_pending_change_without_writing_document(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("tester", "编辑提案")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "tester",
         project.project_id,
         project.entry_document_id,
@@ -76,14 +88,10 @@ def test_project_edit_tool_creates_pending_change_without_writing_document(tmp_p
     )
     spec = make_project_edit_tool(store, project.project_id)
 
-    result = json.loads(asyncio.run(spec.call({
-        "changes": [{
-            "document_id": document.document_id,
-            "old_text": "第一段原文。",
-            "new_text": "首段精简。",
-            "document_version": document.version,
-        }],
-    }, _ctx(tmp_path))))
+    result = json.loads(asyncio.run(spec.call(
+        {"documents": _documents(document, [_hunk("第一段原文。", "首段精简。")])},
+        _ctx(tmp_path),
+    )))
 
     assert spec.name == "propose_project_edits"
     assert spec.idempotent is False
@@ -93,11 +101,81 @@ def test_project_edit_tool_creates_pending_change_without_writing_document(tmp_p
         "tester", project.project_id, result["change_set_ids"][0]
     )
     assert change.status == "pending"
-    assert (change.start, change.end) == (0, len("第一段原文。"))
-    assert change.original_text == "第一段原文。"
-    assert change.replacement_text == "首段精简。"
+    assert [(h.start, h.end) for h in change.hunks] == [(0, len("第一段原文。"))]
+    assert change.hunks[0].original_text == "第一段原文。"
+    assert change.hunks[0].new_text == "首段精简。"
     current = store.get_document("tester", project.project_id, document.document_id)
     assert current.content == "第一段原文。第二段原文。"
+    store.close()
+
+
+def test_project_edit_tool_allows_multiple_hunks_for_same_document(tmp_path):
+    """v1.20 修复：同一次调用对同一文档提交多处修改不再整批失败。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("tester", "多处修改")
+    document, _staled = store.save_document(
+        "tester",
+        project.project_id,
+        project.entry_document_id,
+        "第一段。中间段。最后段。",
+        expected_version=1,
+    )
+    spec = make_project_edit_tool(store, project.project_id)
+
+    result = json.loads(asyncio.run(spec.call(
+        {"documents": _documents(document, [
+            _hunk("第一段。", "【一】。"),
+            _hunk("中间段。", "【中】。"),
+            _hunk("最后段。", "【末】。"),
+        ])},
+        _ctx(tmp_path),
+    )))
+
+    assert result["count"] == 1
+    change = store.get_change_set(
+        "tester", project.project_id, result["change_set_ids"][0]
+    )
+    assert len(change.hunks) == 3
+    assert [h.display_order for h in change.hunks] == [0, 1, 2]
+    starts = [h.start for h in change.hunks]
+    assert starts == sorted(starts)
+    applied = store.accept_all_change_hunks(
+        "tester", project.project_id, change.change_set_id
+    )
+    assert applied["stopped"] is None
+    assert applied["document"].content == "【一】。【中】。【末】。"
+    store.close()
+
+
+def test_project_edit_tool_rejects_resubmission_for_same_task(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("tester", "同任务重复")
+    document, _staled = store.save_document(
+        "tester", project.project_id, project.entry_document_id,
+        "第一句。第二句。", expected_version=1,
+    )
+    spec = make_project_edit_tool(store, project.project_id)
+    bus = EventBus()
+
+    with bus.task_scope("broker-task-77"):
+        asyncio.run(spec.call(
+            {"documents": _documents(document, [_hunk("第一句。", "改。")])},
+            _ctx(tmp_path),
+        ))
+        with pytest.raises(ResourceConflictError, match="该任务已提交"):
+            asyncio.run(spec.call(
+                {"documents": _documents(document, [_hunk("第二句。", "改。")])},
+                _ctx(tmp_path),
+            ))
+
+    current = store.get_document("tester", project.project_id, document.document_id)
+    assert current.content == "第一句。第二句。"
+    with sqlite3.connect(tmp_path / "app.db") as conn:
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM change_sets WHERE assistant_id = ? AND project_id = ?",
+            ("tester", project.project_id),
+        ).fetchone()[0]
+    assert pending == 1
     store.close()
 
 
@@ -109,38 +187,33 @@ def test_project_edit_tool_inserts_first_draft_into_empty_document(tmp_path):
     )
     spec = make_project_edit_tool(store, project.project_id)
 
-    result = json.loads(asyncio.run(spec.call({
-        "changes": [{
-            "document_id": document.document_id,
-            "old_text": "",
-            "new_text": "# 小锅鱼的深圳奇遇\n\n故事正文。",
-            "document_version": document.version,
-        }],
-    }, _ctx(tmp_path))))
+    result = json.loads(asyncio.run(spec.call(
+        {"documents": _documents(document, [
+            _hunk("", "# 小锅鱼的深圳奇遇\n\n故事正文。"),
+        ])},
+        _ctx(tmp_path),
+    )))
 
     change = store.get_change_set(
         "tester", project.project_id, result["change_set_ids"][0]
     )
-    assert (change.start, change.end, change.original_text) == (0, 0, "")
+    assert (change.hunks[0].start, change.hunks[0].end, change.hunks[0].original_text) == (0, 0, "")
     assert store.get_document(
         "tester", project.project_id, document.document_id
     ).content == ""
 
-    applied, applied_change = store.apply_change_set(
-        "tester",
-        project.project_id,
-        change.change_set_id,
-        expected_version=document.version,
+    applied = store.accept_all_change_hunks(
+        "tester", project.project_id, change.change_set_id
     )
-    assert applied.content == "# 小锅鱼的深圳奇遇\n\n故事正文。"
-    assert applied_change.status == "applied"
+    assert applied["document"].content == "# 小锅鱼的深圳奇遇\n\n故事正文。"
+    assert applied["change_set"].status == "applied"
     store.close()
 
 
 def test_project_edit_tool_rejects_empty_old_text_for_nonempty_document(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("tester", "非空文档")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "tester",
         project.project_id,
         project.entry_document_id,
@@ -150,14 +223,10 @@ def test_project_edit_tool_rejects_empty_old_text_for_nonempty_document(tmp_path
     spec = make_project_edit_tool(store, project.project_id)
 
     with pytest.raises(ResourceConflictError, match="非空文档不能使用空旧文本"):
-        asyncio.run(spec.call({
-            "changes": [{
-                "document_id": document.document_id,
-                "old_text": "",
-                "new_text": "新增正文。",
-                "document_version": document.version,
-            }],
-        }, _ctx(tmp_path)))
+        asyncio.run(spec.call(
+            {"documents": _documents(document, [_hunk("", "新增正文。")])},
+            _ctx(tmp_path),
+        ))
 
     assert store.get_document(
         "tester", project.project_id, document.document_id
@@ -174,13 +243,14 @@ def test_project_edit_tool_reports_readable_schema_error(tmp_path):
     spec = make_project_edit_tool(store, project.project_id)
 
     with pytest.raises(ValueError, match="修改建议参数无效"):
-        asyncio.run(spec.call({
-            "changes": [{
+        asyncio.run(spec.call(
+            {"documents": [{
                 "document_id": document.document_id,
-                "new_text": "新正文。",
                 "document_version": document.version,
-            }],
-        }, _ctx(tmp_path)))
+                "hunks": [{"new_text": "新正文。"}],
+            }]},
+            _ctx(tmp_path),
+        ))
 
     store.close()
 
@@ -188,7 +258,7 @@ def test_project_edit_tool_reports_readable_schema_error(tmp_path):
 def test_project_edit_tool_rejects_missing_old_text_without_writing_document(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("tester", "缺失旧文本")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "tester",
         project.project_id,
         project.entry_document_id,
@@ -198,14 +268,10 @@ def test_project_edit_tool_rejects_missing_old_text_without_writing_document(tmp
     spec = make_project_edit_tool(store, project.project_id)
 
     with pytest.raises(ResourceConflictError, match="旧文本不存在"):
-        asyncio.run(spec.call({
-            "changes": [{
-                "document_id": document.document_id,
-                "old_text": "不存在的句子。",
-                "new_text": "替换句子。",
-                "document_version": document.version,
-            }],
-        }, _ctx(tmp_path)))
+        asyncio.run(spec.call(
+            {"documents": _documents(document, [_hunk("不存在的句子。", "替换句子。")])},
+            _ctx(tmp_path),
+        ))
 
     current = store.get_document("tester", project.project_id, document.document_id)
     assert current.content == "当前正文。"
@@ -215,7 +281,7 @@ def test_project_edit_tool_rejects_missing_old_text_without_writing_document(tmp
 def test_project_edit_tool_rejects_ambiguous_old_text_without_writing_document(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("tester", "重复旧文本")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "tester",
         project.project_id,
         project.entry_document_id,
@@ -225,24 +291,21 @@ def test_project_edit_tool_rejects_ambiguous_old_text_without_writing_document(t
     spec = make_project_edit_tool(store, project.project_id)
 
     with pytest.raises(ResourceConflictError, match="旧文本匹配多处"):
-        asyncio.run(spec.call({
-            "changes": [{
-                "document_id": document.document_id,
-                "old_text": "重复句。",
-                "new_text": "精简句。",
-                "document_version": document.version,
-            }],
-        }, _ctx(tmp_path)))
+        asyncio.run(spec.call(
+            {"documents": _documents(document, [_hunk("重复句。", "精简句。")])},
+            _ctx(tmp_path),
+        ))
 
     current = store.get_document("tester", project.project_id, document.document_id)
     assert current.content == "重复句。中间。重复句。"
     store.close()
 
 
-def test_project_edit_tool_rejects_duplicate_document_changes_atomically(tmp_path):
+def test_project_edit_tool_rejects_duplicate_document_entries_atomically(tmp_path):
+    """documents 列表内同一文档出现两次：整批拒绝，不创建半成品。"""
     store = MemoryStore(tmp_path)
     project = store.create_project("tester", "重复文档")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "tester",
         project.project_id,
         project.entry_document_id,
@@ -251,23 +314,14 @@ def test_project_edit_tool_rejects_duplicate_document_changes_atomically(tmp_pat
     )
     spec = make_project_edit_tool(store, project.project_id)
 
-    with pytest.raises(ValueError, match="每个文档只能出现一次"):
-        asyncio.run(spec.call({
-            "changes": [
-                {
-                    "document_id": document.document_id,
-                    "old_text": "第一句。",
-                    "new_text": "首句。",
-                    "document_version": document.version,
-                },
-                {
-                    "document_id": document.document_id,
-                    "old_text": "第二句。",
-                    "new_text": "次句。",
-                    "document_version": document.version,
-                },
-            ],
-        }, _ctx(tmp_path)))
+    with pytest.raises(ValueError, match="文档重复"):
+        asyncio.run(spec.call(
+            {"documents": [
+                *_documents(document, [_hunk("第一句。", "首句。")]),
+                *_documents(document, [_hunk("第二句。", "次句。")]),
+            ]},
+            _ctx(tmp_path),
+        ))
 
     current = store.get_document("tester", project.project_id, document.document_id)
     assert current.content == "第一句。第二句。"
@@ -283,7 +337,7 @@ def test_project_edit_tool_rejects_duplicate_document_changes_atomically(tmp_pat
 def test_project_edit_tool_checks_version_before_matching_old_text(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("tester", "版本优先")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "tester",
         project.project_id,
         project.entry_document_id,
@@ -293,14 +347,14 @@ def test_project_edit_tool_checks_version_before_matching_old_text(tmp_path):
     spec = make_project_edit_tool(store, project.project_id)
 
     with pytest.raises(ResourceConflictError, match="版本冲突"):
-        asyncio.run(spec.call({
-            "changes": [{
+        asyncio.run(spec.call(
+            {"documents": [{
                 "document_id": document.document_id,
-                "old_text": "旧版本中已经删除的文字。",
-                "new_text": "替换文字。",
                 "document_version": document.version - 1,
-            }],
-        }, _ctx(tmp_path)))
+                "hunks": [_hunk("旧版本中已经删除的文字。", "替换文字。")],
+            }]},
+            _ctx(tmp_path),
+        ))
 
     current = store.get_document("tester", project.project_id, document.document_id)
     assert current.content == "当前正文。"

@@ -14,7 +14,7 @@ import unicodedata
 import uuid
 import weakref
 from codecs import BOM_UTF8
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Iterable
@@ -22,6 +22,7 @@ from typing import BinaryIO, Iterable
 import psutil
 
 from .errors import (
+    ChangeSetStateError,
     DocumentWriteBusyError,
     ResourceConflictError,
     StorageRecoveryPendingError,
@@ -59,10 +60,7 @@ CREATE TABLE IF NOT EXISTS change_sets (
     document_id TEXT NOT NULL,
     session_id TEXT,
     source TEXT NOT NULL CHECK (source IN ('selection', 'chat')),
-    start_offset INTEGER NOT NULL,
-    end_offset INTEGER NOT NULL,
-    original_text TEXT NOT NULL,
-    replacement_text TEXT NOT NULL,
+    task_id TEXT NOT NULL,
     base_version INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')),
     created_at TEXT NOT NULL,
@@ -70,6 +68,21 @@ CREATE TABLE IF NOT EXISTS change_sets (
 );
 CREATE INDEX IF NOT EXISTS idx_change_sets_owner
     ON change_sets(assistant_id, project_id, document_id);
+CREATE TABLE IF NOT EXISTS change_set_hunks (
+    hunk_id TEXT PRIMARY KEY,
+    change_set_id TEXT NOT NULL,
+    display_order INTEGER NOT NULL,
+    range_start INTEGER NOT NULL,
+    range_end INTEGER NOT NULL,
+    original_text TEXT NOT NULL,
+    new_text TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected', 'stale')),
+    created_at TEXT NOT NULL,
+    applied_at TEXT,
+    UNIQUE (change_set_id, display_order)
+);
+CREATE INDEX IF NOT EXISTS idx_change_set_hunks_set
+    ON change_set_hunks(change_set_id, display_order);
 CREATE TABLE IF NOT EXISTS document_write_intents (
     intent_id TEXT PRIMARY KEY,
     assistant_id TEXT NOT NULL,
@@ -126,6 +139,22 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True)
+class ChangeSetHunkRecord:
+    """单个修改片段；范围是 Unicode code point 半开区间（架构 §4.7 v1.20）。"""
+
+    hunk_id: str
+    change_set_id: str
+    display_order: int
+    start: int
+    end: int
+    original_text: str
+    new_text: str
+    status: str
+    created_at: str = ""
+    applied_at: str | None = None
+
+
+@dataclass(frozen=True)
 class ChangeSetRecord:
     change_set_id: str
     assistant_id: str
@@ -133,12 +162,10 @@ class ChangeSetRecord:
     document_id: str
     session_id: str | None
     source: str
-    start: int
-    end: int
-    original_text: str
-    replacement_text: str
+    task_id: str
     base_version: int
     status: str
+    hunks: list[ChangeSetHunkRecord] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -146,6 +173,7 @@ class _WriteIntent:
     intent_id: str
     document_id: str
     change_set_id: str | None
+    hunk_id: str
     expected_version: int
     target_version: int
     relative_path: str
@@ -283,53 +311,80 @@ def create_tables(conn: sqlite3.Connection) -> None:
         "owner_pid": "INTEGER NOT NULL DEFAULT 0",
         "owner_started_at": "REAL NOT NULL DEFAULT 0",
         "claimed_at": "TEXT NOT NULL DEFAULT ''",
+        "hunk_id": "TEXT NOT NULL DEFAULT ''",
     }
     for name, declaration in additions.items():
         if name not in columns:
             conn.execute(
                 f"ALTER TABLE document_write_intents ADD COLUMN {name} {declaration}"
             )
-    schema = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'change_sets'"
-    ).fetchone()[0]
-    if "CHECK" not in schema.upper():
-        conn.commit()
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            conn.execute("DROP INDEX IF EXISTS idx_change_sets_owner")
-            conn.execute("ALTER TABLE change_sets RENAME TO change_sets_legacy")
-            conn.execute(
-                """CREATE TABLE change_sets (
-                    change_set_id TEXT PRIMARY KEY,
-                    assistant_id TEXT NOT NULL,
-                    project_id TEXT NOT NULL,
-                    document_id TEXT NOT NULL,
-                    session_id TEXT,
-                    source TEXT NOT NULL CHECK (source IN ('selection', 'chat')),
-                    start_offset INTEGER NOT NULL,
-                    end_offset INTEGER NOT NULL,
-                    original_text TEXT NOT NULL,
-                    replacement_text TEXT NOT NULL,
-                    base_version INTEGER NOT NULL,
-                    status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')),
-                    created_at TEXT NOT NULL,
-                    applied_at TEXT
-                )"""
-            )
-            conn.execute(
-                "INSERT INTO change_sets SELECT * FROM change_sets_legacy"
-            )
-            conn.execute("DROP TABLE change_sets_legacy")
-            conn.execute(
-                "CREATE INDEX idx_change_sets_owner "
-                "ON change_sets(assistant_id, project_id, document_id)"
-            )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+    conn.commit()
+    change_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(change_sets)")
+    }
+    if "task_id" not in change_columns:
+        _migrate_change_sets_to_hunks(conn)
     else:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_change_sets_task_document "
+            "ON change_sets(task_id, document_id)"
+        )
+    conn.commit()
+
+
+def _migrate_change_sets_to_hunks(conn: sqlite3.Connection) -> None:
+    """v1.20 拆表迁移：单范围 change_sets → 父级 + 单 hunk，任一步失败整体回滚。
+
+    历史记录没有任务 id，生成确定性合成值 `legacy-<change_set_id>`，避免
+    `(task_id, document_id)` 唯一索引把 NULL 视为互不冲突。
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("DROP INDEX IF EXISTS idx_change_sets_owner")
+        conn.execute("DROP INDEX IF EXISTS idx_change_sets_task_document")
+        conn.execute("ALTER TABLE change_sets RENAME TO change_sets_legacy")
+        conn.execute(
+            """CREATE TABLE change_sets (
+                change_set_id TEXT PRIMARY KEY,
+                assistant_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                session_id TEXT,
+                source TEXT NOT NULL CHECK (source IN ('selection', 'chat')),
+                task_id TEXT NOT NULL,
+                base_version INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')),
+                created_at TEXT NOT NULL,
+                applied_at TEXT
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO change_sets (change_set_id, assistant_id, project_id, document_id, "
+            "session_id, source, task_id, base_version, status, created_at, applied_at) "
+            "SELECT change_set_id, assistant_id, project_id, document_id, session_id, source, "
+            "'legacy-' || change_set_id, base_version, status, created_at, applied_at "
+            "FROM change_sets_legacy"
+        )
+        conn.execute(
+            "INSERT INTO change_set_hunks (hunk_id, change_set_id, display_order, "
+            "range_start, range_end, original_text, new_text, status, created_at, applied_at) "
+            "SELECT change_set_id || '-h0', change_set_id, 0, start_offset, end_offset, "
+            "original_text, replacement_text, status, created_at, applied_at "
+            "FROM change_sets_legacy"
+        )
+        conn.execute("DROP TABLE change_sets_legacy")
+        conn.execute(
+            "CREATE UNIQUE INDEX idx_change_sets_task_document "
+            "ON change_sets(task_id, document_id)"
+        )
+        conn.execute(
+            "CREATE INDEX idx_change_sets_owner "
+            "ON change_sets(assistant_id, project_id, document_id)"
+        )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _row_to_project(row: tuple) -> ProjectRecord:
@@ -464,7 +519,7 @@ def _write_intent_row(
     intent_id: str,
 ) -> _WriteIntent | None:
     row = conn.execute(
-        "SELECT intent_id, document_id, change_set_id, expected_version, target_version, "
+        "SELECT intent_id, document_id, change_set_id, hunk_id, expected_version, target_version, "
         "relative_path, content, utf8_bom, owner_pid, owner_started_at, claimed_at, created_at "
         "FROM document_write_intents "
         "WHERE assistant_id = ? AND project_id = ? AND intent_id = ?",
@@ -504,6 +559,7 @@ def _claim_write_intent(
             intent.intent_id,
             intent.document_id,
             intent.change_set_id,
+            intent.hunk_id,
             intent.expected_version,
             intent.target_version,
             intent.relative_path,
@@ -564,27 +620,42 @@ def _finalize_write_intent(
                 raise ResourceConflictError("版本冲突")
         elif current_version != intent.target_version:
             raise ResourceConflictError("写入意图版本冲突")
+        staled: list[str] = []
         if intent.change_set_id is not None:
-            change_cursor = conn.execute(
-                "UPDATE change_sets SET status = 'applied', applied_at = ? "
-                "WHERE assistant_id = ? AND project_id = ? AND change_set_id = ? "
-                "AND status = 'pending'",
-                (_now(), assistant_id, project_id, intent.change_set_id),
+            now = _now()
+            if intent.hunk_id:
+                hunk_cursor = conn.execute(
+                    "UPDATE change_set_hunks SET status = 'applied', applied_at = ? "
+                    "WHERE change_set_id = ? AND hunk_id = ? AND status = 'pending'",
+                    (now, intent.change_set_id, intent.hunk_id),
+                )
+                if hunk_cursor.rowcount != 1:
+                    status_row = conn.execute(
+                        "SELECT status FROM change_set_hunks WHERE hunk_id = ?",
+                        (intent.hunk_id,),
+                    ).fetchone()
+                    if status_row is None or status_row[0] != "applied":
+                        raise ResourceConflictError("change set 已处理")
+            else:
+                conn.execute(
+                    "UPDATE change_set_hunks SET status = 'applied', applied_at = ? "
+                    "WHERE change_set_id = ? AND status = 'pending'",
+                    (now, intent.change_set_id),
+                )
+            _refresh_change_set_status(conn, intent.change_set_id)
+            # 其他任务的建议整组失效；同组其余 hunk 保留内容复检机会。
+            staled = _stale_outdated_hunks(
+                conn, assistant_id, project_id, intent.document_id,
+                exclude_change_set_id=intent.change_set_id,
+                below_version=intent.target_version,
             )
-            if change_cursor.rowcount != 1:
-                status_row = conn.execute(
-                    "SELECT status FROM change_sets "
-                    "WHERE assistant_id = ? AND project_id = ? AND change_set_id = ?",
-                    (assistant_id, project_id, intent.change_set_id),
-                ).fetchone()
-                if status_row is None or status_row[0] != "applied":
-                    raise ResourceConflictError("change set 已处理")
         conn.execute(
             "DELETE FROM document_write_intents "
             "WHERE assistant_id = ? AND project_id = ? AND intent_id = ?",
             (assistant_id, project_id, intent.intent_id),
         )
         conn.commit()
+        return staled
     except Exception:
         conn.rollback()
         raise
@@ -812,6 +883,11 @@ def purge_project(
             (assistant_id, project_id),
         )
         conn.execute(
+            "DELETE FROM change_set_hunks WHERE change_set_id IN ("
+            "SELECT change_set_id FROM change_sets WHERE assistant_id = ? AND project_id = ?)",
+            (assistant_id, project_id),
+        )
+        conn.execute(
             "DELETE FROM change_sets WHERE assistant_id = ? AND project_id = ?",
             (assistant_id, project_id),
         )
@@ -833,6 +909,11 @@ def purge_project(
 
 def delete_assistant_rows(conn: sqlite3.Connection, assistant_id: str) -> None:
     """物理清除助手时删除项目元数据，顺序保持子记录先于项目。"""
+    conn.execute(
+        "DELETE FROM change_set_hunks WHERE change_set_id IN ("
+        "SELECT change_set_id FROM change_sets WHERE assistant_id = ?)",
+        (assistant_id,),
+    )
     for table in ("document_write_intents", "change_sets", "project_documents", "projects"):
         conn.execute(f"DELETE FROM {table} WHERE assistant_id = ?", (assistant_id,))
     conn.commit()
@@ -991,13 +1072,24 @@ def _save_document_impl(conn: sqlite3.Connection, data_dir: Path, assistant_id: 
         _discard_failed_write_intent(conn, assistant_id, project_id, intent)
         raise
     _finalize_write_intent(conn, assistant_id, project_id, intent)
-    return get_document(conn, data_dir, assistant_id, project_id, document_id)
+    staled: list[str] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        staled = _stale_outdated_hunks(
+            conn, assistant_id, project_id, document_id,
+            exclude_change_set_id=None, below_version=expected_version + 1,
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return get_document(conn, data_dir, assistant_id, project_id, document_id), staled
 
 
 def save_document(
     conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
     document_id: str, content: str, expected_version: int,
-) -> DocumentRecord:
+) -> tuple[DocumentRecord, list[str]]:
     guard = _document_write_guard(assistant_id, project_id, document_id)
     with guard:
         return _save_document_impl(
@@ -1005,114 +1097,277 @@ def save_document(
         )
 
 
-def create_change_set(
+_MAX_HUNKS_PER_SET = 100
+_MAX_SET_UTF8_BYTES = 1024 * 1024
+
+_CHANGE_SET_COLUMNS = (
+    "change_set_id, assistant_id, project_id, document_id, session_id, source, "
+    "task_id, base_version, status"
+)
+_HUNK_COLUMNS = (
+    "hunk_id, change_set_id, display_order, range_start, range_end, "
+    "original_text, new_text, status, created_at, applied_at"
+)
+
+
+def _hunks_of(conn: sqlite3.Connection, change_set_id: str) -> list[ChangeSetHunkRecord]:
+    rows = conn.execute(
+        f"SELECT {_HUNK_COLUMNS} FROM change_set_hunks "
+        "WHERE change_set_id = ? ORDER BY display_order",
+        (change_set_id,),
+    ).fetchall()
+    return [ChangeSetHunkRecord(*row) for row in rows]
+
+
+def _refresh_change_set_status(conn: sqlite3.Connection, change_set_id: str) -> None:
+    """父级状态由 hunk 派生：有 pending/stale 则 pending，否则任一 applied 则 applied。"""
+    statuses = [
+        row[0] for row in conn.execute(
+            "SELECT status FROM change_set_hunks WHERE change_set_id = ?",
+            (change_set_id,),
+        )
+    ]
+    if any(item in {"pending", "stale"} for item in statuses):
+        status = "pending"
+    elif "applied" in statuses:
+        status = "applied"
+    else:
+        status = "rejected"
+    conn.execute(
+        "UPDATE change_sets SET status = ?, applied_at = COALESCE("
+        "(SELECT MAX(applied_at) FROM change_set_hunks WHERE change_set_id = ?), applied_at"
+        ") WHERE change_set_id = ?",
+        (status, change_set_id, change_set_id),
+    )
+
+
+def _stale_outdated_hunks(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    document_id: str,
+    *,
+    exclude_change_set_id: str | None,
+    below_version: int,
+) -> list[str]:
+    """版本推进后把其他 change set 的 pending hunk 转 stale，返回受影响的 set id。
+
+    `exclude_change_set_id` 为 None 时作用于全部（手工保存场景）；指定时排除
+    当前 set（其同组 hunk 走内容复检，不整组失效）。
+    """
+    params: list[object] = [assistant_id, project_id, document_id, below_version]
+    exclude_sql = ""
+    if exclude_change_set_id is not None:
+        exclude_sql = " AND change_set_id != ?"
+        params.append(exclude_change_set_id)
+    rows = conn.execute(
+        "SELECT DISTINCT change_set_id FROM change_sets "
+        "WHERE assistant_id = ? AND project_id = ? AND document_id = ? "
+        "AND base_version < ?" + exclude_sql,
+        params,
+    ).fetchall()
+    staled = [row[0] for row in rows]
+    for change_set_id in staled:
+        conn.execute(
+            "UPDATE change_set_hunks SET status = 'stale' "
+            "WHERE change_set_id = ? AND status = 'pending'",
+            (change_set_id,),
+        )
+        _refresh_change_set_status(conn, change_set_id)
+    return staled
+
+
+def _require_unique_task_document(
+    conn: sqlite3.Connection, task_id: str, document_id: str
+) -> None:
+    if conn.execute(
+        "SELECT 1 FROM change_sets WHERE task_id = ? AND document_id = ?",
+        (task_id, document_id),
+    ).fetchone() is not None:
+        raise ResourceConflictError("该任务已提交过此文档的修改建议")
+
+
+def _validate_hunk_layout(hunks: list[dict]) -> None:
+    """相邻合法、重叠非法、两个零长度插入不得同位（架构 §4.7）。"""
+    previous = None
+    for item in hunks:
+        if previous is not None:
+            if item["start"] < previous["end"]:
+                raise ResourceConflictError("hunk 范围重叠")
+            if item["start"] == item["end"] == previous["start"] == previous["end"]:
+                raise ResourceConflictError("两个零长度插入不得位于同一位置")
+        previous = item
+
+
+def _recover_write_intents_scope(
+    conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
+    documents: list[dict],
+) -> None:
+    for entry in documents:
+        _recover_write_intents(
+            conn, data_dir, assistant_id, project_id, str(entry["document_id"])
+        )
+
+
+def create_change_set_hunks(
+    conn: sqlite3.Connection,
+    data_dir: Path,
+    assistant_id: str,
+    project_id: str,
+    *,
+    task_id: str,
+    source: str,
+    documents: list[dict],
+    session_id: str | None = None,
+) -> list[ChangeSetRecord]:
+    """编辑工具路径：按 old_text 唯一匹配定位，原子创建父级 change set 与全部 hunk。"""
+    if source not in {"selection", "chat"}:
+        raise ValueError(f"change set 来源非法：{source}")
+    if not documents:
+        raise ValueError("documents 不能为空")
+    _recover_write_intents_scope(conn, data_dir, assistant_id, project_id, documents)
+    created: list[str] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        seen_documents: set[str] = set()
+        for entry in documents:
+            document_id = str(entry["document_id"])
+            if document_id in seen_documents:
+                raise ValueError("同一次请求中文档重复")
+            seen_documents.add(document_id)
+            base_version = int(entry["document_version"])
+            raw_hunks = list(entry["hunks"])
+            if not 1 <= len(raw_hunks) <= _MAX_HUNKS_PER_SET:
+                raise ValueError("每个 change set 的 hunk 数量必须在 1 到 100 之间")
+            document = _load_document(conn, data_dir, assistant_id, project_id, document_id)
+            if document.version != base_version:
+                raise ResourceConflictError("版本冲突")
+            content = document.content if document.content is not None else ""
+            total_bytes = sum(
+                len(str(item.get("old_text", "")).encode("utf-8"))
+                + len(str(item.get("new_text", "")).encode("utf-8"))
+                for item in raw_hunks
+            )
+            if total_bytes > _MAX_SET_UTF8_BYTES:
+                raise ValueError("change set 总量超过 1 MiB 上限")
+            _require_unique_task_document(conn, task_id, document_id)
+            located: list[dict] = []
+            for item in raw_hunks:
+                old_text = str(item.get("old_text", ""))
+                new_text = str(item.get("new_text", ""))
+                if old_text == "":
+                    if content:
+                        raise ResourceConflictError("非空文档不能使用空旧文本")
+                    start = end = 0
+                else:
+                    start = content.find(old_text)
+                    if start < 0:
+                        raise ResourceConflictError("旧文本不存在")
+                    if content.find(old_text, start + 1) >= 0:
+                        raise ResourceConflictError("旧文本匹配多处，请提供更多上下文")
+                    end = start + len(old_text)
+                located.append(
+                    {"start": start, "end": end, "original": old_text, "replacement": new_text}
+                )
+            located.sort(key=lambda item: item["start"])
+            _validate_hunk_layout(located)
+            change_set_id = _new_id()
+            created.append(change_set_id)
+            now = _now()
+            conn.execute(
+                "INSERT INTO change_sets (change_set_id, assistant_id, project_id, document_id, "
+                "session_id, source, task_id, base_version, status, created_at, applied_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,NULL)",
+                (
+                    change_set_id, assistant_id, project_id, document_id, session_id,
+                    source, task_id, base_version, "pending", now,
+                ),
+            )
+            for order, item in enumerate(located):
+                conn.execute(
+                    "INSERT INTO change_set_hunks (hunk_id, change_set_id, display_order, "
+                    "range_start, range_end, original_text, new_text, status, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (
+                        _new_id(), change_set_id, order, item["start"], item["end"],
+                        item["original"], item["replacement"], "pending", now,
+                    ),
+                )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return [get_change_set(conn, assistant_id, project_id, change_set_id) for change_set_id in created]
+
+
+def create_selection_change_set(
     conn: sqlite3.Connection,
     data_dir: Path,
     assistant_id: str,
     project_id: str,
     document_id: str,
     *,
-    source: str,
+    task_id: str,
     start: int,
     end: int,
     original_text: str,
     replacement_text: str,
     base_version: int,
-    session_id: str | None = None,
-) -> ChangeSetRecord:
-    return create_change_sets(
-        conn,
-        data_dir,
-        assistant_id,
-        project_id,
-        [
-            {
-                "document_id": document_id,
-                "start": start,
-                "end": end,
-                "original_text": original_text,
-                "replacement_text": replacement_text,
-                "base_version": base_version,
-            }
-        ],
-        source=source,
-        session_id=session_id,
-    )[0]
-
-
-def create_change_sets(
-    conn: sqlite3.Connection,
-    data_dir: Path,
-    assistant_id: str,
-    project_id: str,
-    drafts: Iterable[dict[str, object]],
-    *,
     source: str,
     session_id: str | None = None,
-) -> list[ChangeSetRecord]:
-    items = list(drafts)
-    if not items:
-        return []
+) -> ChangeSetRecord:
+    """选区改写路径：使用服务端已掌握的选区范围，但必须复核原文快照。"""
     if source not in {"selection", "chat"}:
         raise ValueError(f"change set 来源非法：{source}")
-    created_ids: list[str] = []
-    _recover_write_intents(conn, data_dir, assistant_id, project_id)
+    _recover_write_intents(conn, data_dir, assistant_id, project_id, document_id)
+    change_set_id = _new_id()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        validated: list[tuple[str, int, int, str, str, int]] = []
-        for item in items:
-            document_id = str(item["document_id"])
-            start = int(item["start"])
-            end = int(item["end"])
-            original_text = str(item["original_text"])
-            replacement_text = str(item["replacement_text"])
-            base_version = int(item["base_version"])
-            document = _load_document(
-                conn, data_dir, assistant_id, project_id, document_id
-            )
-            if start < 0 or end < start or document.content is None or end > len(document.content):
-                raise ValueError("选区范围非法")
-            if document.version != base_version:
-                raise ResourceConflictError("版本冲突")
-            if document.content[start:end] != original_text:
-                raise ResourceConflictError("原文快照不匹配")
-            validated.append(
-                (document_id, start, end, original_text, replacement_text, base_version)
-            )
+        document = _load_document(conn, data_dir, assistant_id, project_id, document_id)
+        if start < 0 or end < start or document.content is None or end > len(document.content):
+            raise ValueError("选区范围非法")
+        if document.version != base_version:
+            raise ResourceConflictError("版本冲突")
+        if document.content[start:end] != original_text:
+            raise ResourceConflictError("原文快照不匹配")
+        _require_unique_task_document(conn, task_id, document_id)
         now = _now()
-        for document_id, start, end, original_text, replacement_text, base_version in validated:
-            change_set_id = _new_id()
-            created_ids.append(change_set_id)
-            conn.execute(
-                "INSERT INTO change_sets VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)",
-                (
-                    change_set_id, assistant_id, project_id, document_id, session_id,
-                    source, start, end, original_text, replacement_text,
-                    base_version, "pending", now,
-                ),
-            )
+        conn.execute(
+            "INSERT INTO change_sets (change_set_id, assistant_id, project_id, document_id, "
+            "session_id, source, task_id, base_version, status, created_at, applied_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,NULL)",
+            (
+                change_set_id, assistant_id, project_id, document_id, session_id,
+                source, task_id, base_version, "pending", now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO change_set_hunks (hunk_id, change_set_id, display_order, "
+            "range_start, range_end, original_text, new_text, status, created_at) "
+            "VALUES (?,?,0,?,?,?,?,?,?)",
+            (
+                _new_id(), change_set_id, start, end,
+                original_text, replacement_text, "pending", now,
+            ),
+        )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
-    return [
-        get_change_set(conn, assistant_id, project_id, change_set_id)
-        for change_set_id in created_ids
-    ]
+    return get_change_set(conn, assistant_id, project_id, change_set_id)
 
 
 def get_change_set(
     conn: sqlite3.Connection, assistant_id: str, project_id: str, change_set_id: str
 ) -> ChangeSetRecord:
     row = conn.execute(
-        "SELECT change_set_id, assistant_id, project_id, document_id, session_id, source, "
-        "start_offset, end_offset, original_text, replacement_text, base_version, status "
-        "FROM change_sets WHERE assistant_id = ? AND project_id = ? AND change_set_id = ?",
+        f"SELECT {_CHANGE_SET_COLUMNS} FROM change_sets "
+        "WHERE assistant_id = ? AND project_id = ? AND change_set_id = ?",
         (assistant_id, project_id, change_set_id),
     ).fetchone()
     if row is None:
         raise KeyError(f"change set 不存在：{change_set_id}")
-    return _row_to_change_set(row)
+    return ChangeSetRecord(*row, hunks=_hunks_of(conn, change_set_id))
 
 
 def list_pending_chat_changes(
@@ -1123,77 +1378,110 @@ def list_pending_chat_changes(
 ) -> list[ChangeSetRecord]:
     _project_row(conn, assistant_id, project_id)
     rows = conn.execute(
-        "SELECT change_set_id, assistant_id, project_id, document_id, session_id, source, "
-        "start_offset, end_offset, original_text, replacement_text, base_version, status, "
-        "created_at, applied_at FROM change_sets "
+        f"SELECT {_CHANGE_SET_COLUMNS} FROM change_sets "
         "WHERE assistant_id = ? AND project_id = ? AND session_id = ? "
         "AND source = 'chat' AND status = 'pending' ORDER BY created_at, change_set_id",
         (assistant_id, project_id, chat_session_id),
     ).fetchall()
-    return [_row_to_change_set(row) for row in rows]
+    return [ChangeSetRecord(*row, hunks=_hunks_of(conn, row[0])) for row in rows]
 
 
-def reject_change_set(
-    conn: sqlite3.Connection, assistant_id: str, project_id: str, change_set_id: str
-) -> ChangeSetRecord:
-    get_change_set(conn, assistant_id, project_id, change_set_id)
-    cursor = conn.execute(
-        "UPDATE change_sets SET status = 'rejected' "
-        "WHERE assistant_id = ? AND project_id = ? AND change_set_id = ? AND status = 'pending'",
-        (assistant_id, project_id, change_set_id),
+def list_change_sets_for_document(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    document_id: str,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+) -> dict:
+    """按文档分页查询 change set（含全部 hunk），供前端状态对账（架构 §5.9）。"""
+    _project_row(conn, assistant_id, project_id)
+    if page < 1 or page_size < 1:
+        raise ValueError("分页参数非法")
+    total = conn.execute(
+        "SELECT COUNT(*) FROM change_sets "
+        "WHERE assistant_id = ? AND project_id = ? AND document_id = ?",
+        (assistant_id, project_id, document_id),
+    ).fetchone()[0]
+    rows = conn.execute(
+        f"SELECT {_CHANGE_SET_COLUMNS}, created_at FROM change_sets "
+        "WHERE assistant_id = ? AND project_id = ? AND document_id = ? "
+        "ORDER BY created_at DESC, change_set_id DESC LIMIT ? OFFSET ?",
+        (assistant_id, project_id, document_id, page_size, (page - 1) * page_size),
+    ).fetchall()
+    items = [ChangeSetRecord(*row[:9], hunks=_hunks_of(conn, row[0])) for row in rows]
+    return {"items": items, "total": int(total), "page": page, "page_size": page_size}
+
+
+def _mark_hunk(conn: sqlite3.Connection, hunk: ChangeSetHunkRecord, status: str) -> None:
+    conn.execute(
+        "UPDATE change_set_hunks SET status = ?, applied_at = ? WHERE hunk_id = ?",
+        (status, _now() if status == "applied" else None, hunk.hunk_id),
     )
-    if cursor.rowcount != 1:
-        conn.rollback()
-        raise ResourceConflictError("change set 已处理")
-    conn.commit()
-    return get_change_set(conn, assistant_id, project_id, change_set_id)
+    _refresh_change_set_status(conn, hunk.change_set_id)
 
 
-def _apply_change_set_impl(
+def _accept_hunk_impl(
     conn: sqlite3.Connection,
     data_dir: Path,
     assistant_id: str,
     project_id: str,
     change_set_id: str,
-    expected_version: int,
-) -> tuple[DocumentRecord, ChangeSetRecord]:
+    hunk_id: str,
+) -> tuple[DocumentRecord, ChangeSetRecord, ChangeSetHunkRecord, list[str]]:
     intent_id = _new_id()
-    _recover_write_intents(conn, data_dir, assistant_id, project_id)
+    change = get_change_set(conn, assistant_id, project_id, change_set_id)
+    document_id = change.document_id
+    _recover_write_intents(conn, data_dir, assistant_id, project_id, document_id)
+    new_content = ""
+    path = None
+    utf8_bom = False
     try:
         conn.execute("BEGIN IMMEDIATE")
         change = get_change_set(conn, assistant_id, project_id, change_set_id)
-        if change.status != "pending":
-            raise ResourceConflictError("change set 已处理")
-        current = _load_document(
-            conn, data_dir, assistant_id, project_id, change.document_id
-        )
-        if current.version != expected_version or current.version != change.base_version:
-            raise ResourceConflictError("版本冲突")
-        if current.content is None:
+        hunk = next((item for item in change.hunks if item.hunk_id == hunk_id), None)
+        if hunk is None:
+            raise KeyError(f"hunk 不存在：{hunk_id}")
+        if hunk.status == "applied":
+            raise ChangeSetStateError("already_applied", "该 hunk 已应用")
+        if hunk.status == "rejected":
+            raise ChangeSetStateError("already_rejected", "该 hunk 已放弃")
+        if hunk.status == "stale":
+            raise ChangeSetStateError("stale", "该 hunk 已失效，请重新生成")
+        current = _load_document(conn, data_dir, assistant_id, project_id, document_id)
+        content = current.content
+        if content is None:
             raise ValueError("该文件不可编辑")
-        if current.content[change.start:change.end] != change.original_text:
-            raise ResourceConflictError("原文快照不匹配")
-        content = (
-            current.content[:change.start]
-            + change.replacement_text
-            + current.content[change.end:]
-        )
-        path = _document_path(
-            data_dir, assistant_id, project_id, current.relative_path
-        )
+        if current.version == change.base_version:
+            if content[hunk.start:hunk.end] != hunk.original_text:
+                _mark_hunk(conn, hunk, "stale")
+                conn.commit()
+                raise ChangeSetStateError("stale", "原文快照不匹配，该 hunk 已失效")
+            start, end = hunk.start, hunk.end
+        else:
+            # 内容复检：同组其余 hunk 在版本推进后凭 old_text 唯一匹配继续可用。
+            start = content.find(hunk.original_text)
+            if start < 0 or content.find(hunk.original_text, start + 1) >= 0:
+                _mark_hunk(conn, hunk, "stale")
+                conn.commit()
+                raise ChangeSetStateError("stale", "修改位置已变化，该 hunk 已失效")
+            end = start + len(hunk.original_text)
+        new_content = content[:start] + hunk.new_text + content[end:]
+        path = _document_path(data_dir, assistant_id, project_id, current.relative_path)
         utf8_bom = path.read_bytes().startswith(BOM_UTF8)
         now = _now()
         started_at = _process_started_at(os.getpid())
         try:
             conn.execute(
                 "INSERT INTO document_write_intents "
-                "(intent_id, assistant_id, project_id, document_id, change_set_id, "
+                "(intent_id, assistant_id, project_id, document_id, change_set_id, hunk_id, "
                 "expected_version, target_version, relative_path, content, utf8_bom, owner_pid, "
-                "owner_started_at, claimed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "owner_started_at, claimed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    intent_id, assistant_id, project_id, change.document_id,
-                    change_set_id, expected_version, expected_version + 1,
-                    current.relative_path, content, int(utf8_bom), os.getpid(),
+                    intent_id, assistant_id, project_id, document_id, change_set_id,
+                    hunk.hunk_id, current.version, current.version + 1,
+                    current.relative_path, new_content, int(utf8_bom), os.getpid(),
                     started_at, now, now,
                 ),
             )
@@ -1207,24 +1495,97 @@ def _apply_change_set_impl(
     if intent is None:
         raise StorageRecoveryPendingError("文档写入意图意外丢失")
     try:
-        _write_atomic(path, content, utf8_bom=utf8_bom)
+        _write_atomic(path, new_content, utf8_bom=utf8_bom)
     except Exception:
         _discard_failed_write_intent(conn, assistant_id, project_id, intent)
         raise
-    _finalize_write_intent(conn, assistant_id, project_id, intent)
-    return (
-        get_document(conn, data_dir, assistant_id, project_id, change.document_id),
-        get_change_set(conn, assistant_id, project_id, change_set_id),
-    )
+    staled = _finalize_write_intent(conn, assistant_id, project_id, intent)
+    document = get_document(conn, data_dir, assistant_id, project_id, document_id)
+    final_set = get_change_set(conn, assistant_id, project_id, change_set_id)
+    final_hunk = next(item for item in final_set.hunks if item.hunk_id == hunk_id)
+    return document, final_set, final_hunk, staled
 
 
-def apply_change_set(
+def accept_change_hunk(
     conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
-    change_set_id: str, expected_version: int,
-) -> tuple[DocumentRecord, ChangeSetRecord]:
+    change_set_id: str, hunk_id: str,
+) -> tuple[DocumentRecord, ChangeSetRecord, ChangeSetHunkRecord, list[str]]:
     change = get_change_set(conn, assistant_id, project_id, change_set_id)
     guard = _document_write_guard(assistant_id, project_id, change.document_id)
     with guard:
-        return _apply_change_set_impl(
-            conn, data_dir, assistant_id, project_id, change_set_id, expected_version
+        return _accept_hunk_impl(
+            conn, data_dir, assistant_id, project_id, change_set_id, hunk_id
         )
+
+
+def reject_change_hunk(
+    conn: sqlite3.Connection, assistant_id: str, project_id: str,
+    change_set_id: str, hunk_id: str,
+) -> ChangeSetRecord:
+    get_change_set(conn, assistant_id, project_id, change_set_id)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM document_write_intents "
+            "WHERE assistant_id = ? AND project_id = ? AND change_set_id = ?",
+            (assistant_id, project_id, change_set_id),
+        ).fetchone() is not None:
+            raise ResourceConflictError("文档正在被写入，稍后再试")
+        hunk = next(
+            (item for item in _hunks_of(conn, change_set_id) if item.hunk_id == hunk_id), None
+        )
+        if hunk is None:
+            raise KeyError(f"hunk 不存在：{hunk_id}")
+        if hunk.status == "applied":
+            raise ChangeSetStateError("already_applied", "该 hunk 已应用")
+        if hunk.status == "rejected":
+            raise ChangeSetStateError("already_rejected", "该 hunk 已放弃")
+        _mark_hunk(conn, hunk, "rejected")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return get_change_set(conn, assistant_id, project_id, change_set_id)
+
+
+def accept_all_change_hunks(
+    conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
+    change_set_id: str,
+) -> dict:
+    """全部接受：按范围倒序串行应用；任一 hunk 复检失败即停止，已应用不回滚。"""
+    change = get_change_set(conn, assistant_id, project_id, change_set_id)
+    guard = _document_write_guard(assistant_id, project_id, change.document_id)
+    with guard:
+        applied: list[str] = []
+        staled_union: list[str] = []
+        stopped: dict | None = None
+        document: DocumentRecord | None = None
+        pending = sorted(
+            (item for item in change.hunks if item.status == "pending"),
+            key=lambda item: item.start,
+            reverse=True,
+        )
+        for hunk in pending:
+            try:
+                document, _, _, staled = _accept_hunk_impl(
+                    conn, data_dir, assistant_id, project_id, change_set_id, hunk.hunk_id
+                )
+            except ChangeSetStateError as exc:
+                stopped = {"hunk_id": hunk.hunk_id, "reason": exc.code}
+                break
+            applied.append(hunk.hunk_id)
+            staled_union.extend(item for item in staled if item not in staled_union)
+        final = get_change_set(conn, assistant_id, project_id, change_set_id)
+        if document is None:
+            document = get_document(
+                conn, data_dir, assistant_id, project_id, change.document_id
+            )
+        return {
+            "document": document,
+            "change_set": final,
+            "applied_hunk_ids": applied,
+            "stopped": stopped,
+            "staled_change_set_ids": staled_union,
+        }
+
+

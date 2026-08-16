@@ -56,10 +56,10 @@ def test_purge_deletes_project_metadata_change_sets_and_project_archives(tmp_pat
     archived_project = store.create_project("marketing", "旧项目")
     archived_path = store.archive_project("marketing", archived_project.project_id)
     current = store.create_project("marketing", "当前项目")
-    change = store.create_change_set(
+    change = store.create_selection_change_set(
         "marketing", current.project_id, current.entry_document_id,
-        source="selection", start=0, end=0, original_text="",
-        replacement_text="新正文", base_version=1,
+        task_id="task-purge", start=0, end=0, original_text="",
+        replacement_text="新正文", base_version=1, source="selection",
     )
 
     target = registry.delete("marketing", purge=True)

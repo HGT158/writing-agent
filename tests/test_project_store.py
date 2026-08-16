@@ -140,7 +140,7 @@ def test_save_document_uses_optimistic_version_and_preserves_content_on_conflict
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "版本测试")
 
-    saved = store.save_document(
+    saved, _staled = store.save_document(
         "writer-a",
         project.project_id,
         project.entry_document_id,
@@ -404,10 +404,19 @@ def test_change_set_table_enforces_source_and_status_values(tmp_path):
     assert "CHECK" in schema.upper()
     with pytest.raises(sqlite3.IntegrityError):
         store._conn.execute(
-            "INSERT INTO change_sets VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO change_sets VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
-                "invalid", "writer-a", "project", "document", None, "unsafe", 0, 0,
-                "", "", 1, "unknown", datetime.now(timezone.utc).isoformat(), None,
+                "invalid", "writer-a", "project", "document", None, "unsafe",
+                "task-x", 1, "unknown",
+                datetime.now(timezone.utc).isoformat(), None,
+            ),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        store._conn.execute(
+            "INSERT INTO change_set_hunks VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "hunk-invalid", "missing-set", 0, 0, 0, "", "", "unknown",
+                datetime.now(timezone.utc).isoformat(), None,
             ),
         )
     store.close()
@@ -564,14 +573,15 @@ def test_archive_project_moves_directory_and_hides_project(tmp_path):
 def test_archive_project_rejects_pending_change_set_without_moving_files(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "待确认修改")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "writer-a", project.project_id, project.entry_document_id,
         "原始正文", expected_version=1,
     )
-    store.create_change_set(
+    store.create_selection_change_set(
         "writer-a", project.project_id, document.document_id,
-        source="selection", start=0, end=4, original_text="原始正文",
+        task_id="task-archive-pending", start=0, end=4, original_text="原始正文",
         replacement_text="修改正文", base_version=document.version,
+        source="selection",
     )
     root = tmp_path / "assistants" / "writer-a" / "projects" / project.project_id
 
@@ -586,16 +596,17 @@ def test_archive_project_rejects_pending_change_set_without_moving_files(tmp_pat
 def test_create_change_set_rejects_mismatched_original_text(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "快照校验")
-    document = store.save_document(
+    document, _staled = store.save_document(
         "writer-a", project.project_id, project.entry_document_id,
         "真实原文", expected_version=1,
     )
 
     with pytest.raises(RuntimeError, match="原文快照"):
-        store.create_change_set(
+        store.create_selection_change_set(
             "writer-a", project.project_id, document.document_id,
-            source="chat", start=0, end=4, original_text="错误原文",
+            task_id="task-bad-snapshot", start=0, end=4, original_text="错误原文",
             replacement_text="替换", base_version=document.version,
+            source="chat",
         )
     store.close()
 

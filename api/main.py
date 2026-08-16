@@ -12,14 +12,13 @@ from fastapi.staticfiles import StaticFiles
 
 from agent.runtime import AgentRuntime
 from config.settings import Settings, load_settings
-from memory.errors import ResourceConflictError
+from memory.errors import ChangeSetStateError, ResourceConflictError
 from memory.store import AssistantBusyError
 
 from .models import (
     AgentTaskRequest,
     AssistantCreate,
-    ChangeSetAction,
-    ChangeSetReject,
+    ChangeSetHunkAction,
     DocumentSave,
     ProjectChatRequest,
     ProjectCreate,
@@ -34,6 +33,11 @@ logger = logging.getLogger(__name__)
 def _raise_http(exc: Exception) -> None:
     if isinstance(exc, (KeyError, FileNotFoundError)):
         raise HTTPException(status_code=404, detail="资源不存在") from exc
+    if isinstance(exc, ChangeSetStateError):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     if isinstance(exc, (AssistantBusyError, ResourceConflictError)):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, (ValueError, RuntimeError)):
@@ -46,12 +50,18 @@ def _change_preview(change) -> dict:
         "change_set_id": change.change_set_id,
         "project_id": change.project_id,
         "document_id": change.document_id,
-        "range": {"from": change.start, "to": change.end},
-        "original": change.original_text,
-        "replacement": change.replacement_text,
+        "hunks": [{
+            "hunk_id": hunk.hunk_id,
+            "range": {"from": hunk.start, "to": hunk.end},
+            "original": hunk.original_text,
+            "replacement": hunk.new_text,
+            "status": hunk.status,
+        } for hunk in change.hunks],
         "document_version": change.base_version,
         "source": change.source,
+        "status": change.status,
     }
+
 
 
 def create_app(
@@ -229,11 +239,11 @@ def create_app(
     @app.put("/api/projects/{project_id}/documents/{document_id}")
     async def save_document(project_id: str, document_id: str, body: DocumentSave):
         try:
-            document = runtime.store.save_document(
+            document, staled = runtime.store.save_document(
                 body.assistant_id, project_id, document_id, body.content,
                 expected_version=body.document_version,
             )
-            return asdict(document)
+            return {**asdict(document), "staled_change_set_ids": staled}
         except Exception as exc:
             _raise_http(exc)
 
@@ -257,21 +267,68 @@ def create_app(
 
         return {"task_id": broker.start(body.assistant_id, operation)}
 
-    @app.post("/api/projects/{project_id}/change-sets/{change_set_id}/apply")
-    async def apply_change(project_id: str, change_set_id: str, body: ChangeSetAction):
+    @app.post(
+        "/api/projects/{project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/accept"
+    )
+    async def accept_hunk(project_id: str, change_set_id: str, hunk_id: str, body: ChangeSetHunkAction):
         try:
-            document, change = runtime.store.apply_change_set(
-                body.assistant_id, project_id, change_set_id,
-                expected_version=body.document_version,
+            document, change, hunk, staled = runtime.store.accept_change_hunk(
+                body.assistant_id, project_id, change_set_id, hunk_id
             )
-            return {"document": asdict(document), "change_set": asdict(change)}
+            return {
+                "document": asdict(document),
+                "change_set": asdict(change),
+                "hunk": asdict(hunk),
+                "staled_change_set_ids": staled,
+            }
         except Exception as exc:
             _raise_http(exc)
 
-    @app.post("/api/projects/{project_id}/change-sets/{change_set_id}/reject")
-    async def reject_change(project_id: str, change_set_id: str, body: ChangeSetReject):
+    @app.post(
+        "/api/projects/{project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/reject"
+    )
+    async def reject_hunk(project_id: str, change_set_id: str, hunk_id: str, body: ChangeSetHunkAction):
         try:
-            return asdict(runtime.store.reject_change_set(body.assistant_id, project_id, change_set_id))
+            return {"change_set": asdict(runtime.store.reject_change_hunk(
+                body.assistant_id, project_id, change_set_id, hunk_id
+            ))}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.post("/api/projects/{project_id}/change-sets/{change_set_id}/accept-all")
+    async def accept_all_hunks(project_id: str, change_set_id: str, body: ChangeSetHunkAction):
+        try:
+            result = runtime.store.accept_all_change_hunks(
+                body.assistant_id, project_id, change_set_id
+            )
+            return {
+                "document": asdict(result["document"]),
+                "change_set": asdict(result["change_set"]),
+                "applied_hunk_ids": result["applied_hunk_ids"],
+                "stopped": result["stopped"],
+                "staled_change_set_ids": result["staled_change_set_ids"],
+            }
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/projects/{project_id}/change-sets")
+    async def list_change_sets(
+        project_id: str,
+        assistant_id: str = Query(...),
+        document_id: str = Query(...),
+        page: int = Query(1, ge=1),
+        page_size: int = Query(20, ge=1, le=100),
+    ):
+        try:
+            result = runtime.store.list_change_sets_for_document(
+                assistant_id, project_id, document_id, page=page, page_size=page_size
+            )
+            return {
+                "items": [_change_preview(item) for item in result["items"]],
+                "total": result["total"],
+                "page": result["page"],
+                "page_size": result["page_size"],
+            }
         except Exception as exc:
             _raise_http(exc)
 

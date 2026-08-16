@@ -14,15 +14,30 @@ const document = {
 // 与 mock 文档的 version 一致，编辑器才会内联渲染而不是降级提示。
 const chatChange = {
   change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
-  range: { from: 0, to: 0 }, original: '', replacement: 'Agent 修改',
+  hunks: [{
+    hunk_id: 'hunk-1', range: { from: 0, to: 0 },
+    original: '', replacement: 'Agent 修改', status: 'pending' as const,
+  }],
   document_version: 1, source: 'chat' as const,
+}
+
+const appliedRecord = {
+  change_set_id: 'change-1', assistant_id: 'default', project_id: 'project-1',
+  document_id: 'document-1', session_id: null, source: 'chat' as const,
+  task_id: 'task-1', base_version: 1, status: 'applied',
+  hunks: [{
+    hunk_id: 'hunk-1', change_set_id: 'change-1', display_order: 0,
+    start: 0, end: 0, original_text: '', new_text: 'Agent 修改',
+    status: 'applied', created_at: '1', applied_at: '2',
+  }],
 }
 
 const apiMocks = vi.hoisted(() => ({
   listAssistants: vi.fn(), createAssistant: vi.fn(), deleteAssistant: vi.fn(),
   listProjects: vi.fn(), createProject: vi.fn(),
   getProjectTree: vi.fn(), getDocument: vi.fn(), saveDocument: vi.fn(),
-  applyChange: vi.fn(), rejectChange: vi.fn(),
+  acceptChangeHunk: vi.fn(), rejectChangeHunk: vi.fn(),
+  acceptAllChangeHunks: vi.fn(), listChangeSets: vi.fn(),
   listProjectChatSessions: vi.fn(), getProjectChatSession: vi.fn(),
   deleteProjectChatSession: vi.fn(), chatProject: vi.fn(), watchTask: vi.fn(),
 }))
@@ -43,8 +58,12 @@ describe('App project creation', () => {
     apiMocks.getProjectTree.mockReset().mockResolvedValue([document])
     apiMocks.getDocument.mockReset().mockResolvedValue(document)
     apiMocks.saveDocument.mockReset()
-    apiMocks.applyChange.mockReset()
-    apiMocks.rejectChange.mockReset()
+    apiMocks.acceptChangeHunk.mockReset()
+    apiMocks.rejectChangeHunk.mockReset()
+    apiMocks.acceptAllChangeHunks.mockReset()
+    apiMocks.listChangeSets.mockReset().mockResolvedValue({
+      items: [], total: 0, page: 1, page_size: 20,
+    })
     apiMocks.listProjectChatSessions.mockReset().mockResolvedValue([])
     apiMocks.getProjectChatSession.mockReset()
     apiMocks.deleteProjectChatSession.mockReset()
@@ -116,36 +135,40 @@ describe('App project creation', () => {
     expect(vm.projectTree[0].project_id).toBe('project-new')
   })
 
-  it('applies a chat change when its target document is not open', async () => {
-    apiMocks.applyChange.mockResolvedValue({
+  it('accepts every hunk of a chat change set when its target document is not open', async () => {
+    apiMocks.acceptAllChangeHunks.mockResolvedValue({
       document: { ...document, version: 3, content: 'Agent 修改' },
-      change_set: { change_set_id: 'change-1', status: 'applied' },
+      change_set: appliedRecord,
+      applied_hunk_ids: ['hunk-1'],
+      stopped: null,
+      staled_change_set_ids: [],
     })
     const wrapper = mount(App)
     await flushPromises()
     const vm = wrapper.vm as unknown as {
-      applyAgentChange: (
-        change: Record<string, unknown>, complete: (success: boolean) => void,
-      ) => Promise<void>
+      applyAgentChangeSet: (change: Record<string, unknown>) => Promise<void>
     }
-    const complete = vi.fn()
 
-    await vm.applyAgentChange({
+    await vm.applyAgentChangeSet({
       change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
-      range: { from: 0, to: 0 }, original: '', replacement: 'Agent 修改',
+      hunks: [{
+        hunk_id: 'hunk-1', range: { from: 0, to: 0 },
+        original: '', replacement: 'Agent 修改', status: 'pending',
+      }],
       document_version: 2, source: 'chat',
-    }, complete)
+    })
 
-    expect(apiMocks.applyChange).toHaveBeenCalledWith(
-      'default', 'project-1', 'change-1', 2,
+    expect(apiMocks.acceptAllChangeHunks).toHaveBeenCalledWith(
+      'default', 'project-1', 'change-1',
     )
-    expect(complete).toHaveBeenCalledWith(true)
   })
 
-  it('uses the change version when an open tab has a stale cached version', async () => {
-    apiMocks.applyChange.mockResolvedValue({
+  it('accepts a single hunk without requiring the open tab version', async () => {
+    apiMocks.acceptChangeHunk.mockResolvedValue({
       document: { ...document, version: 3, content: 'Agent 修改' },
-      change_set: { change_set_id: 'change-1', status: 'applied' },
+      change_set: appliedRecord,
+      hunk: appliedRecord.hunks[0],
+      staled_change_set_ids: [],
     })
     const wrapper = mount(App)
     await flushPromises()
@@ -154,19 +177,22 @@ describe('App project creation', () => {
     await wrapper.get('[role="dialog"] form').trigger('submit')
     await flushPromises()
     const vm = wrapper.vm as unknown as {
-      applyAgentChange: (
-        change: Record<string, unknown>, complete: (success: boolean) => void,
+      applyAgentHunk: (
+        change: Record<string, unknown>, hunk: Record<string, unknown>,
       ) => Promise<void>
     }
 
-    await vm.applyAgentChange({
+    await vm.applyAgentHunk({
       change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
-      range: { from: 0, to: 0 }, original: '', replacement: 'Agent 修改',
+      hunks: [{
+        hunk_id: 'hunk-1', range: { from: 0, to: 0 },
+        original: '', replacement: 'Agent 修改', status: 'pending',
+      }],
       document_version: 2, source: 'chat',
-    }, vi.fn())
+    }, { hunk_id: 'hunk-1' })
 
-    expect(apiMocks.applyChange).toHaveBeenCalledWith(
-      'default', 'project-1', 'change-1', 2,
+    expect(apiMocks.acceptChangeHunk).toHaveBeenCalledWith(
+      'default', 'project-1', 'change-1', 'hunk-1',
     )
   })
 
@@ -186,9 +212,11 @@ describe('App project creation', () => {
   })
 
   it('removes the change from both views once the parent applies it', async () => {
-    apiMocks.applyChange.mockResolvedValue({
+    apiMocks.acceptChangeHunk.mockResolvedValue({
       document: { ...document, version: 3, content: 'Agent 修改' },
-      change_set: { change_set_id: 'change-1', status: 'applied' },
+      change_set: appliedRecord,
+      hunk: appliedRecord.hunks[0],
+      staled_change_set_ids: [],
     })
     const wrapper = mount(App)
     await flushPromises()
@@ -202,13 +230,17 @@ describe('App project creation', () => {
     await wrapper.get('.cm-diff-accept').trigger('click')
     await flushPromises()
 
-    expect(apiMocks.applyChange).toHaveBeenCalledWith('default', 'project-1', 'change-1', 1)
+    expect(apiMocks.acceptChangeHunk).toHaveBeenCalledWith('default', 'project-1', 'change-1', 'hunk-1')
     expect(wrapper.find('.change-diff').exists()).toBe(false)
     expect(wrapper.find('.cm-diff-inserted').exists()).toBe(false)
   })
 
   it('keeps the change in both views when applying fails', async () => {
-    apiMocks.applyChange.mockRejectedValue(new Error('版本冲突'))
+    apiMocks.acceptChangeHunk.mockRejectedValue(new Error('修改位置已变化，该 hunk 已失效'))
+    // 失败后对账以查询 API 为真相源：服务端仍保留 pending 建议。
+    apiMocks.listChangeSets.mockResolvedValue({
+      items: [chatChange], total: 1, page: 1, page_size: 20,
+    })
     const wrapper = mount(App)
     await flushPromises()
     await wrapper.get('button[title="新建空白项目"]').trigger('click')
@@ -222,7 +254,7 @@ describe('App project creation', () => {
     await flushPromises()
 
     expect(wrapper.findAll('.change-diff')).toHaveLength(1)
-    expect(wrapper.get('.global-error').text()).toBe('版本冲突')
+    expect(wrapper.get('.global-error').text()).toContain('已失效')
   })
 
   it('creates an assistant and switches to it', async () => {

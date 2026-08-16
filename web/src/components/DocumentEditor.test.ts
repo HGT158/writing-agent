@@ -11,16 +11,19 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ apiClient: apiMocks }))
 
 import DocumentEditor from './DocumentEditor.vue'
-import type { ChangePreview, EditorTab } from '../types'
+import type { ChangeSetPreview, EditorTab } from '../types'
 
 const tab: EditorTab = {
   document_id: 'document-1', project_id: 'project-1', assistant_id: 'default',
   relative_path: 'article.md', version: 2, editable: true, content: '原文内容', dirty: false,
 }
 
-const change: ChangePreview = {
+const change: ChangeSetPreview = {
   change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
-  range: { from: 0, to: 2 }, original: '原文', replacement: '改写文本',
+  hunks: [{
+    hunk_id: 'hunk-1', range: { from: 0, to: 2 },
+    original: '原文', replacement: '改写文本', status: 'pending',
+  }],
   document_version: 2, source: 'chat',
 }
 
@@ -29,7 +32,7 @@ function baseProps(overrides: Record<string, unknown> = {}) {
     assistantId: 'default',
     projectId: 'project-1',
     tab,
-    changes: [] as ChangePreview[],
+    changes: [] as ChangeSetPreview[],
     reviewing: [] as string[],
     ...overrides,
   }
@@ -180,8 +183,8 @@ describe('DocumentEditor', () => {
     await wrapper.get('.cm-diff-accept').trigger('click')
     await wrapper.get('.cm-diff-reject').trigger('click')
 
-    expect(wrapper.emitted('apply')?.[0][0]).toEqual(change)
-    expect(wrapper.emitted('reject')?.[0][0]).toEqual(change)
+    expect(wrapper.emitted('apply')?.[0]).toEqual([change, change.hunks[0]])
+    expect(wrapper.emitted('reject')?.[0]).toEqual([change, change.hunks[0]])
   })
 
   it('disables the inline controls while the parent is reviewing the change', async () => {
@@ -202,6 +205,70 @@ describe('DocumentEditor', () => {
 
     expect(wrapper.find('.cm-diff-inserted').exists()).toBe(false)
     expect(wrapper.get('.editor-notice').text()).toContain('1 处修改建议')
+  })
+
+  it('renders multiple hunks of one change set with independent controls', async () => {
+    const multi: ChangeSetPreview = {
+      change_set_id: 'change-multi', project_id: 'project-1', document_id: 'document-1',
+      hunks: [
+        { hunk_id: 'hunk-a', range: { from: 0, to: 5 }, original: 'AAAA。', replacement: '【A】。', status: 'pending' },
+        { hunk_id: 'hunk-c', range: { from: 10, to: 15 }, original: 'CCCC。', replacement: '【C】。', status: 'pending' },
+      ],
+      document_version: 2, source: 'chat',
+    }
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({ changes: [multi], tab: { ...tab, content: 'AAAA。BBBB。CCCC。' } }),
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.cm-diff-removed').map((node) => node.text())).toEqual(['AAAA。', 'CCCC。'])
+    expect(wrapper.findAll('.cm-diff-inserted').map((node) => node.text())).toEqual(['【A】。', '【C】。'])
+    expect(wrapper.findAll('.cm-diff-accept')).toHaveLength(2)
+
+    await wrapper.findAll('.cm-diff-accept')[0].trigger('click')
+    expect(wrapper.emitted('apply')?.[0]).toEqual([multi, multi.hunks[0]])
+  })
+
+  it('relocates remaining hunks by content after a sibling was accepted', async () => {
+    const partial: ChangeSetPreview = {
+      change_set_id: 'change-partial', project_id: 'project-1', document_id: 'document-1',
+      hunks: [
+        { hunk_id: 'hunk-a', range: { from: 0, to: 5 }, original: 'AAAA。', replacement: '【A】。', status: 'applied' },
+        { hunk_id: 'hunk-c', range: { from: 10, to: 15 }, original: 'CCCC。', replacement: '【C】。', status: 'pending' },
+      ],
+      document_version: 2, source: 'chat',
+    }
+    const wrapper = mount(DocumentEditor, {
+      // 标签页版本已推进（第一个 hunk 已应用），剩余 hunk 按原文内容重定位。
+      props: baseProps({
+        changes: [partial],
+        tab: { ...tab, version: 3, content: '【A】。BBBB。CCCC。' },
+      }),
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.cm-diff-removed').map((node) => node.text())).toEqual(['CCCC。'])
+    expect(wrapper.get('.cm-diff-inserted').text()).toBe('【C】。')
+  })
+
+  it('counts unlocatable hunks in the degraded notice after edits', async () => {
+    const lost: ChangeSetPreview = {
+      change_set_id: 'change-lost', project_id: 'project-1', document_id: 'document-1',
+      hunks: [
+        { hunk_id: 'hunk-gone', range: { from: 0, to: 5 }, original: '已删除。', replacement: '新。', status: 'pending' },
+      ],
+      document_version: 2, source: 'chat',
+    }
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({
+        changes: [lost],
+        tab: { ...tab, version: 3, content: '完全不同的正文。' },
+      }),
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.cm-diff-inserted').exists()).toBe(false)
+    expect(wrapper.get('.editor-notice').text()).toContain('1 处')
   })
 
   it('degrades to a notice while the tab has unsaved edits', async () => {

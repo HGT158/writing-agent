@@ -6,7 +6,7 @@ import { apiClient } from '../api/client'
 import type { TaskStream } from '../api/client'
 import {
   isChangePreview,
-  type ChangePreview,
+  type ChangeSetPreview,
   type ProjectChatSession,
   type TaskEvent,
   type WorkEventRecord,
@@ -18,16 +18,16 @@ const props = defineProps<{
   assistantId: string
   projectId: string | null
   documentId: string | null
-  changes: ChangePreview[]
+  changes: ChangeSetPreview[]
   reviewing: string[]
   documentLabels: Record<string, string>
 }>()
 const emit = defineEmits<{
-  apply: [change: ChangePreview]
-  reject: [change: ChangePreview]
-  applyAll: [changes: ChangePreview[]]
-  changesLoaded: [changes: ChangePreview[]]
-  changeAdded: [change: ChangePreview]
+  apply: [change: ChangeSetPreview]
+  reject: [change: ChangeSetPreview]
+  applyAll: [changes: ChangeSetPreview[]]
+  changesLoaded: [changes: ChangeSetPreview[]]
+  changeAdded: [change: ChangeSetPreview]
   openDocument: [projectId: string, documentId: string]
 }>()
 
