@@ -70,10 +70,29 @@ export interface ProjectChatMessage {
   created_at: string
 }
 
+export interface WorkEventRecord {
+  event_id: number
+  task_id: string
+  user_message_id: number
+  event_seq: number
+  kind: 'progress' | 'tool' | 'warning' | 'changes' | 'task'
+  status: 'succeeded' | 'failed' | 'interrupted'
+  change_set_id: string | null
+  document_id: string | null
+  title: string
+  detail: string
+  tool_name: string | null
+  args_summary: string | null
+  result_summary: string | null
+  created_at: string
+  completed_at: string | null
+}
+
 export interface ProjectChatSessionDetail {
   session: ProjectChatSession
   messages: ProjectChatMessage[]
   pending_changes: ChangePreview[]
+  work_events: WorkEventRecord[]
 }
 
 export interface TaskStatus {

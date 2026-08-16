@@ -266,7 +266,7 @@ describe('AgentPanel', () => {
     expect(wrapper.get('.inline-error').text()).toBe('助手忙碌')
   })
 
-  it('shows project edit tool progress', async () => {
+  it('shows edit tool progress as an expanding work record', async () => {
     let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
     apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
       callback = handler
@@ -278,21 +278,136 @@ describe('AgentPanel', () => {
     await wrapper.get('textarea').setValue('精简正文')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    await callback(taskEvent('tool_call', { tool: 'propose_project_edits' }))
-    await nextTick()
-    expect(wrapper.get('.tool-status').text()).toContain('正在准备修改')
-
-    await callback(taskEvent('tool_result', {
-      tool: 'propose_project_edits',
-      ok: true,
-      summary: '已生成 1 处修改建议',
+    await callback(taskEvent('work_item_start', {
+      work_id: 'w1', kind: 'tool', title: '正在准备修改', tool_name: 'propose_project_edits',
     }))
     await nextTick()
-    expect(wrapper.get('.tool-status').text()).toContain('已生成 1 处修改建议')
+    const item = wrapper.get('.work-item')
+    expect(item.text()).toContain('正在准备修改')
+    expect(item.classes()).toContain('running')
+
+    await callback(taskEvent('work_item_delta', { work_id: 'w1', text: '正在校验修改范围' }))
+    await nextTick()
+    expect(wrapper.get('.work-item').text()).toContain('正在校验修改范围')
+
+    await callback(taskEvent('work_item_done', {
+      work_id: 'w1', kind: 'tool', status: 'succeeded', result_summary: '已生成 1 处修改建议',
+    }))
+    await nextTick()
+    expect(wrapper.findAll('.work-item')).toHaveLength(1)
+    expect(wrapper.get('.work-item').classes()).toContain('succeeded')
 
     await callback(taskEvent('task_done'))
     await nextTick()
-    expect(wrapper.find('.tool-status').exists()).toBe(false)
+    expect(wrapper.find('.work-item').exists()).toBe(false)  // 终态自动折叠
+    expect(wrapper.get('.work-record-header').text()).toContain('工具 1')
+  })
+
+  it('renders persisted work records collapsed and expands on click', async () => {
+    apiMocks.listProjectChatSessions.mockResolvedValue([{
+      chat_session_id: 'session-1', title: '历史会话',
+      created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T01:00:00Z',
+      message_count: 2,
+    }])
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: {
+        chat_session_id: 'session-1', title: '历史会话',
+        created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T01:00:00Z',
+        message_count: 2,
+      },
+      messages: [
+        { message_id: 1, role: 'user', content: '历史指令', created_at: '2026-08-16T00:00:00Z' },
+        { message_id: 2, role: 'assistant', content: '历史回复', created_at: '2026-08-16T00:00:01Z' },
+      ],
+      pending_changes: [],
+      work_events: [
+        {
+          event_id: 1, task_id: 'task-old', user_message_id: 1, event_seq: 1,
+          kind: 'progress', status: 'succeeded', title: '正在读取当前文档与历史上下文',
+          detail: '', tool_name: null, args_summary: null, result_summary: null,
+          change_set_id: null, document_id: null,
+          created_at: '2026-08-16T00:00:00Z', completed_at: '2026-08-16T00:00:02Z',
+        },
+        {
+          event_id: 2, task_id: 'task-old', user_message_id: 1, event_seq: 2,
+          kind: 'task', status: 'succeeded', title: '历史指令',
+          detail: '无工具调用', tool_name: null, args_summary: null, result_summary: null,
+          change_set_id: null, document_id: null,
+          created_at: '2026-08-16T00:00:00Z', completed_at: '2026-08-16T00:00:03Z',
+        },
+      ],
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const record = wrapper.get('.work-record')
+    expect(record.classes()).toContain('succeeded')
+    expect(wrapper.find('.work-record-items').exists()).toBe(false)  // 历史默认折叠
+    const order = wrapper.findAll('.message, .work-record')
+    expect(order[0].classes()).toContain('user')
+    expect(order[1].classes()).toContain('work-record')
+
+    await wrapper.get('.work-record-header').trigger('click')
+    expect(wrapper.find('.work-record-items').exists()).toBe(true)
+    expect(wrapper.get('.work-item').text()).toContain('正在读取当前文档')
+  })
+
+  it('marks a persisted group without terminal as running, not interrupted', async () => {
+    apiMocks.listProjectChatSessions.mockResolvedValue([{
+      chat_session_id: 'session-1', title: '运行中会话',
+      created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T01:00:00Z',
+      message_count: 1,
+    }])
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: {
+        chat_session_id: 'session-1', title: '运行中会话',
+        created_at: '2026-08-16T00:00:00Z', updated_at: '2026-08-16T01:00:00Z',
+        message_count: 1,
+      },
+      messages: [
+        { message_id: 1, role: 'user', content: '运行中指令', created_at: '2026-08-16T00:00:00Z' },
+      ],
+      pending_changes: [],
+      // 无 kind=task 终态：服务端对账只跳过仍在运行的任务，前端据此显示运行中。
+      work_events: [
+        {
+          event_id: 9, task_id: 'task-live', user_message_id: 1, event_seq: 1,
+          kind: 'progress', status: 'succeeded', title: '正在读取当前文档',
+          detail: '', tool_name: null, args_summary: null, result_summary: null,
+          change_set_id: null, document_id: null,
+          created_at: '2026-08-16T00:00:00Z', completed_at: '2026-08-16T00:00:02Z',
+        },
+      ],
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const record = wrapper.get('.work-record')
+    expect(record.classes()).toContain('running')
+    expect(wrapper.get('.work-record-header').text()).toContain('运行中')
+    expect(wrapper.get('.work-record-header').text()).not.toContain('已中断')
+  })
+
+  it('opens the document when clicking a changes work item', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('修改正文')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('work_item_start', {
+      work_id: 'w9', kind: 'changes', title: '为 article.md 生成修改建议',
+      change_set_id: 'change-9', document_id: 'document-1',
+    }))
+    await nextTick()
+
+    await wrapper.get('.work-item.changes').trigger('click')
+    expect(wrapper.emitted('openDocument')).toEqual([['project-1', 'document-1']])
   })
 
   it('shows only the terminal error when the edit tool fails', async () => {

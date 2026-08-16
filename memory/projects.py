@@ -800,6 +800,10 @@ def purge_project(
             (assistant_id, project_id),
         )
         conn.execute(
+            "DELETE FROM project_chat_work_events WHERE assistant_id = ? AND project_id = ?",
+            (assistant_id, project_id),
+        )
+        conn.execute(
             "DELETE FROM project_chat_sessions WHERE assistant_id = ? AND project_id = ?",
             (assistant_id, project_id),
         )

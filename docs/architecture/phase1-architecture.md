@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.18 · 2026-08-16
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩及 v1.18 SSE 断线游标续传均已完成
+> 版本：v1.19 · 2026-08-16
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传及 v1.19 项目聊天持久化工作记录均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -26,6 +26,8 @@
 > v1.17 变更：三项修正与两项能力扩展。**（1）活动 SSE 流按单调递增序号跨越事件滑窗**：`TaskBroker` 的事件历史是有界滑窗，活动订阅者必须用任务内 `seq` 而非列表下标定位，窗口裁剪不得让活动订阅者停止收流或漏发终态；网络断线后的游标续传不属于本版完成范围，列入待办（§5.9/§6.2/§9）。**（2）待确认 change set 采用编辑器内联 + 侧栏卡片双视图**：同一 change set 在 CodeMirror 中以原文删除态、建议新增态和内联接受/拒绝控件呈现，同时在 Agent 面板保留可审阅卡片；两个视图共享 App 层的单一 pending 集合与单一 apply/reject 通道，禁止各自持有状态或重复发起请求（§5.10）。**（3）选区工具栏必须可输入**：浮层不得对输入控件调用 `preventDefault`，挂载后显式聚焦，并在编辑器失焦期间用装饰保持选区可见（§5.10）。**（4）项目聊天上下文分层压缩**：按 token 预算保留最近若干条消息全文，更早历史用一次 LLM 调用压缩为摘要并持久化到 `project_chat_summaries` 复用；注入的当前文档正文超限时按窗口截断并显式标注省略（§3.3/§5.4/§5.7）。**（5）助手管理进入前端**：助手选择器旁提供创建与归档删除入口，复用既有 `POST/DELETE /api/assistants`（§5.10）。
 
 > v1.18 变更：补齐 SSE 断线游标续传（v1.17 遗留待办）。每个 SSE 数据帧携带标准 `id: <seq>` 行；`GET /api/tasks/{id}/stream` 接受显式 `after_seq` 参数或标准 `Last-Event-ID` 请求头恢复游标，参数优先，非法头按全新订阅处理。游标仍被重放窗口覆盖时从游标之后精确补发，不重复不遗漏；游标落后于窗口时先发送一条不带 `seq` 的 `reconnect_gap` 控制事件再继续活动流，终态事件始终送达；超出已记录范围的未来游标回拨重发末尾事件，避免空流。前端 `watchTask` 返回可恢复订阅句柄：网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带游标重连并按 `seq` 去重，仅在终态、作用域切换或重连耗尽时关闭；收到 `reconnect_gap` 后丢弃非终态事件并移除半截回复，Agent 面板在任务终态后重载持久化会话以恢复完整回复与漏发的 pending diff，选区改写在编辑器保留可重试提示（§5.9/§5.10/§6.2/§9）。同版附带 fetch MCP server 部署方式调整：改由项目 Python 环境直跑（§5.6）。
+
+> v1.19 变更：实现项目 Agent 聊天的持久化工作记录。新增 `project_chat_work_events` 表（按助手、项目、会话三层隔离，`(task_id, event_seq)` 唯一、`kind=task` 终态按 `(assistant_id, project_id, task_id)` 唯一部分索引幂等）；Runtime 在项目聊天全程发射 `work_item_start` / `work_item_delta` / `work_item_done` SSE 事件，`delta` 只走流不落库，明细事件仅在 `done` 时落库且单任务上限 199 条、第 200 条固定为溢出摘要（按被省略事件的类型合并计数）、任务终态不受限；工具参数摘要 4,000 字符、结果 8,000 字符（前 6,000 + 后 2,000）截断并递归脱敏敏感字段；任务失败/取消时运行中工作项统一以 `interrupted` 终结落库，终态落库自身失败只记 warning、不得掩盖原始任务错误；会话详情接口返回工作记录并按 TaskBroker 活动状态与助手运行锁对账补写 `interrupted` 终态（无 broker 作用域的直连任务以运行锁 task_id 标识，锁未释放视为仍在运行）；前端在用户消息与最终回复之间渲染工作记录：运行中默认展开、终态自动折叠（标题含耗时、工具数、建议数、状态）、历史默认折叠可展开、无终态组显示为运行中、`changes` 项可定位文档；工作记录与聊天消息、模型上下文和上下文摘要完全隔离，不进 FTS、长期记忆与 prompt（§5.4/§5.7/§5.9/§5.10/§6.2/§9）。
 
 ---
 
@@ -378,6 +380,8 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 
 项目聊天入口 `runtime.chat_project(...)` 复用同一运行锁、LLM client、EventBus、Skill 与 MemoryStore。它把模型文本 delta 立即发为 `token`，累积并完成流式 tool-call 参数的 JSON/schema 校验后才发送 `tool_call` 并执行一次 `propose_project_edits`；异常路径显式关闭模型流。若发生工具调用，最多追加一个无工具的流式说明轮次。API 任务终态中的 `reply` 等于本次任务所有可见文本 delta 的顺序拼接，`change_set_ids` 来自工具执行结果；模型没有返回可见文本时，Runtime 发送并持久化明确提示，不能留下无反馈的连续 user 消息。
 
+**项目聊天全程发射工作记录事件（v1.19）**：Runtime 用独立的 `agent/work_log.py` 记录器把编排过程映射为 `work_item_start` / `work_item_delta` / `work_item_done` 三类 SSE 事件（携带稳定的 `work_id`）。确定性阶段进度（"正在读取当前文档与历史上下文"等）、`tool_call`→`tool_result`（合并为同一个 tool 工作项）、上下文 warning、每个 change set（`kind=changes`，含 `change_set_id` 与文档标识）和任务终态（`kind=task`）各成工作项。这里不展示、不持久化模型隐藏推理链；没有可公开的 reasoning summary 时只发编排层的确定性进度。`work_item_delta` 只走流不落库；明细事件仅在 `work_item_done` 时按 §5.7 的上限落库；任务失败或取消时仍处于运行中的工作项统一以 `interrupted` 终结后落库，进程被强杀则不写任何残缺记录，由会话详情对账兜底（§5.9）。`tool_call` / `tool_result` / `change_preview` 事件保持既有语义继续下发，工作事件是它们的展示层投影而非替代。
+
 聊天 prompt 的组装交给独立的 `agent/context.py`，Runtime 不内联裁剪逻辑：该模块负责 token 估算、当前文档正文窗口截断、保留窗口切分与摘要合并，并把是否需要新摘要、摘要覆盖到的 `message_id` 返回给 Runtime 决定是否落库（§3.3）。压缩发生时 Runtime 发出一条 `info` 事件说明本轮压缩了多少条历史，便于用户理解上下文被折叠；压缩自身的 LLM 调用不产生 `token` 事件，不污染可见回复。
 
 CLI 入口为 `agent/__main__.py`（`python -m agent` 的载体），子命令：`run`（默认）、`assistants list/create/delete`、`--resume`。`run` 命令从 Runtime 启动开始即进入 `try/finally` 清理边界：启动或任务执行发生未预期异常时发出 failed 事件并返回非零退出码，已分配的 Store/MCP 等资源仍由 `runtime.close()` 释放。
@@ -456,6 +460,7 @@ when_to_use: 任务涉及外部事实、时效性信息、需要引用来源时�
 | AI 修改建议 | SQLite `change_sets`（含 `assistant_id`、`project_id`、`document_id`、`session_id`、原文范围/快照、替换文本、基准版本、来源模式、状态） | 选区改写或聊天产生的待确认修改 | 生成时写入 pending；应用/拒绝/过期均按助手、项目与文档归属校验 |
 | 项目 Agent 会话 | SQLite `project_chat_sessions` / `project_chat_messages`（均含 `assistant_id`、`project_id`、`chat_session_id`） | 每项目多会话标题、完整可见 user/assistant 历史 | 首次发送创建会话，消息成功产生时持久化；打开项目默认恢复最近会话，UI 始终展示全部历史 |
 | 项目 Agent 上下文摘要 | SQLite `project_chat_summaries`（`assistant_id` + `project_id` + `chat_session_id` 三元组主键，含 `summary`、`covered_through_message_id`） | 滑出保留窗口的早期对话压缩结果 | 触发压缩时写入或覆盖；下次压缩以它为起点增量合并；会话删除、项目 purge 与助手 purge 必须级联清理 |
+| 项目聊天工作记录 | SQLite `project_chat_work_events`（`assistant_id` + `project_id` + `chat_session_id` + `task_id` + `user_message_id` + `event_seq` + `kind` + `status` + `change_set_id`/`document_id` + `title`/`detail` + `tool_name`/`args_summary`/`result_summary` + `created_at`/`completed_at`） | 每轮聊天任务的可展开执行记录：进度、工具、警告、修改建议与任务终态 | 工作项 `work_item_done` 时写入，任务终态与对账补写始终尽力写入；读取经会话详情接口 |
 
 - `store.py` 统一接口（`assistant_id` 恒为第一参数）：
 
@@ -478,6 +483,7 @@ def recall_semantic(assistant_id: str, query: str) -> str  # 预留向量接口�
 - **同助手跨会话共享**：`recall` 的检索范围 = 本助手全部历史会话 + 本助手 profile.md；**跨助手隔离**：SQL 强制 `WHERE assistant_id = ?`，profile 按目录物理隔离。
 - **项目与建议隔离**：`projects`、`project_documents`、`change_sets`、`document_write_intents` 的所有查询必须同时校验 `assistant_id`；`project_id` / `document_id` 不能单独作为授权或查询条件。保存文档和应用 change set 必须在写事务内执行版本号、状态与原文快照校验，使用持久化写入意图 + 临时文件 + 原子替换更新正文；冲突方不得触碰磁盘，进程崩溃后的残留意图必须可恢复。聊天产生多条建议时使用 MemoryStore 批量接口原子创建。
 - **项目聊天隔离与生命周期**：项目会话、消息和上下文摘要的所有查询必须同时过滤 `assistant_id + project_id + chat_session_id`，不得混入普通 Agent Loop 的 `sessions/messages` 或 FTS 索引。摘要是可重建的派生数据，只影响发给模型的 prompt，永远不进入会话详情接口返回的可见历史，UI 展示的消息列表不受压缩影响。第一条用户消息自动生成会话标题；列表按更新时间倒序。会话详情同时返回 `source='chat'` 且仍为 pending 的关联 change set。存在 pending diff 或助手运行锁时删除会话返回冲突；无 pending 且成功获取助手级 mutation lock 时，删除消息、会话及已处理 chat change set 元数据，但不回滚已写入正文。消息正文按可见原文保存，只以 trim 后结果判断空值和生成标题。项目 purge 与助手 purge 必须级联清理项目聊天表，归档项目保留历史但不可访问。
+- **工作记录的数据边界与上限（v1.19）**：`project_chat_work_events` 只服务界面展示，与聊天消息、模型上下文和上下文摘要完全隔离——`build_chat_context` 与摘要生成只读 `project_chat_messages`，工作记录不进 FTS、长期记忆、摘要或 prompt。所有读写同时过滤 `assistant_id + project_id + chat_session_id`；会话删除、项目 purge 与助手 purge 必须级联清理。`(task_id, event_seq)` 唯一，`event_seq` 在 `work_item_start` 时按发起顺序分配（并行工具保留发起顺序，完成可乱序落库）；`kind='task'` 终态受 `(assistant_id, project_id, task_id)` 唯一部分索引约束，每个任务最多一条，重复写入幂等复用既有行。单任务持久化明细（非终态）最多 199 条，`event_seq=200` 固定保留给溢出摘要（"省略 N 条记录"，按类型合并计数；无溢出不创建），任务终态不受该限制、尽力写入。工具参数摘要最多 4,000 字符、结果最多 8,000 字符（保留前 6,000 + 后 2,000，并以文本标注原始长度与已截断），写入前对名称匹配 `api_key`/`token`/`authorization`/`cookie`/`secret`/`password` 的字段值递归脱敏。
 - **新会话失败补偿**：首次发送由 API 同步创建会话并返回 `chat_session_id`。后台任务成功、失败或取消后，API 都对本次新建会话执行幂等条件清理：会话仍存在、消息数为 0、且无任何关联 change set 时才删除；已有 user/assistant 消息或 diff 时必须保留，避免模型失败后丢失已送达内容。继续既有会话不得触发会话删除；补偿清理失败只记 warning，不得覆盖原始任务结果或错误。
 - **工具写边界**：`save_markdown` 只允许写 `data/` 下的非受管中间产物，必须拒绝 `assistants/<assistant_id>/projects/` 及任意其他助手项目路径；项目正文只能经项目文档/change set API 修改。
 
@@ -523,7 +529,7 @@ JOBS = [
 | `POST /api/projects/{project_id}/change-sets/{change_set_id}/reject` | 拒绝 change set；必须校验助手、项目和文档归属 |
 | `POST /api/projects/{project_id}/agent/messages` | 向项目 Agent 面板发送消息；body 必含 `assistant_id`，消息最长 100,000 字符，可带当前 `document_id`、选区及显式附件；返回任务 id，文本通过 SSE 流式发送，修改类结果由 `propose_project_edits` 生成 change set |
 | `GET /api/projects/{project_id}/agent/sessions?assistant_id=X` | 按更新时间倒序返回该助手项目的聊天会话 |
-| `GET /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 返回完整可见消息与该会话 pending chat diff |
+| `GET /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 返回完整可见消息、该会话 pending chat diff 与按任务分组的工作记录；返回前先对无终态且已不活动的工作事件组幂等补写 `interrupted` 终态——"活动"指 TaskBroker 中仍在运行，或该助手当前运行锁的 `task_id` 即该任务（无 broker 作用域的直连运行） |
 | `DELETE /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 删除无 pending diff 的会话；存在 pending 返回 409 |
 | `GET /api/articles?assistant_id=X` | 既有完成态文章归档列表；`assistant_id` 必填。它不是项目编辑入口 |
 | `GET /api/articles/{id}?assistant_id=X` | 只读获取完成态文章；要继续编辑须复制/导入为项目，所有保存统一走项目文档 API |
@@ -533,7 +539,7 @@ JOBS = [
 
 **活动连接的事件寻址必须使用单调递增序号，不能使用列表下标**（v1.17）：事件历史是有界滑窗，一次流式回复的 `token` 事件数量很容易超过窗口容量。每个事件在记录时分配任务内唯一且递增的 `seq`；活动订阅者从独立队列收取事件，并用自身游标跳过已经发送的序号。窗口裁剪不得导致活动订阅者停止收流，也不得吞掉 `task_done` / `task_failed` 终态事件。
 
-**断线重连按游标续传**（v1.18）：每个数据帧以标准 SSE `id: <seq>` 行加 `data` JSON 下发。流端点接受显式 `after_seq` 查询参数或 `Last-Event-ID` 请求头，语义为"客户端已消费 `seq <= 游标` 的一切事件"，参数优先于请求头，无法解析的头按全新订阅处理。游标仍被重放窗口覆盖时，服务端从游标之后精确补发，不重复不遗漏，尤其不能重复追加 `token`；游标落后于窗口（请求位置早于窗口起点）时，先发送一条不带 `seq` 的 `reconnect_gap` 控制事件（携带 `after_seq` 与 `available_from`），再从窗口起点继续活动流——客户端据此得知回复已不可完整重建，不得静默拼接残缺回复，应等待终态后从持久化会话恢复；超出已记录范围的未来游标回拨为重发末尾事件，保证终态送达而非返回空流，重复帧由客户端按 `seq` 去重。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）。正文只有在 apply 成功后更新。
+**断线重连按游标续传**（v1.18）：每个数据帧以标准 SSE `id: <seq>` 行加 `data` JSON 下发。流端点接受显式 `after_seq` 查询参数或 `Last-Event-ID` 请求头，语义为"客户端已消费 `seq <= 游标` 的一切事件"，参数优先于请求头，无法解析的头按全新订阅处理。游标仍被重放窗口覆盖时，服务端从游标之后精确补发，不重复不遗漏，尤其不能重复追加 `token`；游标落后于窗口（请求位置早于窗口起点）时，先发送一条不带 `seq` 的 `reconnect_gap` 控制事件（携带 `after_seq` 与 `available_from`），再从窗口起点继续活动流——客户端据此得知回复已不可完整重建，不得静默拼接残缺回复，应等待终态后从持久化会话恢复；超出已记录范围的未来游标回拨为重发末尾事件，保证终态送达而非返回空流，重复帧由客户端按 `seq` 去重。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（含 `change_set_id`、项目/文档 id、原文范围、建议文本和基准版本）。正文只有在 apply 成功后更新。项目聊天同时下发工作记录事件（v1.19）：`work_item_start`（携带 `work_id`、`kind`、`title`、可选 `tool_name`/`args_summary`/`change_set_id`/`document_id`）、`work_item_delta`（对同一 `work_id` 追加进度文本，不落库）、`work_item_done`（更新同一 `work_id` 的 `status` 与摘要，此刻才落库）。**工作记录终态对账**：应用加载、页面恢复或客户端重连请求会话详情时，服务端对本会话中缺少 `kind='task'` 终态的工作事件组逐个核对 TaskBroker——任务仍处于 running 时保持运行中不得提前终结；任务不存在或已结束时，在短事务内以 `event_seq = max(event_seq) + 1` 幂等补写一条 `status='interrupted'` 的任务终态。正常终态与对账补写共用 `(assistant_id, project_id, task_id)` 上的唯一部分索引，并发时只有第一条写入成功，后续写入复用既有终态。
 
 API 层不通过错误文本猜测冲突类型。MemoryStore/项目存储以专用冲突异常表达版本冲突、待处理状态和跨进程写入占用，API 稳定映射为 HTTP 409；参数错误保持 400，资源不存在保持 404。
 
@@ -546,6 +552,14 @@ Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部
 选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。**工具栏必须可输入**：浮层只能对非输入控件区域调用 `preventDefault` 来保持编辑器选区，绝不能拦截输入框自身的 `mousedown`，否则浏览器不会给输入框聚焦；组件挂载后显式聚焦输入框，`Esc` 关闭。CodeMirror 原生选区在编辑器失焦后不可见，因此工具栏打开期间必须用装饰保持选区高亮，用户在输入提示词时仍能看到改写目标。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡；气泡内容按 Markdown 渲染，流式期间也保持渲染一致，渲染同样要经过 HTML 消毒。`tool_call` / `tool_result` 显示为紧凑的“正在准备修改 / 修改建议已生成 / 失败”状态；若产生文件修改，同样进入 change set 预览，不直接覆盖。消息区默认跟随最新内容滚动，但用户主动上滚查看历史时必须停止自动跟随，直到用户回到底部。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
 
 每个编辑标签必须保存自己的 `project_id`；保存使用标签页归属，应用/拒绝使用 change set 归属，不能依赖资源树当前选中的项目。
+
+**项目聊天渲染持久化工作记录**（v1.19）。每轮任务的工作记录按 `user_message_id + task_id` 插在对应 user 消息与最终 assistant 回复之间，绝不合并进聊天 message：
+
+- **运行中**：任务执行期间工作记录默认展开，`work_item_start` 新增条目、`work_item_delta` 追加进度、`work_item_done` 在原位置更新状态（running → succeeded/failed/interrupted），不新增重复条目；用户可手动折叠或重新展开。
+- **终态**：收到 `task_done` / `task_failed` 后自动折叠，标题展示耗时、工具调用数、修改建议数与最终状态；流式 delta 不保留。
+- **恢复**：刷新或重新打开会话时，持久化工作记录默认折叠、可展开查看；加载即触发服务端终态对账（§5.9），补写 `interrupted` 的记录按已完成折叠展示，不恢复未落库的流式 chunk。
+- **changes 条目**：点击时定位到对应 change set——目标文档未打开先打开；版本匹配时内联 diff 呈现，stale 或 dirty 时按既有降级规则展示，不尝试 rebase。
+- 工作记录状态由 AgentPanel 内部持有，仅服务展示；它不进入消息列表、不参与 change set 的 pending 集合，也不与工具的紧凑状态行重复呈现（原 `tool_call` 紧凑状态由工作记录取代）。
 
 **待确认 change set 采用双视图、单一状态源**（v1.17）。pending 集合由 App 层统一持有，DocumentEditor 与 AgentPanel 都是它的视图：
 
@@ -604,6 +618,9 @@ SSE 下发的每个数据帧为标准 `id: <seq>` 行加 `data` JSON（示例中
 {"type": "tool_call", "data": {"tool": "propose_project_edits", "args": {"changes": 2}}}
 {"type": "tool_result","data": {"tool": "propose_project_edits", "ok": true, "summary": "已生成 2 处修改建议"}}
 {"type": "change_preview", "data": {"change_set_id": "...", "project_id": "...", "document_id": "...", "range": {"from": 10, "to": 24}, "replacement": "…建议替换文本…", "document_version": 7}}
+{"type": "work_item_start", "data": {"work_id": "w3", "kind": "tool", "title": "正在准备修改", "tool_name": "propose_project_edits", "args_summary": "{\"changes\": 2}"}}
+{"type": "work_item_delta", "data": {"work_id": "w3", "text": "正在校验修改范围"}}
+{"type": "work_item_done",  "data": {"work_id": "w3", "kind": "tool", "status": "succeeded", "result_summary": "已生成 2 处修改建议"}}
 {"type": "reconnect_gap", "data": {"after_seq": 12, "available_from": 40}}
 {"type": "done",      "data": {"path": "data/articles/tech-writer/模型蒸馏-20260806-0934.md"}}
 {"type": "failed",    "data": {"reason": "..."}}
@@ -727,6 +744,9 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 | SSE 断线重连时游标落后于重放窗口 | 服务端先发 `reconnect_gap` 控制事件再继续活动流；前端移除半截回复、只等终态，终态后重载持久化会话恢复完整内容，不得静默拼接残缺回复（§5.9/§5.10） |
 | SSE 多次重连耗尽或流解析错误 | 订阅关闭并上报错误，前端退出 loading 状态并提示任务仍可能在后台完成、可刷新恢复 |
 | 项目聊天上下文压缩调用失败 | 记 warning 并降级为丢弃最早的窗口外消息，本轮聊天继续；不得因压缩失败让用户消息失败（§3.3） |
+| 项目聊天任务失败或取消时仍有运行中的工作项 | 统一以 `interrupted` 终结后落库再进入终态；已 `done` 的工作项状态不变（§5.4） |
+| 进程在任务终态前被强制终止 | 不保存残缺 chunk 或伪造单项完成；下次会话详情对账发现无终态且 TaskBroker 无活动任务时幂等补写 `interrupted` 任务终态（§5.9） |
+| 单任务工作事件超过 199 条明细 | 前 199 条照常落库，其后明细只走 SSE 不落库；任务结束时在第 200 位写入按类型合并的"省略 N 条记录"摘要，任务终态不受限（§5.7） |
 | 内联 diff 的目标文档已被编辑或版本变化 | 编辑器降级为"文档已变化，无法内联预览"提示，仅保留侧栏卡片入口；不得在错误位置渲染装饰（§5.10） |
 | 创建助手的 id 非法或已存在 | API 返回 400/409，前端在对话框内原样提示并保留已填内容，不关闭对话框（§5.10） |
 | OpenAI 兼容服务拒绝流式 tools 参数 | 任务明确失败并保留正文；不得退化为伪流式或直接写文件，错误信息指出当前模型服务不支持项目 Agent 编辑工具 |

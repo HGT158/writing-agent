@@ -22,6 +22,11 @@ Subscriber = Callable[[Event], None]
 _TASK_ID: ContextVar[str | None] = ContextVar("event_task_id", default=None)
 
 
+def current_task_id() -> str | None:
+    """当前任务的事件作用域 id（TaskBroker 的任务 id），无作用域时为 None。"""
+    return _TASK_ID.get()
+
+
 class EventBus:
     def __init__(self) -> None:
         self._subscribers: list[Subscriber] = []

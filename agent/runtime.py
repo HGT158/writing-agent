@@ -1,7 +1,9 @@
 """Runtime（架构 §5.4）：进程启动时组装一次，任务按 runtime.run(assistant_id, task) 运行。"""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Any
@@ -16,7 +18,7 @@ from scheduler import RuntimeScheduler
 
 from .assistant_registry import AssistantRegistry
 from .context import build_chat_context, clip_document_content, estimate_tokens
-from .events import EventBus
+from .events import EventBus, current_task_id
 from .executor import ToolRegistry
 from .llm import chat_text, stream_chat_turn
 from .loop import RuntimeServices, build_graph
@@ -24,6 +26,9 @@ from .project_editing import ProjectChatResult, ProjectEditBatch
 from .schemas import AgentState, ToolContext
 from .skills import load_skills
 from .tools import make_builtin_tools, make_project_edit_tool
+from .work_log import WorkLogRecorder
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
@@ -244,8 +249,9 @@ class AgentRuntime:
         if not self.settings.openai_api_key:
             raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
         assistant = self.assistants.get(assistant_id)
-        task_id = uuid.uuid4().hex[:12]
-        self.store.acquire_lock(assistant_id, task_id, self.settings.run_lock_ttl_hours)
+        lock_task_id = uuid.uuid4().hex[:12]
+        self.store.acquire_lock(assistant_id, lock_task_id, self.settings.run_lock_ttl_hours)
+        recorder: WorkLogRecorder | None = None
         try:
             if not message.strip():
                 raise ValueError("消息不能为空")
@@ -278,13 +284,23 @@ class AgentRuntime:
                 "普通问答不调用工具。\n\n"
                 f"当前项目文档：\n{context}"
             )
-            self.store.add_project_chat_message(
+            user_record = self.store.add_project_chat_message(
                 assistant_id,
                 project_id,
                 chat_session_id,
                 "user",
                 message,
             )
+            recorder = WorkLogRecorder(
+                self.store,
+                self.bus,
+                assistant_id=assistant_id,
+                project_id=project_id,
+                chat_session_id=chat_session_id,
+                task_id=current_task_id() or lock_task_id,
+                user_message_id=user_record.message_id,
+            )
+            context_work = recorder.start("progress", "正在读取当前文档与历史上下文")
             history = self.store.list_project_chat_messages(
                 assistant_id, project_id, chat_session_id
             )
@@ -302,6 +318,7 @@ class AgentRuntime:
             )
             for warning in chat_context.warnings:
                 self.bus.emit("warning", text=warning)
+                recorder.note("warning", warning)
             if chat_context.summary_changed:
                 assert chat_context.summary is not None
                 assert chat_context.summary_through_message_id is not None
@@ -312,10 +329,15 @@ class AgentRuntime:
                     chat_context.summary,
                     chat_context.summary_through_message_id,
                 )
+                recorder.delta(
+                    context_work,
+                    f"已把较早的 {chat_context.compacted_message_count} 条对话压缩为摘要以控制上下文",
+                )
                 self.bus.emit(
                     "info",
                     text=f"已把较早的 {chat_context.compacted_message_count} 条对话压缩为摘要以控制上下文",
                 )
+            recorder.done(context_work)
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system_prompt},
                 *chat_context.messages,
@@ -358,6 +380,9 @@ class AgentRuntime:
                     "assistant",
                     reply,
                 )
+                recorder.finish_task(
+                    "succeeded", title=message.strip()[:80], detail="无工具调用"
+                )
                 return ProjectChatResult(reply=reply, changes=[])
             if len(first.tool_calls) != 1:
                 raise RuntimeError("项目聊天每轮只允许一个编辑提案工具调用")
@@ -369,11 +394,18 @@ class AgentRuntime:
                 session_id=chat_session_id,
                 data_dir=str(self.settings.data_dir),
             )
+            tool_work = recorder.start(
+                "tool",
+                "正在准备修改",
+                tool_name=call.name,
+                args=call.arguments,
+            )
             try:
                 args = json.loads(call.arguments)
                 validated = ProjectEditBatch.model_validate(args)
             except Exception as exc:
                 error = "修改建议参数无效，请重试"
+                recorder.done(tool_work, status="failed", detail=error)
                 self.bus.emit("tool_result", tool=call.name, ok=False, error=error)
                 raise ValueError(error) from exc
             self.bus.emit(
@@ -384,8 +416,10 @@ class AgentRuntime:
             try:
                 output = await edit_tool.call(args, ctx)
             except Exception as exc:
+                recorder.done(tool_work, status="failed", detail=str(exc))
                 self.bus.emit("tool_result", tool=call.name, ok=False, error=str(exc))
                 raise
+            recorder.done(tool_work, result=output)
             result_data = json.loads(output)
             changes = [
                 self.store.get_change_set(assistant_id, project_id, change_set_id)
@@ -398,6 +432,16 @@ class AgentRuntime:
                 summary=f"已生成 {len(changes)} 处修改建议",
             )
             for change in changes:
+                document = self.store.get_document(
+                    assistant_id, project_id, change.document_id
+                )
+                work = recorder.start(
+                    "changes",
+                    f"为 {document.relative_path} 生成修改建议",
+                    change_set_id=change.change_set_id,
+                    document_id=change.document_id,
+                )
+                recorder.done(work, detail=f"基于正文版本 {change.base_version}")
                 self.bus.emit(
                     "change_preview",
                     change_set_id=change.change_set_id,
@@ -447,9 +491,33 @@ class AgentRuntime:
                 "assistant",
                 reply,
             )
+            recorder.finish_task(
+                "succeeded",
+                title=message.strip()[:80],
+                detail=f"工具 1 次；修改建议 {len(changes)} 条" if changes else "无工具调用",
+            )
             return ProjectChatResult(reply=reply, changes=changes)
+        except asyncio.CancelledError:
+            if recorder is not None:
+                try:
+                    recorder.finish_task("interrupted", title=message.strip()[:80])
+                except Exception:
+                    logger.warning(
+                        "工作记录中断终态写入失败（assistant=%s session=%s）",
+                        assistant_id, chat_session_id, exc_info=True,
+                    )
+            raise
         except Exception as exc:
+            if recorder is not None:
+                try:
+                    recorder.finish_task("failed", title=message.strip()[:80], detail=str(exc))
+                except Exception:
+                    # 补偿不得覆盖原始任务错误（对齐 v1.16 API 补偿原则）。
+                    logger.warning(
+                        "工作记录失败终态写入失败（assistant=%s session=%s）",
+                        assistant_id, chat_session_id, exc_info=True,
+                    )
             self.bus.emit("failed", reason=str(exc))
             raise
         finally:
-            self.store.release_lock(assistant_id, task_id)
+            self.store.release_lock(assistant_id, lock_task_id)

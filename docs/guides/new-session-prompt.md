@@ -9,15 +9,15 @@
 开始前必须按顺序完整阅读以下文件：
 
 1. `AGENTS.md`：环境、命令、硬性规则、当前基线和阶段边界。
-2. `docs/architecture/phase1-architecture.md`：架构设计 v1.18，项目单一事实来源。
+2. `docs/architecture/phase1-architecture.md`：架构设计 v1.19，项目单一事实来源。
 3. `README.md`：当前安装、运行和 Scheduler 使用说明。
 
 项目当前状态：
 
 - 阶段 1 架构、阶段 2 MVP、阶段 3 Memory + Scheduler、阶段 4 写作工作台均已完成。
-- 当前完整测试基线是 **pytest 185/185 全绿**；记忆隔离红线为 10/10；前端测试为 70/70，类型检查与生产构建通过。
+- 当前完整测试基线是 **pytest 199/199 全绿**；记忆隔离红线为 10/10；前端测试为 73/73，类型检查与生产构建通过。
 - 已实现多助手隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写、项目 Agent 流式编辑和每项目多会话历史）。
-- 架构文档当前版本是 v1.18；除阶段 4 复审与 v1.13–v1.17 外，还完成了 SSE 断线游标续传：数据帧带标准 `id` 行、流端点接受 `after_seq` / `Last-Event-ID`、缺口发 `reconnect_gap` 信号、前端按退避自动重连并按 `seq` 去重。当前没有自动开始的新阶段。
+- 架构文档当前版本是 v1.19；除阶段 4 复审与 v1.13–v1.18 外，还完成了项目聊天持久化工作记录：`work_item_start/delta/done` SSE 事件、done 时落库（199+1 上限、脱敏截断）、会话详情对账补写 interrupted 终态、前端运行中展开/终态折叠。当前没有自动开始的新阶段。
 - 项目使用 Git，默认分支为 `main`，跟踪私有远程 `origin/main`。不要擅自使用 checkout、reset 等破坏性命令，也不要覆盖未提交内容。
 
 必须遵守：

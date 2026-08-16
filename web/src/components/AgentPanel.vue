@@ -9,6 +9,7 @@ import {
   type ChangePreview,
   type ProjectChatSession,
   type TaskEvent,
+  type WorkEventRecord,
 } from '../types'
 import ChangeDiff from './ChangeDiff.vue'
 import MarkdownPreview from './MarkdownPreview.vue'
@@ -27,23 +28,59 @@ const emit = defineEmits<{
   applyAll: [changes: ChangePreview[]]
   changesLoaded: [changes: ChangePreview[]]
   changeAdded: [change: ChangePreview]
+  openDocument: [projectId: string, documentId: string]
 }>()
 
+interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  message_id?: number
+}
+
+interface WorkItemView {
+  workId: string
+  kind: string
+  status: string
+  title: string
+  delta: string
+  changeSetId: string | null
+  documentId: string | null
+}
+
+interface WorkRecordView {
+  taskId: string
+  userMessageId: number | null
+  terminal: string
+  collapsed: boolean
+  items: WorkItemView[]
+  startedAt: number
+  endedAt: number | null
+}
+
+const TERMINAL_LABELS: Record<string, string> = {
+  running: '运行中',
+  succeeded: '已完成',
+  failed: '失败',
+  interrupted: '已中断',
+}
+
 const message = ref('')
-const messages = ref<{ role: 'user' | 'assistant'; content: string }[]>([])
+const messages = ref<ChatMessage[]>([])
 const sessions = ref<ProjectChatSession[]>([])
 const activeSessionId = ref<string | null>(null)
 const sending = ref(false)
 const loadingSession = ref(false)
 const deletingSession = ref(false)
 const error = ref('')
-const toolStatus = ref<{ state: 'running' | 'done' | 'failed'; text: string } | null>(null)
+const workRecords = ref<WorkRecordView[]>([])
+const liveWork = ref<WorkRecordView | null>(null)
 const lastInstruction = ref('')
 const scrollHost = ref<HTMLElement>()
 const followTail = ref(true)
 let stream: TaskStream | null = null
 let scopeGeneration = 0
 let assistantMessageIndex: number | null = null
+let liveUserIndex: number | null = null
 
 const reviewingIds = computed(() => new Set(props.reviewing))
 const busy = computed(() => sending.value || loadingSession.value)
@@ -80,9 +117,11 @@ function clearConversation() {
   sending.value = false
   loadingSession.value = false
   error.value = ''
-  toolStatus.value = null
+  workRecords.value = []
+  liveWork.value = null
   followTail.value = true
   assistantMessageIndex = null
+  liveUserIndex = null
 }
 
 function appendAssistantDelta(text: string) {
@@ -103,6 +142,144 @@ function removeTransientAssistantMessage() {
   assistantMessageIndex = null
 }
 
+/** 把持久化工作事件按 task_id 分组为可展开记录；历史默认折叠（架构 §5.10）。 */
+function recordsFromEvents(events: WorkEventRecord[]): WorkRecordView[] {
+  const groups = new Map<string, WorkEventRecord[]>()
+  for (const item of events) {
+    const group = groups.get(item.task_id) || []
+    group.push(item)
+    groups.set(item.task_id, group)
+  }
+  const records: WorkRecordView[] = []
+  for (const [taskId, group] of groups) {
+    const terminal = group.find((item) => item.kind === 'task')
+    records.push({
+      taskId,
+      userMessageId: group[0]?.user_message_id ?? null,
+      // 服务端对账只放行仍在运行的组：无终态即运行中，不得显示为已中断。
+      terminal: terminal?.status ?? 'running',
+      collapsed: true,
+      items: group.filter((item) => item.kind !== 'task').map((item) => ({
+        workId: `event-${item.event_id}`,
+        kind: item.kind,
+        status: item.status,
+        title: item.title,
+        delta: item.result_summary || item.detail || '',
+        changeSetId: item.change_set_id,
+        documentId: item.document_id,
+      })),
+      startedAt: Date.parse(terminal?.created_at ?? group[0]?.created_at ?? '') || 0,
+      endedAt: terminal ? Date.parse(terminal.completed_at ?? terminal.created_at) || null : null,
+    })
+  }
+  return records
+}
+
+function ensureLiveWork(): WorkRecordView {
+  if (!liveWork.value) {
+    liveWork.value = {
+      taskId: 'live',
+      userMessageId: null,
+      terminal: 'running',
+      collapsed: false,
+      items: [],
+      startedAt: Date.now(),
+      endedAt: null,
+    }
+  }
+  return liveWork.value
+}
+
+function handleWorkEvent(event: TaskEvent) {
+  const data = event.data
+  const workId = String(data.work_id || '')
+  if (!workId) return
+  const record = ensureLiveWork()
+  if (event.type === 'work_item_start') {
+    record.items.push({
+      workId,
+      kind: String(data.kind || 'progress'),
+      status: 'running',
+      title: String(data.title || ''),
+      delta: '',
+      changeSetId: typeof data.change_set_id === 'string' ? data.change_set_id : null,
+      documentId: typeof data.document_id === 'string' ? data.document_id : null,
+    })
+    void scrollToTail()
+    return
+  }
+  if (event.type === 'work_item_delta') {
+    const item = record.items.find((entry) => entry.workId === workId)
+    if (item) item.delta = `${item.delta}${String(data.text || '')}`.slice(-500)
+    return
+  }
+  if (event.type === 'work_item_done') {
+    const item = record.items.find((entry) => entry.workId === workId)
+    if (item) {
+      item.status = String(data.status || 'succeeded')
+      const summary = typeof data.result_summary === 'string' && data.result_summary
+        ? data.result_summary
+        : typeof data.detail === 'string' ? data.detail : ''
+      if (summary) item.delta = summary
+    }
+  }
+}
+
+function finishLiveWork(terminal: string) {
+  const record = liveWork.value
+  if (!record) return
+  record.terminal = terminal
+  record.endedAt = Date.now()
+  record.collapsed = true
+}
+
+function toggleWorkRecord(record: WorkRecordView) {
+  record.collapsed = !record.collapsed
+}
+
+function workRecordTitle(record: WorkRecordView): string {
+  const tools = record.items.filter((item) => item.kind === 'tool').length
+  const changes = record.items.filter((item) => item.kind === 'changes').length
+  const end = record.endedAt ?? Date.now()
+  const seconds = Math.max(0, Math.round((end - record.startedAt) / 1000))
+  const parts = [`工具 ${tools}`]
+  if (changes) parts.push(`建议 ${changes}`)
+  parts.push(`耗时 ${seconds}s`)
+  return `${TERMINAL_LABELS[record.terminal] ?? record.terminal} · ${parts.join(' · ')}`
+}
+
+function workItemTitle(item: WorkItemView): string {
+  const labels: Record<string, string> = {
+    progress: '进度', tool: '工具', warning: '警告', changes: '修改建议',
+  }
+  return `${labels[item.kind] ?? item.kind}：${item.title}`
+}
+
+function openWorkDocument(item: WorkItemView) {
+  if (item.kind !== 'changes' || !item.documentId || !props.projectId) return
+  emit('openDocument', props.projectId, item.documentId)
+}
+
+/** 消息与工作记录的交错视图：记录跟在触发它的 user 消息之后（架构 §5.10）。 */
+const conversation = computed<Array<
+  { type: 'message'; index: number } | { type: 'record'; record: WorkRecordView }
+>>(() => {
+  const rows: Array<{ type: 'message'; index: number } | { type: 'record'; record: WorkRecordView }> = []
+  messages.value.forEach((item, index) => {
+    rows.push({ type: 'message', index })
+    if (item.role !== 'user') return
+    const record = workRecords.value.find((entry) => entry.userMessageId === item.message_id)
+    if (record) {
+      rows.push({ type: 'record', record })
+      return
+    }
+    if (liveWork.value && index === liveUserIndex) {
+      rows.push({ type: 'record', record: liveWork.value })
+    }
+  })
+  return rows
+})
+
 async function loadSession(
   assistantId: string,
   projectId: string,
@@ -113,7 +290,13 @@ async function loadSession(
   try {
     const detail = await apiClient.getProjectChatSession(assistantId, projectId, chatSessionId)
     if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chatSessionId) return false
-    messages.value = detail.messages.map((item) => ({ role: item.role, content: item.content }))
+    messages.value = detail.messages.map((item) => ({
+      role: item.role,
+      content: item.content,
+      message_id: item.message_id,
+    }))
+    workRecords.value = recordsFromEvents(detail.work_events || [])
+    liveWork.value = null
     emit('changesLoaded', detail.pending_changes.filter(isChangePreview))
     lastInstruction.value = [...detail.messages].reverse().find((item) => item.role === 'user')?.content || ''
     void scrollToTail(true)
@@ -221,6 +404,7 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
   const documentId = props.documentId
   const optimisticUserIndex = appendUserMessage ? messages.value.length : null
   assistantMessageIndex = null
+  liveUserIndex = optimisticUserIndex
   lastInstruction.value = content
   if (appendUserMessage) {
     message.value = ''
@@ -229,7 +413,7 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
   stopStream()
   sending.value = true
   error.value = ''
-  toolStatus.value = null
+  liveWork.value = null
   followTail.value = true
   void scrollToTail(true)
   try {
@@ -249,20 +433,17 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
         appendAssistantDelta(String(event.data.text || ''))
         await scrollToTail()
       }
+      if (event.type === 'work_item_start' || event.type === 'work_item_delta'
+        || event.type === 'work_item_done') {
+        handleWorkEvent(event)
+        return
+      }
       if (event.type === 'reconnect_gap') {
         // 回复流出现不可恢复缺口：丢弃半截回复，等待终态后从服务器恢复完整会话。
         gapped = true
         removeTransientAssistantMessage()
         error.value = '网络中断，回复流不完整；任务仍在后台运行，完成后将自动从服务器恢复完整内容。'
         return
-      }
-      if (event.type === 'tool_call' && event.data.tool === 'propose_project_edits') {
-        toolStatus.value = { state: 'running', text: 'Agent 正在准备修改' }
-      }
-      if (event.type === 'tool_result' && event.data.tool === 'propose_project_edits') {
-        toolStatus.value = event.data.ok
-          ? { state: 'done', text: String(event.data.summary || '修改建议已生成') }
-          : { state: 'failed', text: String(event.data.error || '修改建议生成失败') }
       }
       if (event.type === 'change_preview') {
         if (!isChangePreview(event.data)) {
@@ -274,14 +455,14 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
       }
       if (event.type === 'task_failed') {
         removeTransientAssistantMessage()
-        toolStatus.value = null
+        finishLiveWork('failed')
         error.value = String(event.data.reason || '任务失败')
         sending.value = false
         if (gapped) void loadSession(assistantId, projectId, chat_session_id, generation)
       }
       if (event.type === 'task_done') {
         sending.value = false
-        toolStatus.value = null
+        finishLiveWork('succeeded')
         void refreshSessionList(assistantId, projectId, chat_session_id, generation)
         if (gapped) {
           const restored = await loadSession(assistantId, projectId, chat_session_id, generation)
@@ -295,7 +476,7 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
       if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chat_session_id) return
       sending.value = false
       removeTransientAssistantMessage()
-      toolStatus.value = null
+      finishLiveWork('interrupted')
       error.value = `${cause.message}。任务仍可能在后台完成，刷新可恢复会话。`
     })
   } catch (cause) {
@@ -375,16 +556,32 @@ onBeforeUnmount(stopStream)
       <div v-else-if="!messages.length" class="agent-empty">
         {{ projectId ? '在当前会话中让 Agent 解释、审校或修改正文。修改会以 diff 形式等待你确认。' : '选择项目后，让 Agent 解释、审校或修改正文。' }}
       </div>
-      <div v-for="(item, index) in messages" :key="index" class="message" :class="item.role">
-        <span class="message-role">{{ item.role === 'user' ? '你' : 'AI' }}</span>
-        <p v-if="item.role === 'user'" class="message-text">{{ item.content }}</p>
-        <MarkdownPreview v-else class="message-markdown" :content="item.content" />
-      </div>
-      <p v-if="toolStatus" class="tool-status" :class="toolStatus.state">
-        <Loader v-if="toolStatus.state === 'running'" :size="13" class="spin" />
-        <CheckCheck v-else-if="toolStatus.state === 'done'" :size="13" />
-        {{ toolStatus.text }}
-      </p>
+      <template v-for="(row, rowIndex) in conversation" :key="row.type === 'message' ? `m${row.index}` : `w${rowIndex}`">
+        <div v-if="row.type === 'message'" class="message" :class="messages[row.index].role">
+          <span class="message-role">{{ messages[row.index].role === 'user' ? '你' : 'AI' }}</span>
+          <p v-if="messages[row.index].role === 'user'" class="message-text">{{ messages[row.index].content }}</p>
+          <MarkdownPreview v-else class="message-markdown" :content="messages[row.index].content" />
+        </div>
+        <div v-else class="work-record" :class="row.record.terminal">
+          <button type="button" class="work-record-header" @click="toggleWorkRecord(row.record)">
+            <Loader v-if="row.record.terminal === 'running'" :size="13" class="spin" />
+            <CheckCheck v-else-if="row.record.terminal === 'succeeded'" :size="13" />
+            {{ workRecordTitle(row.record) }}
+          </button>
+          <ul v-if="!row.record.collapsed" class="work-record-items">
+            <li
+              v-for="item in row.record.items"
+              :key="item.workId"
+              class="work-item"
+              :class="[item.status, item.kind]"
+              @click="openWorkDocument(item)"
+            >
+              <span class="work-item-title">{{ workItemTitle(item) }}</span>
+              <span v-if="item.delta" class="work-item-detail">{{ item.delta }}</span>
+            </li>
+          </ul>
+        </div>
+      </template>
       <div v-if="changes.length" class="change-review">
         <div class="change-review-heading">
           <span>{{ changes.length }} 处待确认修改</span>

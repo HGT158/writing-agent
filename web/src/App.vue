@@ -338,6 +338,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         @apply-all="applyAllChanges"
         @changes-loaded="setChatChanges"
         @change-added="addChange"
+        @open-document="openDocument"
       />
     </div>
     <CreateProjectDialog v-if="createDialogOpen" :busy="createBusy" :error="createError" @submit="createProject" @cancel="createDialogOpen = false" />

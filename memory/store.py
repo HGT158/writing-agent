@@ -233,6 +233,62 @@ class MemoryStore:
                 self._conn, assistant_id, project_id, chat_session_id
             )
 
+    def add_project_chat_work_event(
+        self,
+        assistant_id: str,
+        project_id: str,
+        chat_session_id: str,
+        *,
+        task_id: str,
+        user_message_id: int,
+        event_seq: int,
+        kind: str,
+        status: str,
+        title: str,
+        detail: str = "",
+        tool_name: str | None = None,
+        args_summary: str | None = None,
+        result_summary: str | None = None,
+        change_set_id: str | None = None,
+        document_id: str | None = None,
+        created_at: str,
+        completed_at: str | None = None,
+    ) -> project_chat.ProjectChatWorkEventRecord:
+        with self._lock:
+            return project_chat.add_work_event(
+                self._conn, assistant_id, project_id, chat_session_id,
+                task_id=task_id, user_message_id=user_message_id, event_seq=event_seq,
+                kind=kind, status=status, title=title, detail=detail,
+                tool_name=tool_name, args_summary=args_summary,
+                result_summary=result_summary, change_set_id=change_set_id,
+                document_id=document_id, created_at=created_at,
+                completed_at=completed_at,
+            )
+
+    def list_project_chat_work_events(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> list[project_chat.ProjectChatWorkEventRecord]:
+        with self._lock:
+            return project_chat.list_work_events(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+
+    def list_unfinished_project_chat_work_task_ids(
+        self, assistant_id: str, project_id: str, chat_session_id: str
+    ) -> list[str]:
+        with self._lock:
+            return project_chat.list_unfinished_work_task_ids(
+                self._conn, assistant_id, project_id, chat_session_id
+            )
+
+    def interrupt_project_chat_work_task(
+        self, assistant_id: str, project_id: str, chat_session_id: str, task_id: str
+    ) -> None:
+        with self._lock:
+            project_chat.interrupt_work_task(
+                self._conn, assistant_id, project_id, chat_session_id, task_id
+            )
+
     # ---------- 长期 ----------
 
     def recall(self, assistant_id: str, query: str, *, limit: int = 10) -> str:
@@ -562,6 +618,12 @@ class MemoryStore:
     def is_locked(self, assistant_id: str) -> bool:
         with self._lock:
             return self._live_lock_locked(assistant_id) is not None
+
+    def current_lock_task_id(self, assistant_id: str) -> str | None:
+        """当前有效运行锁的任务 id；无锁或残留已被回收时为 None。"""
+        with self._lock:
+            live = self._live_lock_locked(assistant_id)
+            return live[0] if live is not None else None
 
     def _live_lock_locked(self, assistant_id: str) -> tuple[str, int, str, float] | None:
         row = self._conn.execute(

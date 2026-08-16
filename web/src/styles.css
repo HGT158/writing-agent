@@ -149,7 +149,19 @@ input, select, textarea { border-radius: var(--radius); }
 .message .message-markdown pre { margin: 0 0 8px; padding: 8px 10px; overflow: auto; border-radius: var(--radius); background: #f2f4f5; }
 .message .message-markdown code { font: 12px/1.5 "Cascadia Code", Consolas, monospace; }
 .message .message-markdown blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
-.agent-loading, .tool-status { display: flex; align-items: center; gap: 6px; margin: 0; padding: 8px 11px; font-size: 12px; }
+.agent-loading { display: flex; align-items: center; gap: 6px; margin: 0; padding: 8px 11px; font-size: 12px; }
+.work-record { margin: 4px 0 4px 14px; border: 1px solid var(--border-soft); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.work-record-header { display: flex; align-items: center; gap: 6px; width: 100%; padding: 7px 11px; border: 0; background: transparent; color: var(--accent); cursor: pointer; font-size: 12px; text-align: left; }
+.work-record.failed .work-record-header { color: var(--danger); }
+.work-record.interrupted .work-record-header { color: var(--muted, #8a8f98); }
+.work-record-items { list-style: none; margin: 0; padding: 4px 11px 8px 26px; display: grid; gap: 4px; }
+.work-item { display: grid; gap: 2px; padding: 3px 0; border-left: 2px solid var(--border-soft); padding-left: 8px; }
+.work-item.running { color: var(--accent); border-left-color: var(--accent); }
+.work-item.succeeded { color: inherit; }
+.work-item.failed, .work-item.interrupted { color: var(--danger); border-left-color: var(--danger); }
+.work-item.changes { cursor: pointer; }
+.work-item.changes:hover .work-item-title { text-decoration: underline; }
+.work-item-detail { color: var(--muted, #8a8f98); }
 .agent-loading { color: var(--muted); }
 .tool-status { border-bottom: 1px solid var(--border-soft); color: var(--accent); }
 .tool-status.failed { color: var(--danger); }

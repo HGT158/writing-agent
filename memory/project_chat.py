@@ -41,6 +41,32 @@ CREATE INDEX IF NOT EXISTS idx_project_chat_messages_scope
     ON project_chat_messages(assistant_id, project_id, chat_session_id, message_id);
 CREATE INDEX IF NOT EXISTS idx_project_chat_sessions_recent
     ON project_chat_sessions(assistant_id, project_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS project_chat_work_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    assistant_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    chat_session_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    user_message_id INTEGER NOT NULL,
+    event_seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    change_set_id TEXT,
+    document_id TEXT,
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    tool_name TEXT,
+    args_summary TEXT,
+    result_summary TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_work_events_seq
+    ON project_chat_work_events(task_id, event_seq);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_chat_work_events_task_terminal
+    ON project_chat_work_events(assistant_id, project_id, task_id) WHERE kind = 'task';
+CREATE INDEX IF NOT EXISTS idx_project_chat_work_events_scope
+    ON project_chat_work_events(assistant_id, project_id, chat_session_id, user_message_id, event_seq);
 """
 
 
@@ -77,6 +103,40 @@ class ProjectChatSummaryRecord:
     covered_through_message_id: int
     created_at: str
     updated_at: str
+
+
+WORK_EVENT_KINDS = {"progress", "tool", "warning", "changes", "task"}
+WORK_EVENT_STATUSES = {"succeeded", "failed", "interrupted"}
+
+_WORK_EVENT_COLUMNS = (
+    "event_id, assistant_id, project_id, chat_session_id, task_id, user_message_id, "
+    "event_seq, kind, status, change_set_id, document_id, title, detail, "
+    "tool_name, args_summary, result_summary, created_at, completed_at"
+)
+
+
+@dataclass(frozen=True)
+class ProjectChatWorkEventRecord:
+    """项目聊天工作记录（架构 §5.7 v1.19）：只服务界面展示，不进模型上下文。"""
+
+    event_id: int
+    assistant_id: str
+    project_id: str
+    chat_session_id: str
+    task_id: str
+    user_message_id: int
+    event_seq: int
+    kind: str
+    status: str
+    change_set_id: str | None
+    document_id: str | None
+    title: str
+    detail: str
+    tool_name: str | None
+    args_summary: str | None
+    result_summary: str | None
+    created_at: str
+    completed_at: str | None
 
 
 def _now() -> str:
@@ -325,6 +385,11 @@ def delete_session(
             (assistant_id, project_id, chat_session_id),
         )
         conn.execute(
+            "DELETE FROM project_chat_work_events "
+            "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
+            (assistant_id, project_id, chat_session_id),
+        )
+        conn.execute(
             "DELETE FROM project_chat_summaries "
             "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
             (assistant_id, project_id, chat_session_id),
@@ -371,6 +436,11 @@ def delete_empty_session(
                 "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
                 (assistant_id, project_id, chat_session_id),
             )
+            conn.execute(
+                "DELETE FROM project_chat_work_events "
+                "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ?",
+                (assistant_id, project_id, chat_session_id),
+            )
         conn.commit()
         return cursor.rowcount == 1
     except Exception:
@@ -378,7 +448,161 @@ def delete_empty_session(
         raise
 
 
+def add_work_event(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+    *,
+    task_id: str,
+    user_message_id: int,
+    event_seq: int,
+    kind: str,
+    status: str,
+    title: str,
+    detail: str = "",
+    tool_name: str | None = None,
+    args_summary: str | None = None,
+    result_summary: str | None = None,
+    change_set_id: str | None = None,
+    document_id: str | None = None,
+    created_at: str,
+    completed_at: str | None = None,
+) -> ProjectChatWorkEventRecord:
+    if kind not in WORK_EVENT_KINDS:
+        raise ValueError(f"工作记录类型非法：{kind}")
+    if status not in WORK_EVENT_STATUSES:
+        raise ValueError(f"工作记录状态非法：{status}")
+    _session_row(conn, assistant_id, project_id, chat_session_id)
+    if kind == "task":
+        # 任务终态幂等：唯一部分索引兜底，重复写入复用既有终态（架构 §5.9）。
+        conn.execute(
+            "INSERT OR IGNORE INTO project_chat_work_events "
+            "(assistant_id, project_id, chat_session_id, task_id, user_message_id, "
+            "event_seq, kind, status, change_set_id, document_id, title, detail, "
+            "tool_name, args_summary, result_summary, created_at, completed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                assistant_id, project_id, chat_session_id, task_id, user_message_id,
+                event_seq, kind, status, change_set_id, document_id, title, detail,
+                tool_name, args_summary, result_summary, created_at, completed_at,
+            ),
+        )
+        row = conn.execute(
+            f"SELECT {_WORK_EVENT_COLUMNS} FROM project_chat_work_events "
+            "WHERE assistant_id = ? AND project_id = ? AND task_id = ? AND kind = 'task'",
+            (assistant_id, project_id, task_id),
+        ).fetchone()
+    else:
+        cursor = conn.execute(
+            "INSERT INTO project_chat_work_events "
+            "(assistant_id, project_id, chat_session_id, task_id, user_message_id, "
+            "event_seq, kind, status, change_set_id, document_id, title, detail, "
+            "tool_name, args_summary, result_summary, created_at, completed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                assistant_id, project_id, chat_session_id, task_id, user_message_id,
+                event_seq, kind, status, change_set_id, document_id, title, detail,
+                tool_name, args_summary, result_summary, created_at, completed_at,
+            ),
+        )
+        row = conn.execute(
+            f"SELECT {_WORK_EVENT_COLUMNS} FROM project_chat_work_events "
+            "WHERE event_id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    conn.commit()
+    return ProjectChatWorkEventRecord(*row)
+
+
+def list_work_events(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+) -> list[ProjectChatWorkEventRecord]:
+    _session_row(conn, assistant_id, project_id, chat_session_id)
+    rows = conn.execute(
+        f"SELECT {_WORK_EVENT_COLUMNS} FROM project_chat_work_events "
+        "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ? "
+        "ORDER BY user_message_id, event_seq",
+        (assistant_id, project_id, chat_session_id),
+    ).fetchall()
+    return [ProjectChatWorkEventRecord(*row) for row in rows]
+
+
+def list_unfinished_work_task_ids(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+) -> list[str]:
+    _session_row(conn, assistant_id, project_id, chat_session_id)
+    rows = conn.execute(
+        "SELECT DISTINCT task_id FROM project_chat_work_events "
+        "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ? "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM project_chat_work_events AS t "
+        "WHERE t.assistant_id = project_chat_work_events.assistant_id "
+        "AND t.project_id = project_chat_work_events.project_id "
+        "AND t.task_id = project_chat_work_events.task_id AND t.kind = 'task') "
+        "ORDER BY task_id",
+        (assistant_id, project_id, chat_session_id),
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def interrupt_work_task(
+    conn: sqlite3.Connection,
+    assistant_id: str,
+    project_id: str,
+    chat_session_id: str,
+    task_id: str,
+) -> None:
+    """对账补写：无终态且任务已不活动时幂等写入 interrupted 终态（架构 §5.9）。"""
+    _session_row(conn, assistant_id, project_id, chat_session_id)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT 1 FROM project_chat_work_events "
+            "WHERE assistant_id = ? AND project_id = ? AND task_id = ? AND kind = 'task'",
+            (assistant_id, project_id, task_id),
+        ).fetchone()
+        if existing is not None:
+            conn.commit()
+            return
+        user_message_id = conn.execute(
+            "SELECT COALESCE(MAX(user_message_id), 0) FROM project_chat_work_events "
+            "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ? AND task_id = ?",
+            (assistant_id, project_id, chat_session_id, task_id),
+        ).fetchone()[0]
+        next_seq = conn.execute(
+            "SELECT COALESCE(MAX(event_seq), 0) + 1 FROM project_chat_work_events "
+            "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ? AND task_id = ?",
+            (assistant_id, project_id, chat_session_id, task_id),
+        ).fetchone()[0]
+        now = _now()
+        conn.execute(
+            "INSERT OR IGNORE INTO project_chat_work_events "
+            "(assistant_id, project_id, chat_session_id, task_id, user_message_id, "
+            "event_seq, kind, status, title, detail, created_at, completed_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                assistant_id, project_id, chat_session_id, task_id, user_message_id,
+                next_seq, "task", "interrupted", "任务中断",
+                "进程退出或连接中断，记录由对账补写", now, now,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def delete_assistant_rows(conn: sqlite3.Connection, assistant_id: str) -> None:
+    conn.execute(
+        "DELETE FROM project_chat_work_events WHERE assistant_id = ?", (assistant_id,)
+    )
     conn.execute(
         "DELETE FROM project_chat_messages WHERE assistant_id = ?", (assistant_id,)
     )

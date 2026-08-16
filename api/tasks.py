@@ -115,6 +115,11 @@ class TaskBroker:
             raise KeyError(task_id)
         return record
 
+    def is_active(self, task_id: str, assistant_id: str) -> bool:
+        """工作记录对账用：任务存在且仍在运行（架构 §5.9 v1.19）。"""
+        record = self.records.get(task_id)
+        return record is not None and record.assistant_id == assistant_id and record.status == "running"
+
     async def stream(self, task_id: str, assistant_id: str, after_seq: int | None = None):
         record = self.get(task_id, assistant_id)
         queue: asyncio.Queue[Event] = asyncio.Queue()

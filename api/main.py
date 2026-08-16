@@ -355,16 +355,32 @@ def create_app(
             session = runtime.store.get_project_chat_session(
                 assistant_id, project_id, chat_session_id
             )
+            # 无 broker 作用域的直连任务以运行锁的 task_id 标识；锁未释放视为仍在运行。
+            live_lock_task_id = runtime.store.current_lock_task_id(assistant_id)
+            for work_task_id in runtime.store.list_unfinished_project_chat_work_task_ids(
+                assistant_id, project_id, chat_session_id
+            ):
+                if broker.is_active(work_task_id, assistant_id):
+                    continue
+                if work_task_id == live_lock_task_id:
+                    continue
+                runtime.store.interrupt_project_chat_work_task(
+                    assistant_id, project_id, chat_session_id, work_task_id
+                )
             messages = runtime.store.list_project_chat_messages(
                 assistant_id, project_id, chat_session_id
             )
             pending = runtime.store.list_pending_chat_changes(
                 assistant_id, project_id, chat_session_id
             )
+            work_events = runtime.store.list_project_chat_work_events(
+                assistant_id, project_id, chat_session_id
+            )
             return {
                 "session": asdict(session),
                 "messages": [asdict(item) for item in messages],
                 "pending_changes": [_change_preview(item) for item in pending],
+                "work_events": [asdict(item) for item in work_events],
             }
         except Exception as exc:
             _raise_http(exc)
