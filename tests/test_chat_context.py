@@ -209,3 +209,67 @@ def test_blank_summary_is_treated_as_failure():
 
     assert context.summary_changed is False
     assert context.warnings
+
+
+def test_recent_window_overflow_truncates_and_shrinks_to_budget():
+    """P2 兜底：8 条满额超长消息（无可压缩前史）也必须产出预算内的 prompt。"""
+    history = _history(8, size=50_000)
+    history[-1] = Message(message_id=8, role="user", content="最后一条正常指令")
+
+    context = asyncio.run(build_chat_context(
+        history,
+        system_tokens=100,
+        token_budget=24_000,
+        keep_recent=8,
+        existing_summary=None,
+        existing_summary_through=None,
+        summarize=_never_called,
+    ))
+
+    assert estimate_messages_tokens(context.messages) <= 24_000 - 100
+    assert context.messages[-1]["content"] == "最后一条正常指令"
+    assert any("……" in message["content"] for message in context.messages[:-1])
+    assert any("截断" in warning or "丢弃" in warning for warning in context.warnings)
+
+
+def test_single_message_exceeding_budget_alone_is_clipped():
+    """单条消息自身超预算（100k 字符上限场景）也截断到预算内，最新指令不例外。"""
+    history = [Message(message_id=1, role="user", content="超" * 100_000)]
+
+    context = asyncio.run(build_chat_context(
+        history,
+        system_tokens=50,
+        token_budget=8_000,
+        keep_recent=8,
+        existing_summary=None,
+        existing_summary_through=None,
+        summarize=_never_called,
+    ))
+
+    assert len(context.messages) == 1
+    assert estimate_messages_tokens(context.messages) <= 8_000 - 50
+    assert "……" in context.messages[0]["content"]
+    assert any("截断" in warning for warning in context.warnings)
+
+
+def test_compacted_path_also_enforces_budget():
+    """压缩成功的路径同样受兜底约束：recent 自身过大时截断后进入 prompt。"""
+    history = _history(20, size=20_000)
+    history[-1] = Message(message_id=20, role="user", content="正常收尾指令")
+
+    async def fake_summary(_: str) -> str:
+        return "早期对话摘要"
+
+    context = asyncio.run(build_chat_context(
+        history,
+        system_tokens=100,
+        token_budget=16_000,
+        keep_recent=8,
+        existing_summary=None,
+        existing_summary_through=None,
+        summarize=fake_summary,
+    ))
+
+    assert context.summary == "早期对话摘要"
+    assert estimate_messages_tokens(context.messages) <= 16_000 - 100
+    assert context.messages[-1]["content"] == "正常收尾指令"

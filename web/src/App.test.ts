@@ -257,6 +257,49 @@ describe('App project creation', () => {
     expect(wrapper.get('.global-error').text()).toContain('已失效')
   })
 
+  it('scopes pending change cards to the active agent project', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    const otherProjectChange = {
+      change_set_id: 'change-other', project_id: 'project-other', document_id: 'doc-other',
+      hunks: [{
+        hunk_id: 'h-other', range: { from: 0, to: 0 },
+        original: '', replacement: '别处修改', status: 'pending',
+      }],
+      document_version: 1, source: 'chat',
+    }
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit('changeAdded', otherProjectChange)
+    await flushPromises()
+    expect(wrapper.find('.change-diff').exists()).toBe(false)  // 其他项目的卡片不显示
+
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit('changeAdded', chatChange)
+    await flushPromises()
+    expect(wrapper.findAll('.change-diff')).toHaveLength(1)
+  })
+
+  it('keeps pending cards when the explorer selects another project', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit('changeAdded', chatChange)
+    await flushPromises()
+    expect(wrapper.findAll('.change-diff')).toHaveLength(1)
+
+    // 资源管理器切到其他项目：活动标签仍在 project-1，卡片不得被清空。
+    const vm = wrapper.vm as unknown as { selectProject: (projectId: string) => Promise<void> }
+    await vm.selectProject('project-other')
+    await flushPromises()
+    expect(wrapper.findAll('.change-diff')).toHaveLength(1)
+  })
+
   it('creates an assistant and switches to it', async () => {
     apiMocks.createAssistant.mockResolvedValue({ id: 'marketing', name: '营销文案', description: '' })
     apiMocks.listAssistants

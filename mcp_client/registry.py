@@ -26,7 +26,9 @@ def _expand(value: str, project_root: Path, warn: Callable[[str], None]) -> str:
             return str(project_root)
         val = os.environ.get(name, "")
         if not val:
-            warn(f"MCP 配置引用的环境变量 ${{{name}}} 未定义，已替换为空串（server 可能启动失败）")
+            # 空/未定义等价未设置：fetch 的 ${LOCAL_PROXY} 等可选变量缺省即直连，
+            # 降为 debug 避免每次启动的噪音；真正的失败由 server 启动告警兜底。
+            logger.debug("MCP 配置环境变量 ${%s} 为空，按未设置处理", name)
         return val
 
     return _VAR_RE.sub(repl, value)

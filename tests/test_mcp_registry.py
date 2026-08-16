@@ -23,7 +23,8 @@ def test_missing_command_server_skipped(tmp_path):
     assert any("no-cmd" in w for w in warnings)
 
 
-def test_var_interpolation_and_undefined_warning(tmp_path, monkeypatch):
+def test_var_interpolation_treats_empty_as_unset_without_warning(tmp_path, monkeypatch):
+    """P3-3：空/未定义变量等价未设置，只记 debug，不再产生启动噪音 warning。"""
     monkeypatch.setenv("DEFINED_KEY", "secret-1")
     cfg = tmp_path / "cfg.json"
     cfg.write_text(json.dumps({"mcpServers": {"s": {
@@ -37,4 +38,4 @@ def test_var_interpolation_and_undefined_warning(tmp_path, monkeypatch):
     assert server["args"][-1] == f"{tmp_path}/data"
     assert server["env"]["A"] == "secret-1"
     assert server["env"]["B"] == ""
-    assert any("UNDEFINED_KEY" in w for w in warnings)
+    assert warnings == []

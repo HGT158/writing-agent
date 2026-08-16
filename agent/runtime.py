@@ -326,8 +326,12 @@ class AgentRuntime:
                 self.bus.emit("warning", text=warning)
                 recorder.note("warning", warning)
             if chat_context.summary_changed:
-                assert chat_context.summary is not None
-                assert chat_context.summary_through_message_id is not None
+                # 显式校验代替 assert：python -O 剥离断言后不应把类型收窄交给运行时崩溃。
+                if (
+                    chat_context.summary is None
+                    or chat_context.summary_through_message_id is None
+                ):
+                    raise RuntimeError("上下文压缩结果不完整，本轮任务终止")
                 self.store.save_project_chat_summary(
                     assistant_id,
                     project_id,

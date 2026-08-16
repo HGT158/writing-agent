@@ -50,6 +50,10 @@ const activeTabChanges = computed(() => {
 const documentLabels = computed(() => Object.fromEntries(
   projectTree.value.map((item) => [item.document_id, item.relative_path]),
 ))
+/** Agent 面板只显示当前作用域项目的待审卡片（架构 §5.10 v1.21）。 */
+const agentProjectChanges = computed(() => pendingChanges.value.filter(
+  (change) => change.project_id === agentProjectId.value,
+))
 
 function setChatChanges(changes: ChangeSetPreview[]) {
   pendingChanges.value = [
@@ -120,8 +124,8 @@ async function selectProject(projectId: string) {
     if (generation !== projectRequestGeneration || workspace.assistantId !== assistantId) return
     activeProjectId.value = projectId
     projectTree.value = tree
-    pendingChanges.value = []
-    reviewingIds.value = []
+    // 不清空 pending 集合：作用域由活动标签/选中项目决定，卡片按 agentProjectId
+    // 过滤展示，切回即恢复（架构 §5.10 v1.21）。
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
   }
@@ -459,7 +463,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         :assistant-id="workspace.assistantId"
         :project-id="agentProjectId"
         :document-id="activeTab?.document_id || null"
-        :changes="pendingChanges"
+        :changes="agentProjectChanges"
         :reviewing="reviewingIds"
         :document-labels="documentLabels"
         @apply="applyAgentChangeSet"

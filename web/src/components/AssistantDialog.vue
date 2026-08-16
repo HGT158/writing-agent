@@ -13,11 +13,14 @@ const name = ref('')
 const description = ref('')
 const input = ref<HTMLInputElement>()
 
-const idPattern = /^[a-z0-9][a-z0-9-]*$/
+// 与后端 AssistantRegistry 同一规则：^[a-z0-9][a-z0-9_-]{0,49}$（架构 §5.10 v1.21）。
+const idPattern = /^[a-z0-9][a-z0-9_-]{0,49}$/
 const idError = computed(() => {
   const value = id.value.trim()
   if (!value) return ''
-  return idPattern.test(value) ? '' : '标识只能使用小写字母、数字和连字符，且以字母或数字开头'
+  return idPattern.test(value)
+    ? ''
+    : '标识只能使用小写字母、数字、下划线或连字符（1-50 位），且以字母或数字开头'
 })
 const submittable = computed(() => !!id.value.trim() && !!name.value.trim() && !idError.value)
 

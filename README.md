@@ -3,7 +3,7 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.20；多 hunk 逐处审查、项目聊天持久化工作记录、SSE 断线游标续传与上下文压缩均已实现）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.21；多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底与 phase6 复审加固均已实现）。
 
 ## 核心能力
 
@@ -26,6 +26,7 @@ Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已�
 - Python 3.13，固定使用 `C:\miniconda\envs\writing-agent\python.exe`
 - Node.js 20+
 - OpenAI 兼容 LLM API Key；Tavily API Key 可选
+- `config/mcp_servers.json` 的 fetch 项硬编码了上述 conda 环境的 `python.exe` 绝对路径；重建或迁移环境后需同步修改
 
 ## 快速安装
 
@@ -104,7 +105,7 @@ npm run typecheck
 npm run build
 ```
 
-当前基线：Python `216/216`、记忆隔离 `10/10`、前端 `77/77`，类型检查与生产构建通过。
+当前基线：Python `219/219`、记忆隔离 `10/10`、前端 `82/82`，类型检查与生产构建通过。
 
 ## 目录
 
@@ -123,7 +124,7 @@ npm run build
 
 - [项目约定与 Agent 交接](AGENTS.md)
 - [文档导航](docs/README.md)
-- [架构 v1.20](docs/architecture/phase1-architecture.md)
+- [架构 v1.21](docs/architecture/phase1-architecture.md)
 - [后续待办](docs/guides/backlog.md)
-- [阶段 4 复审处理结果](docs/reviews/phase4-code-review.md)
+- [审查记录索引](docs/README.md)
 - [Windows Task Scheduler](docs/guides/windows-task-scheduler.md)

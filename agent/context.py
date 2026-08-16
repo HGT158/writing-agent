@@ -84,6 +84,58 @@ def _render_for_summary(messages: Iterable[ChatMessage]) -> str:
     return "\n\n".join(lines)
 
 
+_PER_MESSAGE_CAP_FLOOR = 1000
+
+
+def _fit_messages_to_budget(
+    messages: list[dict[str, str]], *, system_tokens: int, token_budget: int
+) -> tuple[list[dict[str, str]], list[str]]:
+    """保留窗口总量兜底（架构 §3.3 v1.21）。
+
+    先按"预算 60%、至少 1000 字符"的单条上限做首尾截断（复用文档截断标记），
+    再从最旧开始收缩窗口；最新一条消息单独超预算时同样截断，
+    保证 prompt 估算恒不超预算。只影响 prompt，不影响可见历史与服务端精确匹配。
+    """
+    warnings: list[str] = []
+    cap = max(int(token_budget * 0.6), _PER_MESSAGE_CAP_FLOOR)
+    fitted: list[dict[str, str]] = []
+    truncated = 0
+    for message in messages:
+        body, clipped = clip_document_content(message["content"], cap)
+        if clipped:
+            truncated += 1
+            fitted.append({**message, "content": body})
+        else:
+            fitted.append(message)
+    if truncated:
+        warnings.append(
+            f"保留窗口内有 {truncated} 条超长消息，已按上下文预算截断中间部分后进入 prompt"
+        )
+    dropped = 0
+    while (
+        len(fitted) > 1
+        and system_tokens + estimate_messages_tokens(fitted) > token_budget
+    ):
+        fitted = fitted[1:]
+        dropped += 1
+    if dropped:
+        warnings.append(f"截断后仍超出预算，已丢弃最早的 {dropped} 条保留窗口消息")
+    if (
+        fitted
+        and system_tokens + estimate_messages_tokens(fitted) > token_budget
+        and len(fitted) == 1
+    ):
+        allowance = max(
+            token_budget - system_tokens - _MESSAGE_OVERHEAD_TOKENS,
+            _PER_MESSAGE_CAP_FLOOR,
+        )
+        body, clipped = clip_document_content(fitted[0]["content"], allowance)
+        if clipped:
+            fitted = [{**fitted[0], "content": body}]
+            warnings.append("最新一条消息超出预算，已按首尾窗口截断后发送")
+    return fitted, warnings
+
+
 async def build_chat_context(
     history: list[ChatMessage],
     *,
@@ -120,10 +172,14 @@ async def build_chat_context(
     recent = pending[-keep_recent:] if keep_recent < len(pending) else list(pending)
     older = pending[: len(pending) - len(recent)]
     if not older:
+        fitted, fit_warnings = _fit_messages_to_budget(
+            baseline, system_tokens=system_tokens, token_budget=token_budget
+        )
         return ChatContext(
-            messages=baseline,
+            messages=fitted,
             summary=existing_summary,
             summary_through_message_id=covered_through,
+            warnings=fit_warnings,
         )
 
     transcript = _render_for_summary(older)
@@ -138,17 +194,27 @@ async def build_chat_context(
     if not summary:
         if not warnings:
             warnings.append(f"上下文压缩返回空结果，已直接丢弃较早的 {len(older)} 条消息")
+        degraded, degrade_fit = _fit_messages_to_budget(
+            ([carried] if carried else []) + _as_prompt_messages(recent),
+            system_tokens=system_tokens,
+            token_budget=token_budget,
+        )
         return ChatContext(
-            messages=([carried] if carried else []) + _as_prompt_messages(recent),
+            messages=degraded,
             summary=existing_summary,
             summary_through_message_id=covered_through,
-            warnings=warnings,
+            warnings=warnings + degrade_fit,
         )
 
+    fitted, fit_warnings = _fit_messages_to_budget(
+        [_summary_message(summary), *_as_prompt_messages(recent)],
+        system_tokens=system_tokens,
+        token_budget=token_budget,
+    )
     return ChatContext(
-        messages=[_summary_message(summary), *_as_prompt_messages(recent)],
+        messages=fitted,
         summary=summary,
         summary_through_message_id=older[-1].message_id,
         compacted_message_count=len(older),
-        warnings=warnings,
+        warnings=warnings + fit_warnings,
     )
