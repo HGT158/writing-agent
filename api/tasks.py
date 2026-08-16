@@ -35,6 +35,9 @@ class TaskBroker:
     `events` 是有界重放窗口，一次流式回复的 token 事件数很容易超过窗口容量，
     因此订阅者不能用列表下标定位：活跃订阅者从自己的队列取事件，窗口裁剪只让
     重连订阅者跳过已丢弃的历史，不会让任何订阅者停流或漏掉终态事件。
+    断线重连的订阅者以 `after_seq`（或标准 SSE `Last-Event-ID`）恢复游标：窗口
+    仍可覆盖时从游标后精确补发；游标落后于窗口时先发一条不带 seq 的
+    `reconnect_gap` 控制事件，再继续活动流，终态事件始终送达。
     """
 
     def __init__(self, bus: EventBus, *, max_records: int = 128, max_events: int = 4096) -> None:
@@ -112,17 +115,34 @@ class TaskBroker:
             raise KeyError(task_id)
         return record
 
-    async def stream(self, task_id: str, assistant_id: str):
+    async def stream(self, task_id: str, assistant_id: str, after_seq: int | None = None):
         record = self.get(task_id, assistant_id)
         queue: asyncio.Queue[Event] = asyncio.Queue()
         record.subscribers.add(queue)
         cursor = record.dropped  # 已裁剪的历史无法重放，从窗口最早事件开始
         try:
+            if after_seq is not None:
+                # 客户端声明已消费到 after_seq。超出已记录范围的未来游标回拨到
+                # 至多重发末尾事件，保证终态仍可送达；重复由客户端按 seq 去重。
+                after = max(-1, min(after_seq, record.next_seq - 2))
+                if after + 1 < record.dropped:
+                    gap: Event = {
+                        "type": "reconnect_gap",
+                        "data": {
+                            "after_seq": after_seq,
+                            "available_from": record.dropped,
+                        },
+                        "task_id": task_id,
+                    }
+                    yield f"data: {json.dumps(gap, ensure_ascii=False)}\n\n"
+                    cursor = record.dropped
+                else:
+                    cursor = after + 1
             for event in list(record.events):
                 if event["seq"] < cursor:
                     continue
                 cursor = event["seq"] + 1
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"id: {event['seq']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event["type"] in TERMINAL_EVENT_TYPES:
                     return
             while True:
@@ -136,7 +156,7 @@ class TaskBroker:
                 if event["seq"] < cursor:
                     continue
                 cursor = event["seq"] + 1
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                yield f"id: {event['seq']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event["type"] in TERMINAL_EVENT_TYPES:
                     break
         finally:

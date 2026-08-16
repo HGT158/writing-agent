@@ -140,6 +140,30 @@ describe('DocumentEditor', () => {
     expect(wrapper.find('.selection-toolbar').exists()).toBe(false)
   })
 
+  it('reports an interrupted rewrite stream and keeps the notice after the task ends', async () => {
+    let callback: (event: Record<string, unknown>) => void = () => undefined
+    apiMocks.rewriteSelection.mockResolvedValue({ task_id: 'task-1' })
+    apiMocks.watchTask.mockImplementation((_assistant, _task, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(DocumentEditor, { props: baseProps() })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as EditorVm
+    vm.toolbar = { from: 0, to: 2, left: 0, top: 0, text: '原文' }
+    vm.prompt = '改写'
+    await vm.submitSelection()
+
+    callback({ type: 'reconnect_gap', data: { after_seq: 0, available_from: 2 } })
+    await flushPromises()
+    expect(wrapper.get('.editor-error').text()).toContain('网络中断')
+
+    callback({ type: 'task_done', data: {} })
+    await flushPromises()
+    expect(wrapper.get('.editor-error').text()).toContain('网络中断')
+    expect(wrapper.emitted('preview')).toBeUndefined()
+  })
+
   it('renders an inline diff for a pending change on the current version', async () => {
     const wrapper = mount(DocumentEditor, { props: baseProps({ changes: [change] }) })
     await flushPromises()

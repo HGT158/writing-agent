@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -397,13 +397,24 @@ def create_app(
         }
 
     @app.get("/api/tasks/{task_id}/stream")
-    async def task_stream(task_id: str, assistant_id: str = Query(...)):
+    async def task_stream(
+        task_id: str,
+        assistant_id: str = Query(...),
+        after_seq: int | None = Query(None),
+        last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    ):
         try:
             broker.get(task_id, assistant_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="任务不存在") from exc
+        cursor = after_seq
+        if cursor is None and last_event_id is not None:
+            try:
+                cursor = int(last_event_id)
+            except ValueError:
+                cursor = None  # 非法头按全新订阅处理，不猜游标
         return StreamingResponse(
-            broker.stream(task_id, assistant_id),
+            broker.stream(task_id, assistant_id, after_seq=cursor),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )

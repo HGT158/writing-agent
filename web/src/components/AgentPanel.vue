@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Bot, CheckCheck, Loader, Plus, Send, Trash2 } from '@lucide/vue'
 
 import { apiClient } from '../api/client'
+import type { TaskStream } from '../api/client'
 import {
   isChangePreview,
   type ChangePreview,
@@ -40,7 +41,7 @@ const toolStatus = ref<{ state: 'running' | 'done' | 'failed'; text: string } | 
 const lastInstruction = ref('')
 const scrollHost = ref<HTMLElement>()
 const followTail = ref(true)
-let stream: EventSource | null = null
+let stream: TaskStream | null = null
 let scopeGeneration = 0
 let assistantMessageIndex: number | null = null
 
@@ -107,18 +108,20 @@ async function loadSession(
   projectId: string,
   chatSessionId: string,
   generation: number,
-) {
+): Promise<boolean> {
   loadingSession.value = true
   try {
     const detail = await apiClient.getProjectChatSession(assistantId, projectId, chatSessionId)
-    if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chatSessionId) return
+    if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chatSessionId) return false
     messages.value = detail.messages.map((item) => ({ role: item.role, content: item.content }))
     emit('changesLoaded', detail.pending_changes.filter(isChangePreview))
     lastInstruction.value = [...detail.messages].reverse().find((item) => item.role === 'user')?.content || ''
     void scrollToTail(true)
+    return true
   } catch (cause) {
-    if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chatSessionId) return
+    if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chatSessionId) return false
     error.value = cause instanceof Error ? cause.message : String(cause)
+    return false
   } finally {
     if (isProjectScope(generation, assistantId, projectId) && activeSessionId.value === chatSessionId) {
       loadingSession.value = false
@@ -239,11 +242,19 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
     )
     if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== requestedSessionId) return
     registerServerSession(chat_session_id, content)
+    let gapped = false
     stream = apiClient.watchTask(assistantId, task_id, async (event: TaskEvent) => {
       if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chat_session_id) return
       if (event.type === 'token') {
         appendAssistantDelta(String(event.data.text || ''))
         await scrollToTail()
+      }
+      if (event.type === 'reconnect_gap') {
+        // 回复流出现不可恢复缺口：丢弃半截回复，等待终态后从服务器恢复完整会话。
+        gapped = true
+        removeTransientAssistantMessage()
+        error.value = '网络中断，回复流不完整；任务仍在后台运行，完成后将自动从服务器恢复完整内容。'
+        return
       }
       if (event.type === 'tool_call' && event.data.tool === 'propose_project_edits') {
         toolStatus.value = { state: 'running', text: 'Agent 正在准备修改' }
@@ -266,12 +277,19 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
         toolStatus.value = null
         error.value = String(event.data.reason || '任务失败')
         sending.value = false
+        if (gapped) void loadSession(assistantId, projectId, chat_session_id, generation)
       }
       if (event.type === 'task_done') {
         sending.value = false
         toolStatus.value = null
         void refreshSessionList(assistantId, projectId, chat_session_id, generation)
-        await scrollToTail()
+        if (gapped) {
+          const restored = await loadSession(assistantId, projectId, chat_session_id, generation)
+          // 恢复失败时保留 loadSession 自己写入的错误，不清除为空。
+          if (restored) error.value = ''
+        } else {
+          await scrollToTail()
+        }
       }
     }, (cause) => {
       if (!isProjectScope(generation, assistantId, projectId) || activeSessionId.value !== chat_session_id) return

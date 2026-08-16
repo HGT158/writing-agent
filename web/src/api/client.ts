@@ -32,6 +32,14 @@ function parseTaskEvent(value: unknown): TaskEvent {
   return event as TaskEvent
 }
 
+/** 任务事件流的可恢复订阅句柄：close 后不再重连，终态自动关闭。 */
+export interface TaskStream {
+  close: () => void
+}
+
+const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 8000]
+const TERMINAL_TASK_EVENTS = new Set(['task_done', 'task_failed'])
+
 export const apiClient = {
   listAssistants: () => request<Assistant[]>('/api/assistants'),
   createAssistant: (id: string, name: string, description: string) => request<Assistant>('/api/assistants', {
@@ -105,23 +113,74 @@ export const apiClient = {
     taskId: string,
     onEvent: (event: TaskEvent) => void,
     onError?: (error: Error) => void,
-  ): EventSource {
-    const source = new EventSource(`/api/tasks/${taskId}/stream?assistant_id=${encodeURIComponent(assistantId)}`)
-    source.onmessage = (message) => {
-      try {
-        const event = parseTaskEvent(JSON.parse(message.data))
-        onEvent(event)
-        if (event.type === 'task_done' || event.type === 'task_failed') source.close()
-      } catch (cause) {
-        source.close()
-        onError?.(cause instanceof Error ? cause : new Error(String(cause)))
+  ): TaskStream {
+    let source: EventSource | null = null
+    let lastSeq = -1
+    let gapped = false
+    let retries = 0
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let closed = false
+
+    function stopSource() {
+      source?.close()
+      source = null
+    }
+
+    function finish(error?: Error) {
+      stopSource()
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+      if (error && !closed) onError?.(error)
+      closed = true
+    }
+
+    function scheduleReconnect() {
+      if (retries >= RECONNECT_DELAYS_MS.length) {
+        finish(new Error('任务事件流连接失败，多次重连未成功'))
+        return
+      }
+      const delay = RECONNECT_DELAYS_MS[retries]
+      retries += 1
+      timer = setTimeout(connect, delay)
+    }
+
+    function connect() {
+      if (closed) return
+      const cursor = lastSeq >= 0 ? `&after_seq=${lastSeq}` : ''
+      source = new EventSource(`/api/tasks/${taskId}/stream?assistant_id=${encodeURIComponent(assistantId)}${cursor}`)
+      source.onopen = () => { retries = 0 }
+      source.onmessage = (message) => {
+        try {
+          const event = parseTaskEvent(JSON.parse(message.data))
+          if (event.type === 'reconnect_gap') {
+            // 游标落后于服务端重放窗口：转发缺口信号，之后只放行终态事件，
+            // 不再拼接残缺回复（架构 §5.9/§5.10）。
+            gapped = true
+            onEvent(event)
+            return
+          }
+          if (typeof event.seq === 'number') {
+            if (event.seq <= lastSeq) return
+            lastSeq = event.seq
+          }
+          if (gapped && !TERMINAL_TASK_EVENTS.has(event.type)) return
+          onEvent(event)
+          if (TERMINAL_TASK_EVENTS.has(event.type)) finish()
+        } catch (cause) {
+          finish(cause instanceof Error ? cause : new Error(String(cause)))
+        }
+      }
+      source.onerror = () => {
+        if (closed) return
+        stopSource()
+        scheduleReconnect()
       }
     }
-    source.onerror = () => {
-      source.close()
-      onError?.(new Error('任务事件流连接失败'))
-    }
-    return source
+
+    connect()
+    return { close: () => finish() }
   },
 }
 

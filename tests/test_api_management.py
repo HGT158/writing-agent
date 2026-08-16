@@ -1,6 +1,7 @@
 """阶段 4 助手、普通任务与完成态文章 API。"""
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -139,6 +140,68 @@ def test_task_status_and_stream_are_assistant_scoped(tmp_path):
 
     assert hidden_status.status_code == 404
     assert hidden_stream.status_code == 404
+
+
+def _sse_frames(text: str) -> list[tuple[int | None, dict]]:
+    frames = []
+    for block in (part for part in text.split("\n\n") if part.strip()):
+        frame_id = None
+        data = None
+        for line in block.splitlines():
+            if line.startswith("id: "):
+                frame_id = int(line.removeprefix("id: "))
+            if line.startswith("data: "):
+                data = json.loads(line.removeprefix("data: "))
+        if data is not None:
+            frames.append((frame_id, data))
+    return frames
+
+
+def test_task_stream_resumes_from_explicit_or_header_cursor(tmp_path):
+    runtime = AgentRuntime(_settings(tmp_path))
+
+    async def emit_and_finish(assistant_id, task, session_id=None):
+        for index in range(3):
+            runtime.bus.emit("token", text=f"t{index}")
+        return {"status": "done"}
+
+    runtime.run = AsyncMock(side_effect=emit_and_finish)
+
+    with TestClient(_app(tmp_path, runtime)) as client:
+        started = client.post(
+            "/api/tasks", json={"assistant_id": "default", "task": "测试"}
+        )
+        task_id = started.json()["task_id"]
+        _wait_task(client, task_id)
+
+        full = client.get(f"/api/tasks/{task_id}/stream", params={"assistant_id": "default"})
+        explicit = client.get(
+            f"/api/tasks/{task_id}/stream",
+            params={"assistant_id": "default", "after_seq": 1},
+        )
+        header = client.get(
+            f"/api/tasks/{task_id}/stream",
+            params={"assistant_id": "default"},
+            headers={"Last-Event-ID": "1"},
+        )
+        precedence = client.get(
+            f"/api/tasks/{task_id}/stream",
+            params={"assistant_id": "default", "after_seq": 2},
+            headers={"Last-Event-ID": "1"},
+        )
+        invalid_header = client.get(
+            f"/api/tasks/{task_id}/stream",
+            params={"assistant_id": "default"},
+            headers={"Last-Event-ID": "not-a-number"},
+        )
+
+    full_frames = _sse_frames(full.text)
+    assert [seq for seq, _ in full_frames] == [0, 1, 2, 3]
+    assert full_frames[-1][1]["type"] == "task_done"
+    assert [seq for seq, _ in _sse_frames(explicit.text)] == [2, 3]
+    assert [seq for seq, _ in _sse_frames(header.text)] == [2, 3]
+    assert [seq for seq, _ in _sse_frames(precedence.text)] == [3]
+    assert [seq for seq, _ in _sse_frames(invalid_header.text)] == [0, 1, 2, 3]
 
 
 def test_completed_articles_are_read_only_and_assistant_isolated(tmp_path):

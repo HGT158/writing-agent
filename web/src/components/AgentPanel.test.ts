@@ -472,6 +472,80 @@ describe('AgentPanel', () => {
     expect(wrapper.get('.inline-error').text()).toContain('刷新可恢复')
   })
 
+  it('recovers the persisted session after a reconnect gap ends the task', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('写摘要')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('token', { text: '不完整片段' }))
+    await callback(taskEvent('reconnect_gap', { after_seq: 0, available_from: 3 }))
+    await nextTick()
+
+    expect(wrapper.find('.message.assistant').exists()).toBe(false)
+    expect(wrapper.get('.inline-error').text()).toContain('网络中断')
+    expect(wrapper.get('textarea').attributes('disabled')).toBeDefined()
+
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: {
+        chat_session_id: 'session-1', title: '写摘要',
+        created_at: '1', updated_at: '2', message_count: 2,
+      },
+      messages: [
+        { message_id: 1, role: 'user', content: '写摘要', created_at: '1' },
+        { message_id: 2, role: 'assistant', content: '完整回复', created_at: '2' },
+      ],
+      pending_changes: [change],
+    })
+    await callback(taskEvent('task_done', {}))
+    await flushPromises()
+
+    expect(apiMocks.getProjectChatSession).toHaveBeenCalledWith('default', 'project-1', 'session-1')
+    expect(wrapper.get('.message.assistant').text()).toContain('完整回复')
+    expect(wrapper.emitted('changesLoaded')?.at(-1)?.[0]).toEqual([change])
+    expect(wrapper.get('textarea').attributes('disabled')).toBeUndefined()
+    // 恢复成功后网络中断提示必须消失，不得残留已过时的警告。
+    expect(wrapper.find('.inline-error').exists()).toBe(false)
+  })
+
+  it('recovers pending changes when a gapped task fails', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('修改正文')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('reconnect_gap', { after_seq: 1, available_from: 4 }))
+
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: {
+        chat_session_id: 'session-1', title: '修改正文',
+        created_at: '1', updated_at: '2', message_count: 1,
+      },
+      messages: [
+        { message_id: 1, role: 'user', content: '修改正文', created_at: '1' },
+      ],
+      pending_changes: [change],
+    })
+    await callback(taskEvent('task_failed', { reason: '模型不可用' }))
+    await flushPromises()
+
+    expect(wrapper.get('.inline-error').text()).toContain('模型不可用')
+    expect(apiMocks.getProjectChatSession).toHaveBeenCalledWith('default', 'project-1', 'session-1')
+    expect(wrapper.emitted('changesLoaded')?.at(-1)?.[0]).toEqual([change])
+  })
+
   it('closes the old stream and clears the session when the project changes', async () => {
     const close = vi.fn()
     apiMocks.watchTask.mockImplementation((_assistantId, _taskId, _handler) => ({ close }))

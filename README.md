@@ -3,7 +3,7 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.17；长回复活动连接的事件滑窗修复、内联 diff 审阅与上下文压缩已实现；SSE 断线续传仍在待办）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.18；SSE 断线游标续传、活动连接跨事件滑窗、内联 diff 审阅与上下文压缩均已实现）。
 
 ## 核心能力
 
@@ -15,6 +15,7 @@ Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已�
 - 右侧 Agent 面板支持流式项目聊天（Markdown 渲染）、每项目多会话历史和 change set 审核。
 - 待确认修改采用双视图：编辑器内联展示删除/新增与接受/放弃控件，侧栏卡片汇总同一批建议，状态单一来源。
 - 项目聊天按 token 预算分层压缩上下文：保留最近若干轮全文，更早历史压缩为可复用摘要。
+- 任务事件流断线后按游标自动续传（`after_seq` / `Last-Event-ID`），按 `seq` 去重；缺口可识别，聊天终态后自动从服务器恢复完整会话。
 - APScheduler 定时任务与跨进程助手运行锁。
 
 ## 环境要求
@@ -101,7 +102,7 @@ npm run typecheck
 npm run build
 ```
 
-当前基线：Python `180/180`、记忆隔离 `10/10`、前端 `60/60`，类型检查与生产构建通过。
+当前基线：Python `185/185`、记忆隔离 `10/10`、前端 `70/70`，类型检查与生产构建通过。
 
 ## 目录
 
@@ -120,7 +121,7 @@ npm run build
 
 - [项目约定与 Agent 交接](AGENTS.md)
 - [文档导航](docs/README.md)
-- [架构 v1.17](docs/architecture/phase1-architecture.md)
+- [架构 v1.18](docs/architecture/phase1-architecture.md)
 - [后续待办](docs/guides/backlog.md)
 - [阶段 4 复审处理结果](docs/reviews/phase4-code-review.md)
 - [Windows Task Scheduler](docs/guides/windows-task-scheduler.md)

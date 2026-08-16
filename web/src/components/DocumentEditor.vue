@@ -6,6 +6,7 @@ import { EditorState } from '@codemirror/state'
 import { markdown } from '@codemirror/lang-markdown'
 
 import { apiClient } from '../api/client'
+import type { TaskStream } from '../api/client'
 import { frozenSelectionField, setFrozenSelection } from '../editor/frozenSelection'
 import { inlineDiffField, setInlineDiffs, type InlineDiff } from '../editor/inlineDiff'
 import { isChangePreview, type ChangePreview, type EditorTab, type TaskEvent } from '../types'
@@ -35,7 +36,7 @@ const prompt = ref('')
 const loading = ref(false)
 const error = ref('')
 let syncingExternalContent = false
-let stream: EventSource | null = null
+let stream: TaskStream | null = null
 let scopeGeneration = 0
 
 /**
@@ -170,8 +171,15 @@ async function submitSelection() {
     }, projectId, documentId)
     if (!scopeMatches(generation, assistantId, projectId, documentId)) return
     stopStream()
+    let gapped = false
     stream = apiClient.watchTask(assistantId, payload.task_id, (event: TaskEvent) => {
       if (!scopeMatches(generation, assistantId, projectId, documentId)) return
+      if (event.type === 'reconnect_gap') {
+        // 改写进度出现不可恢复缺口：建议可能已生成但未送达，保留提示直到终态。
+        gapped = true
+        error.value = '网络中断，改写进度不完整；修改建议可能未送达，可重新生成。'
+        return
+      }
       if (event.type === 'change_preview') {
         if (!isChangePreview(event.data)) {
           error.value = '任务返回了无效的修改预览'

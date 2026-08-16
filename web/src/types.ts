@@ -87,6 +87,7 @@ export interface TaskEvent {
   type: string
   data: Record<string, unknown>
   task_id?: string
+  seq?: number
 }
 
 export function isChangePreview(value: unknown): value is ChangePreview {
