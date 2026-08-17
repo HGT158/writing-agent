@@ -3,7 +3,7 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.21；多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底与 phase6 复审加固均已实现）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.22；多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传与上下文预算兜底均已实现）。
 
 ## 核心能力
 
@@ -18,6 +18,7 @@ Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已�
 - 项目聊天按 token 预算分层压缩上下文：保留最近若干轮全文，更早历史压缩为可复用摘要。
 - 项目聊天带可展开的持久化工作记录：实时显示进度、工具调用、警告与修改建议，终态自动折叠、刷新后可回看。
 - 任务事件流断线后按游标自动续传（`after_seq` / `Last-Event-ID`），按 `seq` 去重；缺口可识别，聊天终态后自动从服务器恢复完整会话。
+- 五套内置主题（纸墨/墨夜/暖卷/竹青/海湾）：标题栏一键切换，跟随系统深浅偏好并持久化，深色主题完整覆盖编辑器。
 - APScheduler 定时任务与跨进程助手运行锁。
 
 ## 环境要求
@@ -25,6 +26,7 @@ Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已�
 - Windows 11
 - Python 3.13，固定使用 `C:\miniconda\envs\writing-agent\python.exe`
 - Node.js 20+
+- 现代浏览器：Chrome/Edge 111+ 或 Firefox 113+（界面样式使用 `color-mix`）
 - OpenAI 兼容 LLM API Key；Tavily API Key 可选
 - `config/mcp_servers.json` 的 fetch 项硬编码了上述 conda 环境的 `python.exe` 绝对路径；重建或迁移环境后需同步修改
 
@@ -105,7 +107,7 @@ npm run typecheck
 npm run build
 ```
 
-当前基线：Python `219/219`、记忆隔离 `10/10`、前端 `82/82`，类型检查与生产构建通过。
+当前基线：Python `219/219`、记忆隔离 `10/10`、前端 `97/97`，类型检查与生产构建通过。
 
 ## 目录
 
@@ -124,7 +126,7 @@ npm run build
 
 - [项目约定与 Agent 交接](AGENTS.md)
 - [文档导航](docs/README.md)
-- [架构 v1.21](docs/architecture/phase1-architecture.md)
+- [架构 v1.22](docs/architecture/phase1-architecture.md)
 - [后续待办](docs/guides/backlog.md)
 - [审查记录索引](docs/README.md)
 - [Windows Task Scheduler](docs/guides/windows-task-scheduler.md)

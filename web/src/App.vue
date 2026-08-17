@@ -10,6 +10,7 @@ import CreateProjectDialog from './components/CreateProjectDialog.vue'
 import DocumentEditor from './components/DocumentEditor.vue'
 import EditorTabs from './components/EditorTabs.vue'
 import ProjectExplorer from './components/ProjectExplorer.vue'
+import ThemePicker from './components/ThemePicker.vue'
 import { createWorkspaceStore } from './stores/workspace'
 import type { Assistant, ChangeHunkPreview, ChangeSetPreview, ProjectDocument } from './types'
 import { toChangeSetPreview } from './types'
@@ -423,6 +424,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
       </div>
       <div class="title-actions">
         <span class="status-text">{{ statusText }}</span>
+        <ThemePicker />
         <button class="save-button" title="保存当前文档" :disabled="saving || !activeTab?.dirty" @click="saveActive"><Save :size="15" /> 保存</button>
       </div>
     </header>
