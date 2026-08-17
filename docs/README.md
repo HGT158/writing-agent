@@ -32,7 +32,7 @@
 | [reviews/phase3-code-review.md](reviews/phase3-code-review.md) | 阶段 3 Memory + Scheduler 审查与二轮复审闭环 |
 | [reviews/phase4-code-review.md](reviews/phase4-code-review.md) | 阶段 4 写作 IDE 审查与处理结果 |
 | [reviews/phase5-code-review.md](reviews/phase5-code-review.md) | 项目 Agent 流式编辑与多会话增量审查及处理结果 |
-| [reviews/phase6-code-review.md](reviews/phase6-code-review.md) | v1.16–v1.18 已提交改动复审（发现项待处理） |
+| [reviews/phase6-code-review.md](reviews/phase6-code-review.md) | v1.16–v1.18 已提交改动复审；P2 与多数 P3 已在 v1.21 处理，其余见 backlog 观察项 |
 
 ## 历史设计
 
