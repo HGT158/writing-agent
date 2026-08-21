@@ -8,16 +8,26 @@ defineProps<{
   label?: string
   regenerable?: boolean
 }>()
-defineEmits<{ apply: []; reject: []; regenerate: [] }>()
+defineEmits<{ apply: []; reject: []; regenerate: []; open: [hunkId?: string] }>()
 </script>
 
 <template>
   <section class="change-diff" aria-label="AI 修改预览">
-    <header class="diff-heading">
+    <header class="diff-heading" role="button" tabindex="0" title="打开目标文档" @click="$emit('open')" @keydown.enter="$emit('open')">
       <span class="diff-target"><FileText :size="13" />{{ label || '当前文档' }}</span>
       <span class="diff-source">{{ change.source === 'chat' ? 'Agent' : '选区改写' }} · {{ change.hunks.length }} 处</span>
     </header>
-    <div v-for="hunk in change.hunks" :key="hunk.hunk_id" class="diff-hunk" :class="hunk.status">
+    <div
+      v-for="hunk in change.hunks"
+      :key="hunk.hunk_id"
+      class="diff-hunk"
+      :class="hunk.status"
+      role="button"
+      tabindex="0"
+      title="在编辑器中定位该处修改"
+      @click="$emit('open', hunk.hunk_id)"
+      @keydown.enter="$emit('open', hunk.hunk_id)"
+    >
       <div v-if="hunk.original" class="diff-block removed"><span class="diff-sign">−</span>{{ hunk.original }}</div>
       <div class="diff-block added"><span class="diff-sign">+</span>{{ hunk.replacement }}</div>
       <span v-if="hunk.status === 'applied'" class="hunk-state applied">已应用</span>

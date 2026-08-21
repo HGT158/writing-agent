@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Bot, Plus, Save, Trash2 } from '@lucide/vue'
 
 import { apiClient } from './api/client'
@@ -29,6 +29,7 @@ const assistantDialogOpen = ref(false)
 const assistantBusy = ref(false)
 const assistantError = ref('')
 const saving = ref(false)
+const documentEditor = ref<InstanceType<typeof DocumentEditor> | null>(null)
 let projectRequestGeneration = 0
 
 /**
@@ -132,10 +133,14 @@ async function selectProject(projectId: string) {
   }
 }
 
-async function openDocument(projectId: string, documentId: string) {
+async function openDocument(projectId: string, documentId: string, hunkId?: string) {
   try {
     await workspace.openDocument(projectId, documentId)
     activeSidePanel.value = null
+    if (hunkId) {
+      await nextTick()
+      documentEditor.value?.focusHunk(hunkId)
+    }
     void reconcileChanges(projectId, documentId)
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
@@ -316,7 +321,8 @@ async function applyAgentChangeSet(change: ChangeSetPreview) {
     upsertChangeSet(toChangeSetPreview(result.change_set))
     markChangeSetsStaled(result.staled_change_set_ids)
     if (result.stopped) {
-      globalError.value = `第 ${result.stopped.reason === 'stale' ? '部分' : ''}修改建议已失效，其余建议请逐处确认。`
+      // 报告第 P3-3 项：原文案删掉计数变量后残留"第 部分修改建议已失效"。
+      globalError.value = '部分修改建议已失效或无法应用，其余建议请逐处确认。'
     } else {
       statusText.value = '已应用全部修改'
     }
@@ -445,6 +451,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         <EditorTabs :tabs="workspace.tabs" :active-project-id="activeTab?.project_id || null" :active-document-id="activeTab?.document_id || null" @select="workspace.activateTab" @close="closeTab" />
         <DocumentEditor
           v-if="activeTab"
+          ref="documentEditor"
           :assistant-id="workspace.assistantId"
           :project-id="activeTab.project_id"
           :tab="activeTab"

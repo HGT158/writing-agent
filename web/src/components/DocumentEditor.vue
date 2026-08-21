@@ -9,6 +9,7 @@ import { apiClient } from '../api/client'
 import type { TaskStream } from '../api/client'
 import { frozenSelectionField, setFrozenSelection } from '../editor/frozenSelection'
 import { inlineDiffField, setInlineDiffs, type InlineDiff } from '../editor/inlineDiff'
+import { themeSyntaxHighlighting } from '../editor/themeHighlight'
 import {
   isChangePreview,
   type ChangeHunkPreview,
@@ -134,6 +135,19 @@ function pushInlineDiffs() {
   view.dispatch({ effects: setInlineDiffs.of(inlineDiffs.value) })
 }
 
+function focusHunk(hunkId: string) {
+  const view = editorView.value
+  const diff = inlineDiffs.value.find((item) => item.hunkId === hunkId)
+  if (!view || !diff) return
+  view.dispatch({
+    selection: { anchor: diff.from },
+    effects: EditorView.scrollIntoView(diff.from, { y: 'center' }),
+  })
+  view.focus()
+}
+
+defineExpose({ focusHunk })
+
 function pushFrozenSelection() {
   const view = editorView.value
   if (!view) return
@@ -177,6 +191,7 @@ function createEditor() {
       extensions: [
         basicSetup,
         markdown(),
+        themeSyntaxHighlighting,
         frozenSelectionField,
         inlineDiffField(handlers),
         EditorView.updateListener.of((update) => {

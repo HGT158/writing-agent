@@ -4,8 +4,8 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.22**。
-- 阶段 2、3、4 及 v1.13–v1.22 均已完成；当前基线：Python **219/219**、记忆隔离 **10/10**、前端 **97/97**。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.23**。
+- 阶段 2、3、4 及 v1.13–v1.23 均已完成；当前基线：Python **225/225**、记忆隔离 **10/10**、前端 **102/102**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑和每项目多会话历史。
 - v1.17 补齐：活动 SSE 订阅者按 `seq` 跨越事件滑窗（修复长回复超过窗口后停流）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
 - v1.18 补齐：SSE 断线游标续传——数据帧带标准 `id: <seq>` 行，流端点接受 `after_seq` / `Last-Event-ID` 游标，游标落后于窗口时发 `reconnect_gap` 缺口信号；前端按退避自动重连、按 `seq` 去重，缺口后等待终态并重载持久化会话。
@@ -13,6 +13,7 @@
 - v1.20 补齐：多 hunk change set 与逐 hunk 审查——`change_set_hunks` 拆表（单事务迁移）、编辑工具按文档分组提交 hunks（修复同文档多处修改整批失败缺陷）、接受单个 hunk 为唯一应用原语（同组内容复检、他组整组 stale）、hunk 级 API 与分页查询、前端每个 hunk 自带独立接受/放弃按钮（TRAE 式）。
 - v1.21 补齐（phase6 复审）：聊天保留窗口总量兜底（单条首尾截断 + 窗口收缩，prompt 恒不超预算）、前端助手 id 规则对齐后端（含下划线）、待审卡片按 Agent 作用域项目过滤且资源管理器切换不再清空 pending、MCP 空变量日志降 debug、runtime assert 改显式 raise；暂不处理项见 `docs/guides/backlog.md` 观察项一节。
 - v1.22 补齐：写作 IDE 多主题界面——语义 CSS 变量化 + 五套主题（纸墨/墨夜/暖卷/竹青/海湾），标题栏主题选择器，仅显式选择才写入 localStorage（未选择时随系统深浅实时联动），存储不可用降级默认主题，深色主题覆盖 CodeMirror。
+- v1.23 补齐（phase7 复审）：工作记录脱敏整体修复（字符串参数先 json.loads 再 redact，不再绕过）、失败 detail 值级脱敏 + 截断、明细落库失败降级 warning 不打断任务、reject 前清理孤儿写意图（不再持续 409）、CodeMirror 语法高亮真正主题化（tagHighlighter 语义类映射，五套主题覆盖语法色）、连续对话保留上一轮已完成工作记录、侧栏卡片点击打开目标文档；accept-all 中断文案修复、backlog 补登记 phase6 暂缓项。P3 其余观察项见 `docs/guides/backlog.md`。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读

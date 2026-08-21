@@ -6,7 +6,7 @@
 
 | 文档 | 用途 |
 |---|---|
-| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.22） |
+| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.23） |
 | [../AGENTS.md](../AGENTS.md) | Agent 工作约定、环境和硬性规则 |
 | [guides/new-session-prompt.md](guides/new-session-prompt.md) | 新对话的可复制启动提示词 |
 | [guides/windows-task-scheduler.md](guides/windows-task-scheduler.md) | Windows 登录启动 Scheduler 的配置 |
@@ -14,7 +14,7 @@
 
 ## 版本化专题设计
 
-下列文档记录具体版本的设计与实施边界，用于追溯决策，不是当前架构的单一事实来源；后续版本已经改变其中部分契约，冲突时以 v1.22 主架构为准。
+下列文档记录具体版本的设计与实施边界，用于追溯决策，不是当前架构的单一事实来源；后续版本已经改变其中部分契约，冲突时以 v1.23 主架构为准。
 
 | 文档 | 版本范围 |
 |---|---|
@@ -33,6 +33,7 @@
 | [reviews/phase4-code-review.md](reviews/phase4-code-review.md) | 阶段 4 写作 IDE 审查与处理结果 |
 | [reviews/phase5-code-review.md](reviews/phase5-code-review.md) | 项目 Agent 流式编辑与多会话增量审查及处理结果 |
 | [reviews/phase6-code-review.md](reviews/phase6-code-review.md) | v1.16–v1.18 已提交改动复审；P2 与多数 P3 已在 v1.21 处理，其余见 backlog 观察项 |
+| [reviews/phase7-code-review.md](reviews/phase7-code-review.md) | v1.19–v1.22 已提交改动复审及 v1.23 处理闭环；P1/P2 已处理，剩余 P3 登记 backlog |
 
 ## 历史设计
 

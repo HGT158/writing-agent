@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.22 · 2026-08-16
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固及 v1.22 多主题界面均已完成
+> 版本：v1.23 · 2026-08-18
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面及 v1.23 phase7 复审加固均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -34,6 +34,8 @@
 > v1.21 变更：处理 phase6 复审发现项。**（1）保留窗口总量兜底（P2）**：超预算且无可压缩前史（或压缩后仍超）时，先对进入 prompt 的单条消息按"预算 60%、至少 1000 字符"的上限做首尾窗口截断并显式标注省略，再从最旧开始收缩保留窗口，最新一条消息单独超预算时同样截断——保证 prompt 估算恒不超预算，超长粘贴不再使会话每轮稳定失败；截断只影响 prompt，不影响可见历史与服务端精确匹配，兜底动作记入 warnings 并由工作记录呈现（§3.3/§9）。**（2）前端助手 id 校验对齐后端**：允许下划线，规则统一为 `^[a-z0-9][a-z0-9_-]{0,49}$`（§5.10）。**（3）待审卡片按作用域过滤**：Agent 面板只显示当前 Agent 作用域项目的 change set，资源管理器切换选中项目不再清空整个 pending 集合（切换助手仍清空）（§5.10）。另：MCP 配置空环境变量由 warning 降为 debug 日志（空值等价未设置，真正失败由 server 启动告警兜底）；runtime 压缩分支的 `assert` 改为显式 `raise`，消除对 `python -O` 的隐式依赖。
 
 > v1.22 变更：写作 IDE 界面美化与多主题。全部颜色收敛为语义 CSS 变量（补齐标题栏、活动栏、标签、diff、警告、代码块、CodeMirror 行号/光标/语法高亮等约 30 处硬编码色），内置五套主题：纸墨（默认浅色）、墨夜（深色）、暖卷（羊皮纸暖色）、竹青（冷绿浅色）、海湾（深蓝夜色）。标题栏新增主题选择器（色板预览 + 当前项标识，外部点击/Esc 关闭）；主题经 `document.documentElement.dataset.theme` 生效、`localStorage` 持久化（仅用户显式选择时写入），首次访问跟随系统深浅偏好，未手动选择时运行期随系统切换实时联动、选择后以用户选择为准；存储读写失败时静默降级默认主题、不阻断启动；`main.ts` 在挂载前初始化以避免闪烁。主题为纯展示层，不改变任何模块契约与数据行为（§5.10）。
+
+> v1.23 变更：处理 phase7 代码审查（v1.19–v1.22 区间）发现项。**（1）工作记录脱敏整体修复（P1-1）**：`summarize_args`/`summarize_result` 对字符串形态参数/结果先尝试 `json.loads` 再递归脱敏，解析失败按原文保留——生产路径传入的 JSON 字符串不再绕过 `redact`；补字符串形态脱敏与非 JSON 原文回退测试（§5.7）。**（2）失败 detail 值级脱敏与截断（P2-3）**：`summarize_detail` 对异常文本按密钥模式做值级敏感串脱敏（`sk-`/`tvly-`/Bearer/`key=value` 内嵌形态）并截断到 2,000 字符；`done` 与 `finish_task` 落库统一经该函数（§5.7）。**（3）明细落库失败降级（P2-2）**：中间 `work_item_done` 落库失败不再把整轮任务打成 failed，catch 后记 warning 并补发一条 warning 工作项，终态写入照旧尽力而为（§5.4/§5.7）。**（4）reject 前清理孤儿写意图（P2-1）**：`reject_change_hunk` 增加 `data_dir`，与 accept/save/create 一致在事务前对目标文档先 `_recover_write_intents`，崩溃残留不再让同组任意 hunk 的放弃持续 409（§4.7/§5.7）。**（5）CodeMirror 语法高亮主题化（P1-2）**：新增 `web/src/editor/themeHighlight.ts`，以 `tagHighlighter` 定义 tag → `cm-*` 语义类映射并经 `syntaxHighlighting` 引入——basicSetup 内置的 `defaultHighlightStyle` 用内联样式 spec 生成匿名类名，五套主题的 `--cm-*` 变量此前永不命中；本次覆盖后深色主题完整作用于语法 token（§5.10）。**（6）上一轮已完成工作记录不再随新轮消失（P2-4）**：起新一轮前把已终态的 liveWork 归档进 workRecords 并挂在本轮 user 消息上，连续多轮对话可见全量历史（§5.10）。**（7）侧栏卡片补导航（P2-5）**：change set 卡片头部与每个 hunk 块可点击打开目标文档（§5.10 既有契约补齐）。**（8）P3 顺手项**：accept-all 中断提示文案修复、backlog 补登记 phase6 两个维持暂缓项（第二轮 `tool_choice`、温度硬编码）。
 
 ---
 
@@ -492,7 +494,7 @@ def recall_semantic(assistant_id: str, query: str) -> str  # 预留向量接口�
 - **同助手跨会话共享**：`recall` 的检索范围 = 本助手全部历史会话 + 本助手 profile.md；**跨助手隔离**：SQL 强制 `WHERE assistant_id = ?`，profile 按目录物理隔离。
 - **项目与建议隔离**：`projects`、`project_documents`、`change_sets`、`document_write_intents` 的所有查询必须同时校验 `assistant_id`；`project_id` / `document_id` 不能单独作为授权或查询条件。保存文档和应用 change set 必须在写事务内执行版本号、状态与原文快照校验，使用持久化写入意图 + 临时文件 + 原子替换更新正文；冲突方不得触碰磁盘，进程崩溃后的残留意图必须可恢复。聊天产生多条建议时使用 MemoryStore 批量接口原子创建。
 - **项目聊天隔离与生命周期**：项目会话、消息和上下文摘要的所有查询必须同时过滤 `assistant_id + project_id + chat_session_id`，不得混入普通 Agent Loop 的 `sessions/messages` 或 FTS 索引。摘要是可重建的派生数据，只影响发给模型的 prompt，永远不进入会话详情接口返回的可见历史，UI 展示的消息列表不受压缩影响。第一条用户消息自动生成会话标题；列表按更新时间倒序。会话详情同时返回 `source='chat'` 且仍为 pending 的关联 change set。存在 pending diff 或助手运行锁时删除会话返回冲突；无 pending 且成功获取助手级 mutation lock 时，删除消息、会话及已处理 chat change set 元数据，但不回滚已写入正文。消息正文按可见原文保存，只以 trim 后结果判断空值和生成标题。项目 purge 与助手 purge 必须级联清理项目聊天表，归档项目保留历史但不可访问。
-- **工作记录的数据边界与上限（v1.19）**：`project_chat_work_events` 只服务界面展示，与聊天消息、模型上下文和上下文摘要完全隔离——`build_chat_context` 与摘要生成只读 `project_chat_messages`，工作记录不进 FTS、长期记忆、摘要或 prompt。所有读写同时过滤 `assistant_id + project_id + chat_session_id`；会话删除、项目 purge 与助手 purge 必须级联清理。`(task_id, event_seq)` 唯一，`event_seq` 在 `work_item_start` 时按发起顺序分配（并行工具保留发起顺序，完成可乱序落库）；`kind='task'` 终态受 `(assistant_id, project_id, task_id)` 唯一部分索引约束，每个任务最多一条，重复写入幂等复用既有行。单任务持久化明细（非终态）最多 199 条，`event_seq=200` 固定保留给溢出摘要（"省略 N 条记录"，按类型合并计数；无溢出不创建），任务终态不受该限制、尽力写入。工具参数摘要最多 4,000 字符、结果最多 8,000 字符（保留前 6,000 + 后 2,000，并以文本标注原始长度与已截断），写入前对名称匹配 `api_key`/`token`/`authorization`/`cookie`/`secret`/`password` 的字段值递归脱敏。
+- **工作记录的数据边界与上限（v1.19，v1.23 加固）**：`project_chat_work_events` 只服务界面展示，与聊天消息、模型上下文和上下文摘要完全隔离——`build_chat_context` 与摘要生成只读 `project_chat_messages`，工作记录不进 FTS、长期记忆、摘要或 prompt。所有读写同时过滤 `assistant_id + project_id + chat_session_id`；会话删除、项目 purge 与助手 purge 必须级联清理。`(task_id, event_seq)` 唯一，`event_seq` 在 `work_item_start` 时按发起顺序分配（并行工具保留发起顺序，完成可乱序落库）；`kind='task'` 终态受 `(assistant_id, project_id, task_id)` 唯一部分索引约束，每个任务最多一条，重复写入幂等复用既有行。单任务持久化明细（非终态）最多 199 条，`event_seq=200` 固定保留给溢出摘要（"省略 N 条记录"，按类型合并计数；无溢出不创建），任务终态不受该限制、尽力写入；明细落库失败必须降级为 warning 且不得中断任务，降级记录复用失败明细未占用的 `event_seq`，不得占用预留的 200。工具参数摘要正文最多 4,000 字符、结果摘要正文最多 8,000 字符（保留前 6,000 + 后 2,000），截断时追加原始长度标注，标注本身不计入正文上限。参数或结果为 JSON 字符串时，先解析对象/数组再递归脱敏；无法解析的普通文本保持原文。写入前对名称匹配 `api_key`/`token`/`authorization`/`cookie`/`secret`/`password` 的字段值替换为 `***`。失败详情还须扫描 `sk-`、`tvly-`、Bearer 与 `key=value` 等常见值级凭据形态，完整匹配的敏感值不得落库；详情正文最多 2,000 字符，截断标注不计入该上限。
 - **新会话失败补偿**：首次发送由 API 同步创建会话并返回 `chat_session_id`。后台任务成功、失败或取消后，API 都对本次新建会话执行幂等条件清理：会话仍存在、消息数为 0、且无任何关联 change set 时才删除；已有 user/assistant 消息或 diff 时必须保留，避免模型失败后丢失已送达内容。继续既有会话不得触发会话删除；补偿清理失败只记 warning，不得覆盖原始任务结果或错误。
 - **工具写边界**：`save_markdown` 只允许写 `data/` 下的非受管中间产物，必须拒绝 `assistants/<assistant_id>/projects/` 及任意其他助手项目路径；项目正文只能经项目文档/change set API 修改。
 
@@ -780,4 +782,4 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 
 ---
 
-**请评审**。确认后我进入阶段 2，交付可运行的 MVP 全部代码。
+当前完成边界：阶段 2、3、4 及 v1.13–v1.23 均已完成；后续阶段须由用户确认目标后另行启动。

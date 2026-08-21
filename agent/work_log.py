@@ -7,11 +7,16 @@ delta 与 start 只走流；明细事件仅在 done 时落库，单任务明细�
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from agent.events import EventBus
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 REDACT_KEYS = ("api_key", "token", "authorization", "cookie", "secret", "password")
 REDACTED = "***"
@@ -19,8 +24,31 @@ ARGS_MAX_CHARS = 4_000
 RESULT_MAX_CHARS = 8_000
 RESULT_HEAD_CHARS = 6_000
 RESULT_TAIL_CHARS = 2_000
+DETAIL_MAX_CHARS = 2_000
 DETAIL_EVENT_LIMIT = 199
 OVERFLOW_SEQ = 200
+# 值级敏感串模式：常见密钥前缀与 key=value/JSON 内嵌形态（phase7 P2-3）。
+_SECRET_VALUE_PATTERN = re.compile(
+    r"(?i)(?:"
+    r"sk-[a-z0-9_-]{8,}"                     # OpenAI/DeepSeek 风格
+    r"|tvly-[a-z0-9_-]{8,}"                  # Tavily
+    r"|bearer\s+[a-z0-9._~+/=-]{8,}"         # Authorization: Bearer …
+    r"|(?:api[_-]?key|token|secret|password|authorization|cookie)"
+    r"\s*[=:]\s*[\"']?([a-z0-9._~+/=-]{8,})"
+    r")"
+)
+
+
+def _redact_secrets_in_text(text: str) -> str:
+    """按键名与值级模式脱敏自由文本；捕获组形式的只替换捕获的值。"""
+    def replace(match: re.Match) -> str:
+        value = match.group(1)
+        if value is None:
+            return REDACTED
+        return match.string[match.start():match.start() + match.end() - len(value)] + REDACTED
+
+    return _SECRET_VALUE_PATTERN.sub(replace, text)
+
 
 _KIND_LABELS = {"progress": "进度", "tool": "工具", "warning": "警告", "changes": "修改建议"}
 
@@ -42,11 +70,35 @@ def redact(value):
     return value
 
 
+def summarize_detail(detail: str | None) -> str | None:
+    """失败详情：截断到上限并做值级敏感串脱敏（异常文本是最可能携带凭据的载体）。"""
+    if detail is None:
+        return None
+    text = _redact_secrets_in_text(str(detail))
+    if len(text) > DETAIL_MAX_CHARS:
+        return text[:DETAIL_MAX_CHARS] + f"…[详情已截断：原始 {len(text)} 字符]"
+    return text
+
+
+def _redact_string(text: str) -> str:
+    """字符串形态的 JSON 载荷先解析再递归脱敏；解析失败按原文返回（phase7 P1-1）。"""
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if not isinstance(parsed, (dict, list)):
+        # 标量 JSON（"3"、true 等）与普通文本无法区分，保留原文。
+        return text
+    return json.dumps(redact(parsed), ensure_ascii=False)
+
+
 def summarize_args(args) -> str | None:
     if args is None:
         return None
     if isinstance(args, (dict, list)):
         text = json.dumps(redact(args), ensure_ascii=False)
+    elif isinstance(args, str):
+        text = _redact_string(args)
     else:
         text = str(args)
     if len(text) > ARGS_MAX_CHARS:
@@ -57,7 +109,10 @@ def summarize_args(args) -> str | None:
 def summarize_result(result) -> str | None:
     if result is None:
         return None
-    text = result if isinstance(result, str) else json.dumps(redact(result), ensure_ascii=False)
+    if isinstance(result, str):
+        text = _redact_string(result)
+    else:
+        text = json.dumps(redact(result), ensure_ascii=False)
     if len(text) <= RESULT_MAX_CHARS:
         return text
     head = text[:RESULT_HEAD_CHARS]
@@ -77,6 +132,7 @@ class _WorkItem:
     result_summary: str | None = None
     change_set_id: str | None = None
     document_id: str | None = None
+    detail: str = ""
     created_at: str = field(default_factory=_now)
     completed_at: str | None = None
 
@@ -163,38 +219,79 @@ class WorkLogRecorder:
         item.completed_at = _now()
         if result is not None:
             item.result_summary = summarize_result(result)
+        safe_detail = summarize_detail(detail) or ""
+        item.detail = safe_detail
         self.bus.emit(
             "work_item_done",
             work_id=work_id,
             kind=item.kind,
             status=status,
             title=item.title,
-            detail=detail,
+            detail=safe_detail,
             result_summary=item.result_summary,
         )
         if item.seq <= DETAIL_EVENT_LIMIT:
-            self.store.add_project_chat_work_event(
-                self.assistant_id,
-                self.project_id,
-                self.chat_session_id,
-                task_id=self.task_id,
-                user_message_id=self.user_message_id,
-                event_seq=item.seq,
-                kind=item.kind,
-                status=item.status,
-                title=item.title,
-                detail=detail,
-                tool_name=item.tool_name,
-                args_summary=item.args_summary,
-                result_summary=item.result_summary,
-                change_set_id=item.change_set_id,
-                document_id=item.document_id,
-                created_at=item.created_at,
-                completed_at=item.completed_at,
-            )
+            try:
+                self._persist_item(item)
+            except Exception:
+                # 明细落库失败只降级为 warning 工作项，不得打断任务
+                # （对齐终态写入"只记 warning 不掩盖原始错误"原则，phase7 P2-2）。
+                self._note_persist_failure(item)
         else:
             self._dropped += 1
             self._dropped_counts[item.kind] = self._dropped_counts.get(item.kind, 0) + 1
+
+    def _persist_item(self, item: _WorkItem) -> None:
+        self.store.add_project_chat_work_event(
+            self.assistant_id,
+            self.project_id,
+            self.chat_session_id,
+            task_id=self.task_id,
+            user_message_id=self.user_message_id,
+            event_seq=item.seq,
+            kind=item.kind,
+            status=item.status,
+            title=item.title,
+            detail=item.detail,
+            tool_name=item.tool_name,
+            args_summary=item.args_summary,
+            result_summary=item.result_summary,
+            change_set_id=item.change_set_id,
+            document_id=item.document_id,
+            created_at=item.created_at,
+            completed_at=item.completed_at,
+        )
+
+    def _note_persist_failure(self, item: _WorkItem) -> None:
+        """落库失败时补一条 warning 工作项（尽力而为，自身失败只忽略）。"""
+        logger.warning(
+            "工作记录明细落库失败（assistant=%s project=%s task=%s seq=%s）",
+            self.assistant_id, self.project_id, self.task_id, item.seq, exc_info=True,
+        )
+        warning = _WorkItem(
+            work_id=uuid.uuid4().hex[:10],
+            # 原明细未落库，直接复用它留下的序号空缺；不能递增到 200，
+            # 该位置固定保留给溢出摘要。
+            seq=item.seq,
+            kind="warning",
+            title=f"工作记录明细落库失败：{item.title}",
+        )
+        warning.status = "succeeded"
+        warning.completed_at = _now()
+        self._items[warning.work_id] = warning
+        self.bus.emit(
+            "work_item_done",
+            work_id=warning.work_id,
+            kind="warning",
+            status="succeeded",
+            title=warning.title,
+            detail="该明细未持久化，刷新后不可回看",
+            result_summary=None,
+        )
+        try:
+            self._persist_item(warning)
+        except Exception:
+            pass
 
     def note(self, kind: str, title: str) -> str:
         """瞬时事件（warning 等）：start 与 done 连续完成。"""
@@ -245,7 +342,7 @@ class WorkLogRecorder:
             kind="task",
             status=status,
             title=title,
-            detail=detail,
+            detail=summarize_detail(detail) or "",
             created_at=self.started_at,
             completed_at=_now(),
         )

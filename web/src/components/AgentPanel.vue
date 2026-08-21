@@ -28,7 +28,7 @@ const emit = defineEmits<{
   applyAll: [changes: ChangeSetPreview[]]
   changesLoaded: [changes: ChangeSetPreview[]]
   changeAdded: [change: ChangeSetPreview]
-  openDocument: [projectId: string, documentId: string]
+  openDocument: [projectId: string, documentId: string, hunkId?: string]
 }>()
 
 interface ChatMessage {
@@ -233,6 +233,23 @@ function finishLiveWork(terminal: string) {
   record.collapsed = true
 }
 
+/**
+ * 起新一轮前把已终态的 liveWork 归档到 workRecords，挂在上一轮 user 消息上。
+ * 尚未重载会话时为乐观消息分配稳定负数 id，供交错视图保持轮次位置。
+ */
+function archiveLiveWork(userIndex: number | null) {
+  const record = liveWork.value
+  if (!record || record.terminal === 'running') return
+  if (userIndex !== null) {
+    const optimistic = messages.value[userIndex]
+    if (optimistic?.role === 'user') {
+      if (optimistic.message_id === undefined) optimistic.message_id = -userIndex - 1
+      record.userMessageId = optimistic.message_id
+    }
+  }
+  workRecords.value = [...workRecords.value, record]
+}
+
 function toggleWorkRecord(record: WorkRecordView) {
   record.collapsed = !record.collapsed
 }
@@ -258,6 +275,15 @@ function workItemTitle(item: WorkItemView): string {
 function openWorkDocument(item: WorkItemView) {
   if (item.kind !== 'changes' || !item.documentId || !props.projectId) return
   emit('openDocument', props.projectId, item.documentId)
+}
+
+function openChangeDocument(change: ChangeSetPreview, hunkId?: string) {
+  if (!change.document_id || !props.projectId) return
+  if (hunkId) {
+    emit('openDocument', props.projectId, change.document_id, hunkId)
+  } else {
+    emit('openDocument', props.projectId, change.document_id)
+  }
 }
 
 /** 消息与工作记录的交错视图：记录跟在触发它的 user 消息之后（架构 §5.10）。 */
@@ -403,6 +429,8 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
   const requestedSessionId = activeSessionId.value
   const documentId = props.documentId
   const optimisticUserIndex = appendUserMessage ? messages.value.length : null
+  // 归档的是上一轮记录，必须在 liveUserIndex 切到本轮消息之前完成。
+  archiveLiveWork(liveUserIndex)
   assistantMessageIndex = null
   liveUserIndex = optimisticUserIndex
   lastInstruction.value = content
@@ -602,6 +630,7 @@ onBeforeUnmount(stopStream)
           @apply="emit('apply', change)"
           @reject="emit('reject', change)"
           @regenerate="regenerate"
+          @open="(hunkId) => openChangeDocument(change, hunkId)"
         />
       </div>
       <p v-if="error" class="inline-error">{{ error }}</p>

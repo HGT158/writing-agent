@@ -253,6 +253,55 @@ def test_recorder_redacts_and_truncates(tmp_path):
     store.close()
 
 
+def test_recorder_redacts_sensitive_fields_in_string_payloads(tmp_path):
+    """字符串形态的参数/结果（生产路径实际传入的形态）同样必须脱敏（phase7 P1-1）。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "字符串脱敏项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+
+    args_json = json.dumps({
+        "query": "正文",
+        "credentials": {"api_key": "sk-secret", "nested": [{"token": "abc"}]},
+    }, ensure_ascii=False)
+    result_json = json.dumps({
+        "ok": True,
+        "auth": {"authorization": "Bearer xyz", "safe": "可见"},
+    }, ensure_ascii=False)
+    work_id = recorder.start("tool", "调用工具", tool_name="search", args=args_json)
+    recorder.done(work_id, result=result_json)
+    recorder.finish_task("succeeded")
+
+    persisted = store.list_project_chat_work_events(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    args_summary = persisted[0].args_summary
+    assert "sk-secret" not in args_summary and "abc" not in args_summary
+    assert '"***"' in args_summary and '"正文"' in args_summary
+    result_summary = persisted[0].result_summary
+    assert "Bearer xyz" not in result_summary and '"可见"' in result_summary
+    store.close()
+
+
+def test_recorder_keeps_non_json_strings_verbatim(tmp_path):
+    """非 JSON 字符串按原文保留，不因解析失败丢失内容。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "原文回退项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+
+    work_id = recorder.start("tool", "调用工具", tool_name="search", args="纯文本参数")
+    recorder.done(work_id, result="工具返回的普通文本")
+    recorder.finish_task("succeeded")
+
+    persisted = store.list_project_chat_work_events(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    assert persisted[0].args_summary == "纯文本参数"
+    assert persisted[0].result_summary == "工具返回的普通文本"
+    store.close()
+
+
 def test_recorder_detail_limit_and_overflow_summary(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "上限项目")
@@ -298,6 +347,94 @@ def test_recorder_overflow_absent_when_under_limit(tmp_path):
     )
     assert [item.event_seq for item in persisted] == [1, 2, 3, 4]
     assert not any("省略" in item.title for item in persisted)
+    store.close()
+
+
+def test_recorder_detail_persists_store_failure_as_warning(tmp_path):
+    """中间明细落库失败只降级为 warning 工作项，不得把整轮任务打成 failed（phase7 P2-2）。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "落库降级项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, events = _recorder(tmp_path, project, session.chat_session_id)
+
+    original_add = store.add_project_chat_work_event
+    first_detail = {"n": 0}
+
+    def failing_add(*args, **kwargs):
+        if kwargs.get("kind") == "tool":
+            first_detail["n"] += 1
+            raise sqlite3.OperationalError("disk I/O error")
+        return original_add(*args, **kwargs)
+
+    store.add_project_chat_work_event = failing_add
+    tool_work = recorder.start("tool", "工具步骤", tool_name="propose_project_edits")
+    recorder.done(tool_work, result='{"ok": true}')  # 不得上抛
+    recorder.finish_task("succeeded")
+
+    persisted = store.list_project_chat_work_events(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    kinds = [(item.kind, item.status) for item in persisted]
+    assert kinds[-1] == ("task", "succeeded")
+    warnings = [item for item in persisted if item.kind == "warning"]
+    assert warnings and any("工作记录" in item.title for item in warnings)
+    store.close()
+
+
+def test_recorder_persist_failure_at_detail_limit_keeps_overflow_slot(tmp_path):
+    """第 199 条落库失败时，降级 warning 不得占用固定的溢出摘要序号 200。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "上限降级项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+
+    original_add = store.add_project_chat_work_event
+    failed = False
+
+    def fail_last_detail_once(*args, **kwargs):
+        nonlocal failed
+        if not failed and kwargs.get("kind") == "progress" and kwargs.get("event_seq") == 199:
+            failed = True
+            raise sqlite3.OperationalError("disk I/O error")
+        return original_add(*args, **kwargs)
+
+    store.add_project_chat_work_event = fail_last_detail_once
+    for index in range(199):
+        work_id = recorder.start("progress", f"步骤 {index}")
+        recorder.done(work_id)
+    overflow = recorder.start("tool", "额外工具", tool_name="propose_project_edits")
+    recorder.done(overflow)
+    recorder.finish_task("succeeded")
+
+    persisted = store.list_project_chat_work_events(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    details = [item for item in persisted if item.kind != "task"]
+    assert details[-1].event_seq == 200
+    assert "省略 1 条" in details[-1].title
+    assert any(item.event_seq == 199 and item.kind == "warning" for item in details)
+    terminal = [item for item in persisted if item.kind == "task"]
+    assert len(terminal) == 1 and terminal[0].status == "succeeded"
+    store.close()
+
+
+def test_recorder_truncates_and_redacts_failure_detail(tmp_path):
+    """失败 detail 设长度上限并做值级脱敏：异常文本内嵌的敏感串不得明文落库（phase7 P2-3）。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "detail 脱敏项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+
+    detail = "调用失败：api_key=sk-abcdef123456 被拒绝，" + "背景信息" * 2000
+    recorder.finish_task("failed", title="任务", detail=detail)
+
+    persisted = store.list_project_chat_work_events(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    terminal = [item for item in persisted if item.kind == "task"][0]
+    assert terminal.detail is not None
+    assert "sk-abcdef123456" not in terminal.detail
+    assert len(terminal.detail) <= 3_000
     store.close()
 
 

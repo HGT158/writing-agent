@@ -300,6 +300,28 @@ describe('App project creation', () => {
     expect(wrapper.findAll('.change-diff')).toHaveLength(1)
   })
 
+  it('forwards a sidebar hunk navigation request to the active editor', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    const editor = wrapper.findComponent({ name: 'DocumentEditor' })
+    const exposed = (editor.vm as unknown as { $: { exposed: { focusHunk: (id: string) => void } } }).$.exposed
+    const focusHunk = vi.spyOn(
+      exposed,
+      'focusHunk',
+    )
+    wrapper.findComponent({ name: 'AgentPanel' }).vm.$emit(
+      'openDocument', 'project-1', 'document-1', 'hunk-1',
+    )
+    await flushPromises()
+
+    expect(focusHunk).toHaveBeenCalledWith('hunk-1')
+  })
+
   it('creates an assistant and switches to it', async () => {
     apiMocks.createAssistant.mockResolvedValue({ id: 'marketing', name: '营销文案', description: '' })
     apiMocks.listAssistants

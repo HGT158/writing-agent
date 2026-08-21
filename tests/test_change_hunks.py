@@ -353,22 +353,57 @@ def test_reject_hunk_is_metadata_only_and_reports_states(tmp_path):
 def test_reject_blocked_while_write_intent_active(tmp_path):
     store, project, document = _store_with_document(tmp_path)
     record = _two_hunk_set(store, project, document)
-    hunk = record.hunks[0]
+    first, second = record.hunks
+    # 构造"进程死在文件替换与 finalize 之间"的孤儿意图（accept 第二个 hunk 半程）：
+    # 恢复语义 = 完成文件替换 + 终结元数据（该 hunk applied、版本 +1）。
     store._conn.execute(
         "INSERT INTO document_write_intents "
-        "(intent_id, assistant_id, project_id, document_id, change_set_id, "
+        "(intent_id, assistant_id, project_id, document_id, change_set_id, hunk_id, "
         "expected_version, target_version, relative_path, content, utf8_bom, "
         "owner_pid, owner_started_at, claimed_at, created_at) "
-        "VALUES ('intent-x','writer-a',?, ?, ?, 1, 2, ?, '', 0, 0, 0, '', '2026-08-16')",
-        (project.project_id, document.document_id, record.change_set_id,
-         document.relative_path),
+        "VALUES (?,?,?, ?,?,?,1,2,?,?,0,0,0,?,'2026-08-16')",
+        ("intent-x", "writer-a", project.project_id, document.document_id,
+         record.change_set_id, second.hunk_id,
+         document.relative_path, "开头段。中间段。【结尾】。", ""),
     )
     store._conn.commit()
 
-    with pytest.raises(ResourceConflictError, match="写入"):
-        store.reject_change_hunk(
-            "writer-a", project.project_id, record.change_set_id, hunk.hunk_id
-        )
+    # reject 前先恢复孤儿意图，而不是被它持续阻塞（phase7 P2-1）。
+    rejected = store.reject_change_hunk(
+        "writer-a", project.project_id, record.change_set_id, first.hunk_id
+    )
+    # 意图恢复 = 第二个 hunk 已应用（文件替换 + 元数据终结完成）
+    assert [h.status for h in rejected.hunks] == ["rejected", "applied"]
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM document_write_intents WHERE intent_id = 'intent-x'"
+    ).fetchone()[0] == 0
+    current = store.get_document("writer-a", project.project_id, document.document_id)
+    assert current.content == "开头段。中间段。【结尾】。"
+    assert current.version == 2
+    store.close()
+
+
+def test_reject_hunk_then_accept_siblings_in_same_set(tmp_path):
+    """reject 一个 hunk 后接受同组其余 hunk：复检路径必须可用（phase7 P3-11 测试缺口）。"""
+    store, project, document = _store_with_document(tmp_path)
+    record = _two_hunk_set(store, project, document)
+    first, second = record.hunks
+
+    rejected = store.reject_change_hunk(
+        "writer-a", project.project_id, record.change_set_id, first.hunk_id
+    )
+    assert [h.status for h in rejected.hunks] == ["rejected", "pending"]
+
+    document2, set2, hunk2, staled2 = store.accept_change_hunk(
+        "writer-a", project.project_id, record.change_set_id, second.hunk_id
+    )
+    assert hunk2.status == "applied"
+    assert document2.content == "开头段。中间段。【结尾】。"
+    assert document2.version == document.version + 1
+    assert staled2 == []
+    final = store.get_change_set("writer-a", project.project_id, record.change_set_id)
+    assert [h.status for h in final.hunks] == ["rejected", "applied"]
+    assert final.status == "applied"
     store.close()
 
 

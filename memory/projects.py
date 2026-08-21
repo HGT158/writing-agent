@@ -1519,10 +1519,13 @@ def accept_change_hunk(
 
 
 def reject_change_hunk(
-    conn: sqlite3.Connection, assistant_id: str, project_id: str,
+    conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
     change_set_id: str, hunk_id: str,
 ) -> ChangeSetRecord:
-    get_change_set(conn, assistant_id, project_id, change_set_id)
+    change = get_change_set(conn, assistant_id, project_id, change_set_id)
+    # 与 accept/save/create 一致：先清理死进程的孤儿写意图，
+    # 否则崩溃残留会让同组任意 hunk 的放弃持续 409（phase7 P2-1）。
+    _recover_write_intents(conn, data_dir, assistant_id, project_id, change.document_id)
     try:
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute(

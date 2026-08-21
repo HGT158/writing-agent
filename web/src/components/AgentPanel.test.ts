@@ -307,6 +307,66 @@ describe('AgentPanel', () => {
     expect(wrapper.get('.work-record-header').text()).toContain('工具 1')
   })
 
+  it('keeps the completed work record after a new turn starts (phase7 P2-4)', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    // 第一轮：发送 → 工作记录 → 终态折叠
+    await wrapper.get('textarea').setValue('第一轮指令')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('work_item_start', {
+      work_id: 'w1', kind: 'tool', title: '正在准备修改', tool_name: 'propose_project_edits',
+    }))
+    await nextTick()
+    await callback(taskEvent('work_item_done', {
+      work_id: 'w1', kind: 'tool', status: 'succeeded', result_summary: '已生成 1 处修改建议',
+    }))
+    await nextTick()
+    await callback(taskEvent('task_done'))
+    await nextTick()
+    expect(wrapper.find('.work-record').exists()).toBe(true)
+
+    // 第二轮：发送清空 liveWork，但第一轮记录不得消失（历史归档到 workRecords）
+    await wrapper.get('textarea').setValue('第二轮指令')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('work_item_start', {
+      work_id: 'w2', kind: 'progress', title: '正在处理第二轮',
+    }))
+    await nextTick()
+
+    const records = wrapper.findAll('.work-record')
+    expect(records).toHaveLength(2)
+    expect(records[0].text()).toContain('工具 1')
+    expect(records[1].text()).toContain('正在处理第二轮')
+    const conversation = wrapper.findAll('.message.user, .work-record')
+    expect(conversation.map((item) => item.text())).toEqual([
+      expect.stringContaining('第一轮指令'),
+      expect.stringContaining('工具 1'),
+      expect.stringContaining('第二轮指令'),
+      expect.stringContaining('正在处理第二轮'),
+    ])
+  })
+
+  it('forwards card open clicks to open the target document (phase7 P2-5)', async () => {
+    const wrapper = mountPanel({ changes: [change] })
+    await flushPromises()
+
+    const card = wrapper.get('.change-diff')
+    await card.get('.diff-heading').trigger('click')
+    await card.get('.diff-hunk').trigger('click')
+    const opened = wrapper.emitted('openDocument') ?? []
+    expect(opened).toHaveLength(2)
+    expect(opened[0]).toEqual(['project-1', 'document-1'])
+    expect(opened[1]).toEqual(['project-1', 'document-1', 'hunk-1'])
+  })
+
   it('shows hunk summaries and batch actions per change set card', async () => {
     const multi: ChangeSetPreview = {
       change_set_id: 'change-multi', project_id: 'project-1', document_id: 'document-1',

@@ -321,6 +321,9 @@ input, select, textarea { border-radius: var(--radius); background: var(--surfac
 .cm-comment { color: var(--cm-comment); font-style: italic; }
 .cm-heading { color: var(--cm-heading); font-weight: 600; }
 .cm-link, .cm-url { color: var(--cm-link); }
+.cm-atom, .cm-number, .cm-typeName, .cm-meta { color: var(--cm-keyword); }
+.cm-variableName, .cm-propertyName { color: var(--editor-fg); }
+.cm-operator, .cm-punctuation, .cm-bracket { color: var(--muted); }
 .cm-strong { font-weight: 700; }
 .cm-emphasis { font-style: italic; }
 .preview-toggle { position: absolute; right: 12px; top: 10px; z-index: 5; padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--glass); font-size: 12px; }

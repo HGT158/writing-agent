@@ -520,7 +520,8 @@ class MemoryStore:
     ) -> ChangeSetRecord:
         with self._lock:
             return projects.reject_change_hunk(
-                self._conn, assistant_id, project_id, change_set_id, hunk_id
+                self._conn, self.data_dir, assistant_id, project_id,
+                change_set_id, hunk_id,
             )
 
     def accept_all_change_hunks(

@@ -1,4 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const apiMocks = vi.hoisted(() => ({
@@ -11,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({ apiClient: apiMocks }))
 
 import DocumentEditor from './DocumentEditor.vue'
+import { THEME_SYNTAX_CLASSES } from '../editor/themeHighlight'
 import type { ChangeSetPreview, EditorTab } from '../types'
 
 const tab: EditorTab = {
@@ -279,5 +282,27 @@ describe('DocumentEditor', () => {
 
     expect(wrapper.find('.cm-diff-inserted').exists()).toBe(false)
     expect(wrapper.find('.editor-notice').exists()).toBe(true)
+  })
+
+  it('assigns semantic syntax classes so theme variables apply (phase7 P1-2)', async () => {
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({
+        tab: { ...tab, content: '# 标题\n\n正文与 `代码` 及 [链接](https://example.com)。\n' },
+      }),
+    })
+    await flushPromises()
+
+    const semantic = wrapper.findAll('.cm-content [class*="cm-heading"], .cm-content [class*="cm-link"], .cm-content [class*="cm-url"], .cm-content [class*="cm-keyword"], .cm-content [class*="cm-string"]')
+    expect(semantic.length).toBeGreaterThan(0)
+    expect(wrapper.find('.cm-content .cm-heading').exists()).toBe(true)
+  })
+
+  it('defines CSS styling for every emitted semantic syntax class', () => {
+    const css = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    for (const className of THEME_SYNTAX_CLASSES) {
+      expect(css, `missing CSS rule for .${className}`).toMatch(
+        new RegExp(`\\.${className}(?:[\\s,{])`),
+      )
+    }
   })
 })
