@@ -35,6 +35,8 @@ const appliedRecord = {
 const apiMocks = vi.hoisted(() => ({
   listAssistants: vi.fn(), createAssistant: vi.fn(), deleteAssistant: vi.fn(),
   listProjects: vi.fn(), createProject: vi.fn(),
+  renameProject: vi.fn(), deleteProject: vi.fn(),
+  renameDocument: vi.fn(), deleteDocument: vi.fn(),
   getProjectTree: vi.fn(), getDocument: vi.fn(), saveDocument: vi.fn(),
   acceptChangeHunk: vi.fn(), rejectChangeHunk: vi.fn(),
   acceptAllChangeHunks: vi.fn(), listChangeSets: vi.fn(),
@@ -55,6 +57,10 @@ describe('App project creation', () => {
     apiMocks.deleteAssistant.mockReset()
     apiMocks.listProjects.mockReset().mockResolvedValueOnce([]).mockResolvedValue([project])
     apiMocks.createProject.mockReset().mockResolvedValue(project)
+    apiMocks.renameProject.mockReset().mockResolvedValue(project)
+    apiMocks.deleteProject.mockReset().mockResolvedValue({ archived_path: 'archive/x' })
+    apiMocks.renameDocument.mockReset().mockResolvedValue({ ...document, relative_path: 'renamed.md' })
+    apiMocks.deleteDocument.mockReset().mockResolvedValue({ deleted: true, entry_document_id: null })
     apiMocks.getProjectTree.mockReset().mockResolvedValue([document])
     apiMocks.getDocument.mockReset().mockResolvedValue(document)
     apiMocks.saveDocument.mockReset()
@@ -163,8 +169,7 @@ describe('App project creation', () => {
     )
   })
 
-  it('can dismiss a fully stale change set through reject-all', async () => {
-    apiMocks.rejectChangeHunk.mockResolvedValue({
+  it('can dismiss a fully stale change set through reject-all', async () => {    apiMocks.rejectChangeHunk.mockResolvedValue({
       change_set: {
         ...appliedRecord, status: 'rejected',
         hunks: [{ ...appliedRecord.hunks[0], status: 'rejected' }],
@@ -190,6 +195,45 @@ describe('App project creation', () => {
     expect(apiMocks.rejectChangeHunk).toHaveBeenCalledWith(
       'default', 'project-1', 'change-1', 'hunk-1',
     )
+  })
+
+  it('renames a document through the explorer channel and refreshes the tree', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      selectProject: (projectId: string) => Promise<void>
+      renameDocumentHandler: (projectId: string, documentId: string, path: string) => Promise<void>
+    }
+    await vm.selectProject('project-1')
+    await flushPromises()
+
+    await vm.renameDocumentHandler('project-1', 'document-1', 'renamed.md')
+
+    expect(apiMocks.renameDocument).toHaveBeenCalledWith(
+      'default', 'project-1', 'document-1', 'renamed.md',
+    )
+    expect(apiMocks.getProjectTree).toHaveBeenCalledWith('default', 'project-1')
+  })
+
+  it('deletes a document, closes its tab and refreshes the tree', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      selectProject: (projectId: string) => Promise<void>
+      openDocument: (projectId: string, documentId: string) => Promise<void>
+      deleteDocumentHandler: (projectId: string, documentId: string) => Promise<void>
+      workspace: { tabs: { document_id: string }[] }
+    }
+    await vm.selectProject('project-1')
+    await vm.openDocument('project-1', 'document-1')
+    await flushPromises()
+    expect(vm.workspace.tabs.length).toBe(1)
+
+    await vm.deleteDocumentHandler('project-1', 'document-1')
+    await flushPromises()
+
+    expect(apiMocks.deleteDocument).toHaveBeenCalledWith('default', 'project-1', 'document-1')
+    expect(vm.workspace.tabs.length).toBe(0)
   })
 
   it('accepts a single hunk without requiring the open tab version', async () => {

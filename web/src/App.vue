@@ -133,6 +133,69 @@ async function selectProject(projectId: string) {
   }
 }
 
+/** 文档重命名/删除成功后刷新活动项目的资源树；失败不阻断，以服务端为准。 */
+async function refreshProjectTree(projectId: string) {
+  if (activeProjectId.value !== projectId) return
+  try {
+    projectTree.value = await apiClient.getProjectTree(workspace.assistantId, projectId)
+  } catch {
+    // 刷新失败不打断操作结果展示。
+  }
+}
+
+async function renameProjectHandler(projectId: string, name: string) {
+  try {
+    await apiClient.renameProject(workspace.assistantId, projectId, name)
+    await workspace.refreshProjects()
+    statusText.value = '项目已重命名'
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function deleteProjectHandler(projectId: string) {
+  try {
+    await apiClient.deleteProject(workspace.assistantId, projectId)
+    for (const tab of workspace.tabs.filter((item) => item.project_id === projectId)) {
+      workspace.closeTab(projectId, tab.document_id)
+    }
+    if (activeProjectId.value === projectId) {
+      activeProjectId.value = null
+      projectTree.value = []
+    }
+    await workspace.refreshProjects()
+    statusText.value = '项目已归档删除'
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function renameDocumentHandler(projectId: string, documentId: string, relativePath: string) {
+  try {
+    const updated = await apiClient.renameDocument(workspace.assistantId, projectId, documentId, relativePath)
+    await refreshProjectTree(projectId)
+    const tab = workspace.getTab(projectId, documentId)
+    if (tab) workspace.replaceTab({ ...tab, relative_path: updated.relative_path })
+    statusText.value = '文件已重命名'
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function deleteDocumentHandler(projectId: string, documentId: string) {
+  try {
+    await apiClient.deleteDocument(workspace.assistantId, projectId, documentId)
+    workspace.closeTab(projectId, documentId)
+    pendingChanges.value = pendingChanges.value.filter(
+      (item) => !(item.project_id === projectId && item.document_id === documentId),
+    )
+    await refreshProjectTree(projectId)
+    statusText.value = '文件已删除'
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
 async function openDocument(projectId: string, documentId: string, hunkId?: string) {
   try {
     await workspace.openDocument(projectId, documentId)
@@ -448,6 +511,10 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         @select-project="selectProject"
         @open-document="openDocument"
         @imported="imported"
+        @rename-project="renameProjectHandler"
+        @delete-project="deleteProjectHandler"
+        @rename-document="renameDocumentHandler"
+        @delete-document="deleteDocumentHandler"
         @create-project="openCreateProject"
       />
       <main class="editor-column">

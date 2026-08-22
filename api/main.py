@@ -19,6 +19,7 @@ from .models import (
     AgentTaskRequest,
     AssistantCreate,
     ChangeSetHunkAction,
+    DocumentRename,
     DocumentSave,
     ProjectChatRequest,
     ProjectCreate,
@@ -244,6 +245,26 @@ def create_app(
                 expected_version=body.document_version,
             )
             return {**asdict(document), "staled_change_set_ids": staled}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.patch("/api/projects/{project_id}/documents/{document_id}")
+    async def rename_document(project_id: str, document_id: str, body: DocumentRename):
+        try:
+            return asdict(runtime.store.rename_document(
+                body.assistant_id, project_id, document_id, body.relative_path
+            ))
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.delete("/api/projects/{project_id}/documents/{document_id}")
+    async def delete_document(
+        project_id: str,
+        document_id: str,
+        assistant_id: str = Query(...),
+    ):
+        try:
+            return runtime.store.delete_document(assistant_id, project_id, document_id)
         except Exception as exc:
             _raise_http(exc)
 

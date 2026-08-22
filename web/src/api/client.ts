@@ -63,6 +63,20 @@ export const apiClient = {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ assistant_id: assistantId, name }),
   }),
+  renameProject: (assistantId: string, projectId: string, name: string) => request<Project>(`/api/projects/${projectId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assistant_id: assistantId, name }),
+  }),
+  deleteProject: (assistantId: string, projectId: string) => request<{ archived_path: string }>(`/api/projects/${projectId}?assistant_id=${encodeURIComponent(assistantId)}`, {
+    method: 'DELETE',
+  }),
+  renameDocument: (assistantId: string, projectId: string, documentId: string, relativePath: string) => request<ProjectDocument>(`/api/projects/${projectId}/documents/${documentId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assistant_id: assistantId, relative_path: relativePath }),
+  }),
+  deleteDocument: (assistantId: string, projectId: string, documentId: string) => request<{ deleted: boolean; entry_document_id: string | null }>(`/api/projects/${projectId}/documents/${documentId}?assistant_id=${encodeURIComponent(assistantId)}`, {
+    method: 'DELETE',
+  }),
   getProjectTree: (assistantId: string, projectId: string) => request<ProjectDocument[]>(`/api/projects/${projectId}/tree?assistant_id=${encodeURIComponent(assistantId)}`),
   getDocument: (assistantId: string, projectId: string, documentId: string) => request<ProjectDocument>(`/api/projects/${projectId}/documents/${documentId}?assistant_id=${encodeURIComponent(assistantId)}`),
   saveDocument: (assistantId: string, projectId: string, documentId: string, content: string, version: number) => request<ProjectDocument & { staled_change_set_ids?: string[] }>(`/api/projects/${projectId}/documents/${documentId}`, {

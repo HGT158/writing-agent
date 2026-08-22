@@ -815,6 +815,125 @@ def rename_project(
     return _row_to_project(_project_row(conn, assistant_id, project_id))
 
 
+_EDITABLE_EXTENSIONS = (".md", ".markdown", ".txt")
+
+
+def _reject_document_mutation(
+    conn: sqlite3.Connection, assistant_id: str, project_id: str, document_id: str
+) -> None:
+    pending = conn.execute(
+        "SELECT 1 FROM change_sets "
+        "WHERE assistant_id = ? AND project_id = ? AND document_id = ? AND status = 'pending' LIMIT 1",
+        (assistant_id, project_id, document_id),
+    ).fetchone()
+    if pending is not None:
+        raise ResourceConflictError("文档存在待处理修改建议，拒绝操作")
+    busy = conn.execute(
+        "SELECT 1 FROM document_write_intents "
+        "WHERE assistant_id = ? AND project_id = ? AND document_id = ? LIMIT 1",
+        (assistant_id, project_id, document_id),
+    ).fetchone()
+    if busy is not None:
+        raise DocumentWriteBusyError("文档正在被写入，稍后再试")
+
+
+def rename_document(
+    conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
+    document_id: str, new_path: str,
+) -> DocumentRecord:
+    """重命名可编辑文档：磁盘改名先行、元数据随后、失败回滚（对齐项目归档模式）。"""
+    document = _row_to_document(_document_row(conn, assistant_id, project_id, document_id))
+    if not document.editable:
+        raise ValueError("只读文档不支持重命名")
+    normalized = _safe_relative_path(new_path)
+    if PurePosixPath(normalized).suffix.lower() not in _EDITABLE_EXTENSIONS:
+        raise ValueError("可编辑文档的重命名仅支持 .md/.markdown/.txt 扩展名")
+    if normalized == document.relative_path:
+        return document
+    collision = conn.execute(
+        "SELECT 1 FROM project_documents "
+        "WHERE assistant_id = ? AND project_id = ? AND relative_path = ?",
+        (assistant_id, project_id, normalized),
+    ).fetchone()
+    if collision is not None:
+        raise ResourceConflictError("目标路径已被项目内其他文档占用")
+    _recover_write_intents(conn, data_dir, assistant_id, project_id, document_id)
+    _reject_document_mutation(conn, assistant_id, project_id, document_id)
+
+    old_file = _document_path(data_dir, assistant_id, project_id, document.relative_path)
+    if not old_file.exists() or not old_file.is_file():
+        raise FileNotFoundError(f"项目文件不存在：{document.relative_path}")
+    new_file = _document_path(data_dir, assistant_id, project_id, normalized)
+    new_file.parent.mkdir(parents=True, exist_ok=True)
+    if new_file.exists():
+        raise ResourceConflictError("目标路径已被项目内其他文件占用")
+    os.rename(old_file, new_file)
+    try:
+        conn.execute(
+            "UPDATE project_documents SET relative_path = ? "
+            "WHERE assistant_id = ? AND project_id = ? AND document_id = ?",
+            (normalized, assistant_id, project_id, document_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        os.rename(new_file, old_file)
+        raise
+    return _row_to_document(_document_row(conn, assistant_id, project_id, document_id))
+
+
+def delete_document(
+    conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str,
+    document_id: str,
+) -> dict:
+    """删除可编辑文档：物理文件与元数据行同删，入口文档删除时改指向其余可编辑文档。"""
+    document = _row_to_document(_document_row(conn, assistant_id, project_id, document_id))
+    if not document.editable:
+        raise ValueError("只读文档不支持删除")
+    _recover_write_intents(conn, data_dir, assistant_id, project_id, document_id)
+    _reject_document_mutation(conn, assistant_id, project_id, document_id)
+
+    entry_row = conn.execute(
+        "SELECT entry_document_id FROM projects "
+        "WHERE assistant_id = ? AND project_id = ? AND archived_at IS NULL",
+        (assistant_id, project_id),
+    ).fetchone()
+    is_entry = entry_row is not None and entry_row[0] == document_id
+    next_entry_row = conn.execute(
+        "SELECT document_id FROM project_documents "
+        "WHERE assistant_id = ? AND project_id = ? AND document_id != ? AND editable = 1 "
+        "ORDER BY relative_path LIMIT 1",
+        (assistant_id, project_id, document_id),
+    ).fetchone()
+    next_entry = next_entry_row[0] if next_entry_row is not None else None
+    final_entry = next_entry if is_entry else (entry_row[0] if entry_row is not None else None)
+
+    target = _document_path(data_dir, assistant_id, project_id, document.relative_path)
+    payload = target.read_bytes() if target.exists() else None
+    if target.exists():
+        target.unlink()
+    try:
+        conn.execute(
+            "DELETE FROM project_documents "
+            "WHERE assistant_id = ? AND project_id = ? AND document_id = ?",
+            (assistant_id, project_id, document_id),
+        )
+        if is_entry:
+            conn.execute(
+                "UPDATE projects SET entry_document_id = ? "
+                "WHERE assistant_id = ? AND project_id = ?",
+                (next_entry, assistant_id, project_id),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        if payload is not None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        raise
+    return {"deleted": True, "entry_document_id": final_entry}
+
+
 def archive_project(
     conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str
 ) -> Path:

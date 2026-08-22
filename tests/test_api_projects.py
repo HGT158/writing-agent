@@ -5,6 +5,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -207,6 +208,136 @@ def test_project_archive_returns_conflict_for_pending_change_set(tmp_path):
     assert change.status == "pending"
     assert response.status_code == 409
     assert "待处理" in response.json()["detail"]
+
+
+def test_document_rename_and_delete(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        created = client.post("/api/projects", json={"assistant_id": "default", "name": "改名项目"})
+        assert created.status_code == 201
+        project = created.json()
+        tree = client.get(
+            f"/api/projects/{project['project_id']}/tree", params={"assistant_id": "default"}
+        ).json()
+        document_id = tree[0]["document_id"]
+        original = client.get(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            params={"assistant_id": "default"},
+        ).json()
+
+        renamed = client.patch(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            json={"assistant_id": "default", "relative_path": "drafts/renamed.md"},
+        )
+        assert renamed.status_code == 200
+        assert renamed.json()["relative_path"] == "drafts/renamed.md"
+        tree_after = client.get(
+            f"/api/projects/{project['project_id']}/tree", params={"assistant_id": "default"}
+        ).json()
+        assert [item["relative_path"] for item in tree_after] == ["drafts/renamed.md"]
+        reopened = client.get(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            params={"assistant_id": "default"},
+        ).json()
+        assert reopened["content"] == original["content"]
+
+        illegal = client.patch(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            json={"assistant_id": "default", "relative_path": "../escape.md"},
+        )
+        assert illegal.status_code == 400
+        bad_extension = client.patch(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            json={"assistant_id": "default", "relative_path": "cover.png"},
+        )
+        assert bad_extension.status_code == 400
+        wrong_assistant = client.patch(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            json={"assistant_id": "other", "relative_path": "x.md"},
+        )
+        assert wrong_assistant.status_code == 404
+
+        deleted = client.delete(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            params={"assistant_id": "default"},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+        assert deleted.json()["entry_document_id"] is None
+        tree_empty = client.get(
+            f"/api/projects/{project['project_id']}/tree", params={"assistant_id": "default"}
+        ).json()
+        assert tree_empty == []
+        assert client.get(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            params={"assistant_id": "default"},
+        ).status_code == 404
+        assert client.delete(
+            f"/api/projects/{project['project_id']}/documents/{document_id}",
+            params={"assistant_id": "default"},
+        ).status_code == 404
+
+
+def test_document_rename_delete_reject_conflicts(tmp_path):
+    app = _app(tmp_path)
+    runtime = app.state.runtime
+    imported = runtime.store.import_folder_project(
+        "default", "冲突项目导入",
+        [("article.md", BytesIO("主文".encode())),
+         ("notes/source.txt", BytesIO("来源".encode()))],
+    )
+    entry_id = imported.entry_document_id
+    notes_id = next(
+        item.document_id for item in runtime.store.get_project_tree("default", imported.project_id)
+        if item.relative_path == "notes/source.txt"
+    )
+
+    with TestClient(app) as client:
+        # 重命名撞既有路径 → 409，磁盘与元数据不变
+        collision = client.patch(
+            f"/api/projects/{imported.project_id}/documents/{notes_id}",
+            json={"assistant_id": "default", "relative_path": "article.md"},
+        )
+        assert collision.status_code == 409
+        tree = client.get(
+            f"/api/projects/{imported.project_id}/tree", params={"assistant_id": "default"}
+        ).json()
+        assert sorted(item["relative_path"] for item in tree) == ["article.md", "notes/source.txt"]
+
+        # 存在待处理 change set → 重命名与删除都 409
+        change = runtime.store.create_selection_change_set(
+            "default", imported.project_id, notes_id,
+            task_id="task-conflict", start=0, end=0, original_text="",
+            replacement_text="建议", base_version=1, source="selection",
+        )
+        busy_rename = client.patch(
+            f"/api/projects/{imported.project_id}/documents/{notes_id}",
+            json={"assistant_id": "default", "relative_path": "moved.md"},
+        )
+        assert busy_rename.status_code == 409
+        busy_delete = client.delete(
+            f"/api/projects/{imported.project_id}/documents/{notes_id}",
+            params={"assistant_id": "default"},
+        )
+        assert busy_delete.status_code == 409
+
+        # 放弃建议后删除入口文档：入口改指向其余可编辑文档（按路径序）
+        rejected = client.post(
+            f"/api/projects/{imported.project_id}/change-sets/{change.change_set_id}"
+            f"/hunks/{change.hunks[0].hunk_id}/reject",
+            json={"assistant_id": "default"},
+        )
+        assert rejected.status_code == 200
+        deleted = client.delete(
+            f"/api/projects/{imported.project_id}/documents/{entry_id}",
+            params={"assistant_id": "default"},
+        )
+        assert deleted.status_code == 200
+        assert deleted.json()["deleted"] is True
+        assert deleted.json()["entry_document_id"] == notes_id
+        tree_after = client.get(
+            f"/api/projects/{imported.project_id}/tree", params={"assistant_id": "default"}
+        ).json()
+        assert [item["relative_path"] for item in tree_after] == ["notes/source.txt"]
 
 
 def test_selection_rewrite_task_sse_and_apply(tmp_path):

@@ -377,6 +377,33 @@ class MemoryStore:
         with self._lock:
             return projects.rename_project(self._conn, assistant_id, project_id, name)
 
+    def rename_document(
+        self, assistant_id: str, project_id: str, document_id: str, relative_path: str
+    ):
+        mutation_task = f"document-rename-{uuid.uuid4().hex[:12]}"
+        self.acquire_lock(assistant_id, mutation_task)
+        try:
+            with self._lock:
+                return projects.rename_document(
+                    self._conn, self.data_dir, assistant_id, project_id,
+                    document_id, relative_path,
+                )
+        finally:
+            self.release_lock(assistant_id, mutation_task)
+
+    def delete_document(
+        self, assistant_id: str, project_id: str, document_id: str
+    ) -> dict:
+        mutation_task = f"document-delete-{uuid.uuid4().hex[:12]}"
+        self.acquire_lock(assistant_id, mutation_task)
+        try:
+            with self._lock:
+                return projects.delete_document(
+                    self._conn, self.data_dir, assistant_id, project_id, document_id
+                )
+        finally:
+            self.release_lock(assistant_id, mutation_task)
+
     def archive_project(self, assistant_id: str, project_id: str) -> Path:
         mutation_task = f"project-archive-{uuid.uuid4().hex[:12]}"
         self.acquire_lock(assistant_id, mutation_task)

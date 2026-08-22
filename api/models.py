@@ -25,6 +25,11 @@ class ProjectRename(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
+class DocumentRename(BaseModel):
+    assistant_id: str
+    relative_path: str = Field(min_length=1, max_length=1024)
+
+
 class DocumentSave(BaseModel):
     assistant_id: str
     content: str = Field(max_length=2_000_000)
