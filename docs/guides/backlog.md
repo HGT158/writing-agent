@@ -2,7 +2,7 @@
 
 本文件只记录已经确认但不属于当前完成范围的能力。实施任一事项前，必须重新设计、更新架构单一事实来源并按 TDD 完成回归。
 
-## 暂不处理的观察项（截至 2026-08-18 phase7 复议）
+## 暂不处理的观察项（截至 2026-08-22 phase8 复议）
 
 - 第二轮 `tool_choice=none`（phase6 遗留）：项目聊天工具调用后追加的说明轮次不携带 tools，属既定契约；是否改显式 `tool_choice=none` 待模型服务商对该参数行为稳定后再评估。
 - 温度硬编码 0.3/0.2（phase6 遗留）：`agent/llm.py` 与 `agent/runtime.py` 的模型调用温度未配置化；需要按场景区分温度时再引入 `.env` 配置。
@@ -19,6 +19,10 @@
 - 键盘可达性与主题细节（phase7 P3-9）：主题菜单缺方向键导航和打开后聚焦，工作记录的可点击修改项仍使用无键盘语义的 `li`，`ThemeDefinition.dark` 暂未消费；首帧主题闪烁受 CSP 禁止内联预热脚本约束。后续单独做无障碍与首屏体验整理。
 - SSE 反复开连即断（phase7 P3-10）：`watchTask` 在 `onopen` 后重置退避，服务端若持续开连后立即断开可无限以 500ms 重连；普通连接失败已有 6 次上限，若出现该异常模式再增加总次数或总时长边界。
 - 剩余专项测试（phase7 P3-11）：可补 CancelledError 经真实 recorder 的 interrupted 分支、并发终态对账、迁移成功后二次启动、跨助手持 change set id 返回 404、工作事件断线补发；字符串形态脱敏与同组 reject 后 accept 已随 v1.23 修复覆盖。
+- `summarize_detail` 截断标注口径（phase8 P3-2）：“原始 N 字符”的 N 是脱敏后长度，发生脱敏时比真实原文短；下次改 `agent/work_log.py` 截断逻辑时改为“脱敏后 N 字符”或去掉口径标注。
+- 非 JSON 文本载荷的值级扫描（phase8 P3-3）：`args_summary`/`result_summary` 的非 JSON 普通文本按架构保持原文、不做值级脱敏（仅 detail 做）；接入可能返回内嵌凭据纯文本的新 MCP 工具前需评估扩围。
+- ChangeDiff 缺 Space 键激活（phase8 P3-5）：`role="button"` 只监听 Enter，未处理 Space（WAI-ARIA button 惯例两者都要）；与 phase7 P3-9 无障碍暂缓项同族，并入后续无障碍整理。
+- `agent/work_log.py` import 分组（phase8 P3-6）：`import logging` 未与其他标准库导入归组；纯格式，下次改动该文件时顺手调整。
 
 ## 已完成并移出待办
 

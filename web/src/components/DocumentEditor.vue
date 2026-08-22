@@ -43,6 +43,7 @@ const toolbar = ref<{ from: number; to: number; left: number; top: number; text:
 const prompt = ref('')
 const loading = ref(false)
 const error = ref('')
+const focusNotice = ref('')
 let syncingExternalContent = false
 let stream: TaskStream | null = null
 let scopeGeneration = 0
@@ -137,11 +138,31 @@ function pushInlineDiffs() {
 
 function focusHunk(hunkId: string) {
   const view = editorView.value
+  if (!view) return
   const diff = inlineDiffs.value.find((item) => item.hunkId === hunkId)
-  if (!view || !diff) return
+  if (diff) {
+    focusNotice.value = ''
+    view.dispatch({
+      selection: { anchor: diff.from },
+      effects: EditorView.scrollIntoView(diff.from, { y: 'center' }),
+    })
+    view.focus()
+    return
+  }
+  // 内联装饰不可用（dirty、已失效或重定位失败）时按 hunk 原文回退搜索定位，
+  // 仍找不到才提示，不再静默无操作（phase8 P3-1）。
+  const hunk = props.changes
+    .flatMap((change) => change.hunks)
+    .find((item) => item.hunk_id === hunkId)
+  const index = hunk === undefined ? -1 : props.tab.content.indexOf(hunk.original)
+  if (hunk === undefined || index < 0) {
+    focusNotice.value = '该处修改建议无法在当前正文中定位，可在右侧 Agent 面板处理。'
+    return
+  }
+  focusNotice.value = ''
   view.dispatch({
-    selection: { anchor: diff.from },
-    effects: EditorView.scrollIntoView(diff.from, { y: 'center' }),
+    selection: { anchor: index, head: index + hunk.original.length },
+    effects: EditorView.scrollIntoView(index, { y: 'center' }),
   })
   view.focus()
 }
@@ -272,13 +293,16 @@ onBeforeUnmount(() => {
   stopStream()
   destroyEditor()
 })
-watch(() => [props.assistantId, props.tab.project_id, props.tab.document_id] as const, () => {
+// 多源 watch 按元素比较：数组 getter 每次返回新引用，会在仅内容/版本变化时
+// 也触发本 watcher 重建编辑器，丢失滚动位置、选区与撤销历史。
+watch([() => props.assistantId, () => props.tab.project_id, () => props.tab.document_id], () => {
   scopeGeneration += 1
   stopStream()
   destroyEditor()
   toolbar.value = null
   prompt.value = ''
   error.value = ''
+  focusNotice.value = ''
   loading.value = false
   showPreview.value = false
   createEditor()
@@ -286,9 +310,22 @@ watch(() => [props.assistantId, props.tab.project_id, props.tab.document_id] as 
 watch(() => [props.tab.version, props.tab.content] as const, () => {
   const view = editorView.value
   if (view && view.state.doc.toString() !== props.tab.content) {
+    // 只替换前后文本的最小差异区间，不做整篇替换：整篇替换会把 CodeMirror
+    // 的滚动锚点映射到文档起点，测量周期结束后滚动位置跳顶（架构 §5.10）。
+    const oldText = view.state.doc.toString()
+    const newText = props.tab.content
+    let start = 0
+    const shared = Math.min(oldText.length, newText.length)
+    while (start < shared && oldText[start] === newText[start]) start += 1
+    let oldEnd = oldText.length
+    let newEnd = newText.length
+    while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === newText[newEnd - 1]) {
+      oldEnd -= 1
+      newEnd -= 1
+    }
     syncingExternalContent = true
     try {
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: props.tab.content } })
+      view.dispatch({ changes: { from: start, to: oldEnd, insert: newText.slice(start, newEnd) } })
     } finally {
       syncingExternalContent = false
     }
@@ -314,6 +351,7 @@ watch(inlineDiffs, pushInlineDiffs, { deep: true })
     <p v-if="staleChangeCount" class="editor-notice">
       有 {{ staleChangeCount }} 处修改建议无法内联预览（已失效或正文已变化），请在右侧 Agent 面板处理。
     </p>
+    <p v-if="focusNotice" class="editor-notice">{{ focusNotice }}</p>
     <p v-if="error" class="editor-error">{{ error }}</p>
   </section>
 </template>

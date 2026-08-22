@@ -3,7 +3,7 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.23；多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传与上下文预算兜底均已实现）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.24；多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底与值级脱敏加固均已实现）。
 
 ## 核心能力
 
@@ -19,8 +19,9 @@ Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已�
 - 项目聊天带可展开的持久化工作记录：实时显示进度、工具调用、警告与修改建议，终态自动折叠、刷新后可回看。
 - 任务事件流断线后按游标自动续传（`after_seq` / `Last-Event-ID`），按 `seq` 去重；缺口可识别，聊天终态后自动从服务器恢复完整会话。
 - 五套内置主题（纸墨/墨夜/暖卷/竹青/海湾）：未手动选择时实时跟随系统深浅偏好，仅用户显式选择后持久化；深色主题完整覆盖编辑器（含语法高亮）。
-- 工作记录脱敏与降级：字符串参数与失败详情均做敏感字段/值级脱敏并截断，明细落库失败降级为警告不打断任务。
-- 侧栏修改建议卡片可点击打开目标文档并在编辑器中定位该处修改。
+- 工作记录脱敏与降级：字符串参数与失败详情均做敏感字段/值级脱敏并截断，明细落库失败降级为实时可见的警告，不打断任务。
+- 侧栏修改建议卡片可点击打开目标文档并在编辑器中定位该处修改；内联定位不可用时按原文回退搜索，仍找不到则提示。
+- 接受修改或保存后编辑器保持滚动位置、选区与撤销历史（最小差异区间同步，不重建编辑器）；已失效的建议可从侧栏整卡放弃清理。
 - APScheduler 定时任务与跨进程助手运行锁。
 
 ## 环境要求
@@ -109,7 +110,7 @@ npm run typecheck
 npm run build
 ```
 
-当前基线：Python `225/225`、记忆隔离 `10/10`、前端 `102/102`，类型检查与生产构建通过。
+当前基线：Python `226/226`、记忆隔离 `10/10`、前端 `108/108`，类型检查与生产构建通过。
 
 ## 目录
 
@@ -128,7 +129,7 @@ npm run build
 
 - [项目约定与 Agent 交接](AGENTS.md)
 - [文档导航](docs/README.md)
-- [架构 v1.23](docs/architecture/phase1-architecture.md)
+- [架构 v1.24](docs/architecture/phase1-architecture.md)
 - [后续待办](docs/guides/backlog.md)
 - [审查记录索引](docs/README.md)
 - [Windows Task Scheduler](docs/guides/windows-task-scheduler.md)

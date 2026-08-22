@@ -87,6 +87,22 @@ const busy = computed(() => sending.value || loadingSession.value)
 // 只有本会话产生的 diff 会阻止删除会话；选区改写的建议与会话生命周期无关。
 const chatChanges = computed(() => props.changes.filter((change) => change.source === 'chat'))
 
+// Date.now() 不是响应式依赖：运行中的耗时需要每秒更新的时间源驱动重渲染。
+const nowTick = ref(Date.now())
+let nowTimer: ReturnType<typeof setInterval> | null = null
+const hasRunningRecord = computed(() => {
+  const records = liveWork.value ? [...workRecords.value, liveWork.value] : workRecords.value
+  return records.some((record) => record.endedAt === null)
+})
+watch(hasRunningRecord, (running) => {
+  if (running && nowTimer === null) {
+    nowTimer = setInterval(() => { nowTick.value = Date.now() }, 1_000)
+  } else if (!running && nowTimer !== null) {
+    clearInterval(nowTimer)
+    nowTimer = null
+  }
+}, { immediate: true })
+
 function stopStream() {
   stream?.close()
   stream = null
@@ -257,7 +273,7 @@ function toggleWorkRecord(record: WorkRecordView) {
 function workRecordTitle(record: WorkRecordView): string {
   const tools = record.items.filter((item) => item.kind === 'tool').length
   const changes = record.items.filter((item) => item.kind === 'changes').length
-  const end = record.endedAt ?? Date.now()
+  const end = record.endedAt ?? nowTick.value
   const seconds = Math.max(0, Math.round((end - record.startedAt) / 1000))
   const parts = [`工具 ${tools}`]
   if (changes) parts.push(`建议 ${changes}`)
@@ -551,7 +567,13 @@ watch(() => [props.assistantId, props.projectId] as const, ([assistantId, projec
   clearConversation()
   if (projectId) void loadProjectSessions(assistantId, projectId, generation)
 }, { immediate: true })
-onBeforeUnmount(stopStream)
+onBeforeUnmount(() => {
+  stopStream()
+  if (nowTimer !== null) {
+    clearInterval(nowTimer)
+    nowTimer = null
+  }
+})
 </script>
 
 <template>

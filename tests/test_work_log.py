@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from agent.events import EventBus
 from agent.runtime import AgentRuntime
-from agent.work_log import WorkLogRecorder
+from agent.work_log import WorkLogRecorder, summarize_detail
 from config.settings import Settings
 from memory.store import MemoryStore
 
@@ -371,6 +371,17 @@ def test_recorder_detail_persists_store_failure_as_warning(tmp_path):
     recorder.done(tool_work, result='{"ok": true}')  # 不得上抛
     recorder.finish_task("succeeded")
 
+    # 降级 warning 必须以配对的 start/done 事件下发：实时视图按 start 建条目，
+    # 只有 done 的孤儿事件会被前端静默丢弃（phase8 P2-1/P3-4）。
+    warning_sequence = [
+        (event["type"], event["data"]["work_id"])
+        for event in events if event["data"].get("kind") == "warning"
+    ]
+    assert len(warning_sequence) == 2
+    assert warning_sequence[0][0] == "work_item_start"
+    assert warning_sequence[1][0] == "work_item_done"
+    assert warning_sequence[0][1] == warning_sequence[1][1]
+
     persisted = store.list_project_chat_work_events(
         "writer-a", project.project_id, session.chat_session_id
     )
@@ -418,6 +429,23 @@ def test_recorder_persist_failure_at_detail_limit_keeps_overflow_slot(tmp_path):
     store.close()
 
 
+def test_redact_failure_detail_value_forms_do_not_leak_long_prefix():
+    """键值形态在长前缀（匹配起点远大于值长）时也不得泄漏任何子串（phase8 P1-1）。
+
+    异常报文的常见形态是凭据出现在长文本尾部：捕获组分支的切片终点若多叠加
+    一个 match.start()，会保留整个敏感值并把匹配后的文本复制一份拼进结果。
+    """
+    detail = (
+        "HTTP 401 Unauthorized from upstream server: "
+        "invalid api_key=sk-abcdef123456 for request"
+    )
+    safe = summarize_detail(detail)
+    assert "sk-abcdef123456" not in safe
+    assert "sk-abc" not in safe and "abcdef123456" not in safe
+    assert safe.count("for request") == 1
+    assert "api_key=***" in safe
+
+
 def test_recorder_truncates_and_redacts_failure_detail(tmp_path):
     """失败 detail 设长度上限并做值级脱敏：异常文本内嵌的敏感串不得明文落库（phase7 P2-3）。"""
     store = MemoryStore(tmp_path)
@@ -434,6 +462,8 @@ def test_recorder_truncates_and_redacts_failure_detail(tmp_path):
     terminal = [item for item in persisted if item.kind == "task"][0]
     assert terminal.detail is not None
     assert "sk-abcdef123456" not in terminal.detail
+    # 收紧：短前缀形态只泄漏值的前几个字符，任意前缀子串同样不得出现（phase8 P1-1）。
+    assert "sk-a" not in terminal.detail
     assert len(terminal.detail) <= 3_000
     store.close()
 

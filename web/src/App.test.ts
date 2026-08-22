@@ -163,6 +163,35 @@ describe('App project creation', () => {
     )
   })
 
+  it('can dismiss a fully stale change set through reject-all', async () => {
+    apiMocks.rejectChangeHunk.mockResolvedValue({
+      change_set: {
+        ...appliedRecord, status: 'rejected',
+        hunks: [{ ...appliedRecord.hunks[0], status: 'rejected' }],
+      },
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      rejectAgentChangeSet: (change: Record<string, unknown>) => Promise<void>
+    }
+
+    await vm.rejectAgentChangeSet({
+      change_set_id: 'change-1', project_id: 'project-1', document_id: 'document-1',
+      hunks: [{
+        hunk_id: 'hunk-1', range: { from: 0, to: 2 },
+        original: '原文', replacement: '改写', status: 'stale',
+      }],
+      document_version: 1, source: 'chat',
+    })
+
+    // stale hunk 也必须可放弃：失效建议无法接受，若连放弃都被过滤掉，
+    // 卡片将永远留在侧栏（用户实测反馈的卡死）。
+    expect(apiMocks.rejectChangeHunk).toHaveBeenCalledWith(
+      'default', 'project-1', 'change-1', 'hunk-1',
+    )
+  })
+
   it('accepts a single hunk without requiring the open tab version', async () => {
     apiMocks.acceptChangeHunk.mockResolvedValue({
       document: { ...document, version: 3, content: 'Agent 修改' },

@@ -1,14 +1,17 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { Check, FileText, RefreshCw, X } from '@lucide/vue'
 import type { ChangeSetPreview } from '../types'
 
-defineProps<{
+const props = defineProps<{
   change: ChangeSetPreview
   busy?: boolean
   label?: string
   regenerable?: boolean
 }>()
 defineEmits<{ apply: []; reject: []; regenerate: []; open: [hunkId?: string] }>()
+// 全失效卡片没有可接受项：隐藏"全部接受"，只保留放弃与重试入口。
+const hasPending = computed(() => props.change.hunks.some((hunk) => hunk.status === 'pending'))
 </script>
 
 <template>
@@ -35,7 +38,7 @@ defineEmits<{ apply: []; reject: []; regenerate: []; open: [hunkId?: string] }>(
       <span v-else-if="hunk.status === 'stale'" class="hunk-state stale">已失效</span>
     </div>
     <footer class="diff-actions">
-      <button class="primary-action" :disabled="busy" @click="$emit('apply')"><Check :size="14" /> 全部接受</button>
+      <button v-if="hasPending" class="primary-action" :disabled="busy" @click="$emit('apply')"><Check :size="14" /> 全部接受</button>
       <button v-if="regenerable" class="secondary-action" :disabled="busy" @click="$emit('regenerate')"><RefreshCw :size="14" /> 重试</button>
       <button class="icon-action" title="放弃全部修改" :disabled="busy" @click="$emit('reject')"><X :size="15" /></button>
     </footer>

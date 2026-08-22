@@ -307,6 +307,39 @@ describe('AgentPanel', () => {
     expect(wrapper.get('.work-record-header').text()).toContain('工具 1')
   })
 
+  it('ticks the elapsed time of a running work record every second', async () => {
+    vi.useFakeTimers()
+    try {
+      let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+      apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+        callback = handler
+        return { close: vi.fn() }
+      })
+      const wrapper = mountPanel()
+      await flushPromises()
+
+      await wrapper.get('textarea').setValue('精简正文')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+      await callback(taskEvent('work_item_start', {
+        work_id: 'w1', kind: 'progress', title: '正在读取当前文档与历史上下文',
+      }))
+      await nextTick()
+      expect(wrapper.get('.work-record-header').text()).toContain('耗时 0s')
+
+      // 运行中耗时应随时间自动跳动，而不是等下一次交互才刷新。
+      await vi.advanceTimersByTimeAsync(2_000)
+      await nextTick()
+      expect(wrapper.get('.work-record-header').text()).toContain('耗时 2s')
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      await nextTick()
+      expect(wrapper.get('.work-record-header').text()).toContain('耗时 3s')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the completed work record after a new turn starts (phase7 P2-4)', async () => {
     let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
     apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
@@ -385,6 +418,25 @@ describe('AgentPanel', () => {
     expect(card.text()).toContain('新二')
     expect(card.text()).toContain('已失效')
     expect(card.get('.primary-action').text()).toContain('全部接受')
+  })
+
+  it('keeps only the dismiss action on a fully stale card', async () => {
+    const staleOnly: ChangeSetPreview = {
+      change_set_id: 'change-stale', project_id: 'project-1', document_id: 'document-1',
+      hunks: [
+        { hunk_id: 'h1', range: { from: 0, to: 2 }, original: '旧一', replacement: '新一', status: 'stale' },
+        { hunk_id: 'h2', range: { from: 5, to: 7 }, original: '旧二', replacement: '新二', status: 'stale' },
+      ],
+      document_version: 2, source: 'chat',
+    }
+    const wrapper = mountPanel({ changes: [staleOnly] })
+    await flushPromises()
+
+    const card = wrapper.get('.change-diff')
+    // 全部失效的卡片没有可接受项：不再显示"全部接受"，只保留放弃与重试入口。
+    expect(wrapper.find('.change-diff .primary-action').exists()).toBe(false)
+    expect(wrapper.find('.change-diff .icon-action').exists()).toBe(true)
+    expect(card.text()).toContain('已失效')
   })
 
   it('renders persisted work records collapsed and expands on click', async () => {

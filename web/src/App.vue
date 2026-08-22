@@ -334,11 +334,14 @@ async function applyAgentChangeSet(change: ChangeSetPreview) {
   }
 }
 
-/** 侧栏卡片"全部放弃"：逐个放弃剩余 pending hunk，仅元数据变更。 */
+/** 侧栏卡片"全部放弃"：逐个放弃剩余 pending/stale hunk，仅元数据变更。
+ *  stale 也必须可放弃：失效建议无法接受，过滤掉 stale 会让失效卡片永远留在侧栏。 */
 async function rejectAgentChangeSet(change: ChangeSetPreview) {
   markReviewing(change.change_set_id, true)
   try {
-    for (const hunk of change.hunks.filter((item) => item.status === 'pending')) {
+    for (const hunk of change.hunks.filter(
+      (item) => item.status === 'pending' || item.status === 'stale',
+    )) {
       const result = await apiClient.rejectChangeHunk(
         workspace.assistantId,
         change.project_id,

@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EditorView } from 'codemirror'
 
 const apiMocks = vi.hoisted(() => ({
   applyChange: vi.fn(),
@@ -63,6 +64,36 @@ describe('DocumentEditor', () => {
     await flushPromises()
 
     expect(wrapper.find('.code-editor').text()).toContain('改写内容')
+  })
+
+  it('syncs external content with a minimal range instead of a full-document replacement', async () => {
+    // 整篇替换会把 CodeMirror 的滚动锚点映射到文档起点，测量后滚动位置跳顶；
+    // 外部同步（接受 hunk/保存对账）必须只替换前后文本的最小差异区间。
+    const head = `${'开头段落。\n'.repeat(5)}`
+    const tail = `\n${'结尾段落。'.repeat(5)}`
+    const dispatch = vi.spyOn(EditorView.prototype, 'dispatch')
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({ tab: { ...tab, content: `${head}旧的中段内容${tail}` } }),
+    })
+    await flushPromises()
+    const editorElement = wrapper.get('.code-editor .cm-editor').element
+    dispatch.mockClear()
+
+    await wrapper.setProps({ tab: { ...tab, version: 3, content: `${head}全新的段落文字${tail}` } })
+    await flushPromises()
+
+    const changeSpec = dispatch.mock.calls
+      .map(([spec]) => spec as { changes?: { from: number; to: number; insert: string } })
+      .find((spec) => spec.changes)
+    expect(changeSpec?.changes).toMatchObject({
+      from: head.length,
+      to: head.length + '旧的中段内容'.length,
+      insert: '全新的段落文字',
+    })
+    // 编辑器实例不得被销毁重建：重建会丢滚动位置、选区与撤销历史。
+    expect(wrapper.get('.code-editor .cm-editor').element).toBe(editorElement)
+    expect(wrapper.find('.code-editor').text()).toContain('全新的段落文字')
+    dispatch.mockRestore()
   })
 
   it('does not attach an old rewrite task after switching documents', async () => {
@@ -282,6 +313,52 @@ describe('DocumentEditor', () => {
 
     expect(wrapper.find('.cm-diff-inserted').exists()).toBe(false)
     expect(wrapper.find('.editor-notice').exists()).toBe(true)
+  })
+
+  it('falls back to locating a hunk by its original text when inline diff is unavailable', async () => {
+    const applied: ChangeSetPreview = {
+      ...change,
+      hunks: [{ ...change.hunks[0], status: 'applied' as const }],
+    }
+    const dispatch = vi.spyOn(EditorView.prototype, 'dispatch')
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({ changes: [applied], tab: { ...tab, content: '引子。原文收尾。' } }),
+    })
+    await flushPromises()
+    dispatch.mockClear()
+
+    const exposed = (wrapper.vm as unknown as {
+      $: { exposed: { focusHunk: (id: string) => void } }
+    }).$.exposed
+    exposed.focusHunk('hunk-1')
+    await flushPromises()
+
+    // jsdom 无布局，选区背景层不渲染；捕获派发给编辑器的事务断言回退定位结果。
+    const selectionSpec = dispatch.mock.calls
+      .map(([spec]) => spec as { selection?: { anchor: number; head?: number } })
+      .find((spec) => spec.selection)
+    expect(selectionSpec?.selection).toEqual({ anchor: 3, head: 5 })
+    expect(wrapper.find('.editor-notice').exists()).toBe(false)
+    dispatch.mockRestore()
+  })
+
+  it('shows a notice when a hunk cannot be located in the current text', async () => {
+    const applied: ChangeSetPreview = {
+      ...change,
+      hunks: [{ ...change.hunks[0], status: 'applied' as const }],
+    }
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({ changes: [applied], tab: { ...tab, content: '完全不同的正文。' } }),
+    })
+    await flushPromises()
+
+    const exposed = (wrapper.vm as unknown as {
+      $: { exposed: { focusHunk: (id: string) => void } }
+    }).$.exposed
+    exposed.focusHunk('hunk-1')
+    await flushPromises()
+
+    expect(wrapper.get('.editor-notice').text()).toContain('无法在当前正文中定位')
   })
 
   it('assigns semantic syntax classes so theme variables apply (phase7 P1-2)', async () => {

@@ -45,7 +45,7 @@ def _redact_secrets_in_text(text: str) -> str:
         value = match.group(1)
         if value is None:
             return REDACTED
-        return match.string[match.start():match.start() + match.end() - len(value)] + REDACTED
+        return match.string[match.start():match.end() - len(value)] + REDACTED
 
     return _SECRET_VALUE_PATTERN.sub(replace, text)
 
@@ -279,6 +279,18 @@ class WorkLogRecorder:
         warning.status = "succeeded"
         warning.completed_at = _now()
         self._items[warning.work_id] = warning
+        # 实时视图按 start 建条目：降级 warning 若只发 done，前端对未知
+        # work_id 会静默丢弃，补偿信号永远不可见（phase8 P2-1）。
+        self.bus.emit(
+            "work_item_start",
+            work_id=warning.work_id,
+            kind="warning",
+            title=warning.title,
+            tool_name=None,
+            args_summary=None,
+            change_set_id=None,
+            document_id=None,
+        )
         self.bus.emit(
             "work_item_done",
             work_id=warning.work_id,

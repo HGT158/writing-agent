@@ -287,7 +287,15 @@ def test_rewrite_selection_creates_preview_without_mutating_document(tmp_path):
     assert change.hunks[0].new_text == "第一段改写。"
     assert change.status == "pending"
     assert current.content == "第一段原文。第二段原文。"
-    assert any(event["type"] == "change_preview" for event in events)
+    # SSE hunk 载荷必须对齐 v1.20 契约（含状态字段），否则前端 isChangePreview 拒绝。
+    preview = next(event for event in events if event["type"] == "change_preview")
+    assert preview["data"]["hunks"] == [{
+        "hunk_id": change.hunks[0].hunk_id,
+        "range": {"from": 0, "to": 6},
+        "original": "第一段原文。",
+        "replacement": "第一段改写。",
+        "status": "pending",
+    }]
     assert not runtime.store.is_locked("default")
     asyncio.run(runtime.close())
 
@@ -454,6 +462,15 @@ def test_project_chat_returns_reply_and_pending_change_sets(tmp_path):
     assert event_types.count("tool_call") == 1
     assert event_types.count("tool_result") == 1
     assert event_types.count("change_preview") == 1
+    # SSE hunk 载荷必须对齐 v1.20 契约（含状态字段），否则前端 isChangePreview 拒绝。
+    preview = next(event for event in events if event["type"] == "change_preview")
+    assert preview["data"]["hunks"] == [{
+        "hunk_id": result.changes[0].hunks[0].hunk_id,
+        "range": {"from": 0, "to": 6},
+        "original": "第一段原文。",
+        "replacement": "首段精简。",
+        "status": "pending",
+    }]
     assert [event["data"]["text"] for event in events if event["type"] == "token"] == [
         "我建议", "压缩第一段。",
     ]
