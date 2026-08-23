@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.25 · 2026-08-22
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固及 v1.25 资源管理器整理均已完成
+> 版本：v1.26 · 2026-08-23
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理及 v1.26 文档口径对齐均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -40,6 +40,8 @@
 > v1.24 变更：处理 phase8 代码审查（v1.23 提交 `6021520` 区间）发现项。**（1）值级脱敏切片边界修复（P1-1）**：`_redact_secrets_in_text` 捕获组分支保留键名前缀的切片终点由 `match.start() + match.end() - len(value)` 修正为 `match.end() - len(value)`——原公式多叠加一个 `match.start()`，"key=value" 形态在长前缀（匹配起点前的文本长于敏感值，异常报文的常见形态）下会完整泄漏敏感值并复制匹配后的文本，恰好击穿 v1.23 写入的"完整匹配的敏感值不得落库"契约；补长前缀 RED 用例，并把既有 detail 脱敏断言从"完整密钥串不在"收紧为"敏感值任意前缀子串不得出现"（§5.7）。**（2）降级 warning 实时可见（P2-1）**：明细落库失败的降级 warning 在 `work_item_done` 之前补发配对的 `work_item_start`（复用同一 `work_id`、序号不变、仍占用失败明细空出的槽位），实时会话立即渲染该条目，不再依赖刷新后的持久化事件；用例断言 SSE 事件的 start/done 配对序列（§5.4/§5.7/§5.10）。**（3）hunk 定位回退（P3-1）**：侧栏卡片与工作记录点击定位 hunk 时，内联装饰不可用（标签页 dirty、hunk 已非 pending 或内容重定位失败）则按 hunk 原文在当前正文搜索回退定位并选中该范围，仍找不到时给出轻提示，不再静默无操作（§5.10）。**（4）弱断言收紧（P3-4）**：落库降级用例补 SSE 配对序列断言（并入（2））。其余 phase8 P3 观察项（截断标注口径、非 JSON 文本值级扫描、Space 键语义、import 分组）登记 backlog。同版修复用户实测发现的两处缺陷（契约不变，实现向 v1.20/v1.19 既有契约对齐）：**（5）`change_preview` hunk 载荷补 `status` 字段**——选区改写与项目聊天两条发射路径此前均缺 hunk 级状态，前端 `isChangePreview` 校验拒绝并提示"无效的修改预览"；现携带创建时的 hunk 状态（§5.9/§6.2 既有契约的实现对齐，SSE 载荷断言收紧入测）。**（6）运行中工作记录耗时自动跳动**——耗时此前依赖 `Date.now()`（非响应式依赖），仅在其他交互触发重渲染时才刷新；现由每秒更新的响应式时间源驱动，存在未终态记录时启动、全部终态或组件卸载时停止（§5.10 展示层行为，配 vitest 假时钟用例）。**（7）外部内容同步保持滚动位置**——文档身份 watcher 此前用数组 getter（每次求值产生新引用、`Object.is` 恒不等），任何 tab 属性变化（保存、接受 hunk）都会销毁重建编辑器，滚动位置、选区与撤销历史全部丢失；现改为多源 watch 按元素比较，仅助手/项目/文档真正切换时重建。编辑器内容同步不再整篇替换，改为只替换前后文本的最小差异区间——整篇替换会把 CodeMirror 滚动锚点映射到文档起点、测量周期后跳顶；最小区间变更让锚点映射保持稳定（§5.10，配 dispatch 契约与编辑器不重建断言）。**（8）失效建议可从侧栏关闭**——侧栏卡片"全部放弃"此前只逐个放弃 `pending` hunk，hunk 全部 `stale` 的卡片点击后为空操作：失效建议本就无法接受，卡片因此永久滞留侧栏；现放弃通道对 `pending` 与 `stale` 一并生效（服务端 reject 原本就允许 stale→rejected，仅元数据变更），且全部失效的卡片不再显示"全部接受"，只保留放弃与重试入口（§5.10 既有"stale 保留放弃/重新生成入口"契约的补齐，双侧 RED→GREEN 用例）。
 
 > v1.25 变更：资源管理器整理与文档级文件操作。**（1）树形渲染对齐 VS Code**：平铺 `relative_path` 列表在资源管理器内重建成嵌套树——项目行下紧跟该项目文件树（文件树不再统一垫在全部项目行之后，展开把后续项目行推下去）；项目内子文件夹渲染为独立可展开/收起的文件夹行（同级文件与文件夹按名称交错排序，中文按拼音），文件行只显示文件名、完整相对路径作为悬停提示（§5.10）。**（2）文档重命名与删除（跨模块契约）**：新增 `PATCH/DELETE /api/projects/{project_id}/documents/{document_id}`（§5.9 表）；存储层沿用项目归档的"磁盘先行 + 元数据随后 + 失败补偿"模式并接受助手级 mutation lock 串行，前置拒绝可编辑性、路径合法性、路径冲突、待处理 change set 与活跃写意图（§4.7/§5.7/§9）。**（3）前端操作入口**：资源管理器项目行与可编辑文件行悬停显示重命名/删除按钮；重命名为行内编辑（Enter 提交、Esc 取消，文件重命名只编辑文件名并保留所在文件夹），删除前确认；项目重命名复用既有 `PATCH /api/projects/{id}`，项目删除复用既有归档 `DELETE`；操作成功后刷新项目列表与资源树并同步打开的标签页（重命名更新标签显示，删除关闭标签）（§5.10）。
+
+> v1.26 变更：文档口径对齐（phase9 审查 P2-2 与 P3-35/36/37；纯文档修正，不改变任何运行时行为与代码）。**（1）** §5.9 任务终态记录的有界保留口径由「TTL/容量」修正为「按容量有界保留（最多 128 条已终态且无订阅者的记录，无 TTL 维度）」，与 TaskBroker 实现一致。**（2）** §3.3 fetch 结果的上下文口径修正为「全文（最多 20,000 字符）落 `sources` 表备查，进入 Observation 的只有 ≤500 字符摘要」，删除与实现矛盾的「截断至 2000 字符后进 Observation」表述。**（3）** §5.9 明确文档重命名/删除的「助手级 mutation lock」以该助手的运行锁实现：助手任一任务运行期间即拒绝（409），而非仅与并发文档写互斥。**（4）** §5.4 明确项目聊天的 system prompt 始终注入 editing Skill 指导、不受助手技能子集裁剪（写作工作台的审校/改写是核心交互），选区改写入口仍校验子集。
 
 ---
 
@@ -179,7 +181,7 @@ class AgentState(TypedDict, total=False):
 
 `max_steps` 只防死循环，不防上下文膨胀。裁剪规则：
 
-1. **工具原始输出不进 `messages`**：Executor 把原始结果压缩为 `Observation`（成功：`summary` ≤500 字 + 关键字段；失败：`error` 信息），只有 Observation 进入对话历史。fetch 的网页全文截断至 2000 字符后进 Observation，全文落 SQLite `sources` 表备查。
+1. **工具原始输出不进 `messages`**：Executor 把原始结果压缩为 `Observation`（成功：`summary` ≤500 字 + 关键字段；失败：`error` 信息），只有 Observation 进入对话历史。fetch 的网页全文不进入对话上下文，全文（最多 20,000 字符）落 SQLite `sources` 表备查，进入 Observation 的只有 ≤500 字符摘要（v1.26 口径对齐实现）。
 2. **观察滑窗**：Planner 每轮只看最近 8 条 Observation 全文；更早的压缩为一行索引（`[3] tavily_search("模型蒸馏") → 5 条结果`）。
 3. **强制压缩**：估算 prompt token 超阈值（默认 60k，可配）时，用一次 LLM 调用把滑窗外的观察总结成一段，替换原始条目。
 4. **正文不进循环上下文**：分段写作时，已完成的章节存 `state.draft` / 文件，下一节只带大纲和本章要点，不带全文。
@@ -393,7 +395,7 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 
 每次任务：`runtime.run(assistant_id, task)` → **按助手获取运行锁（占用则拒绝，§4.6）** → 取该助手 persona + 技能子集 → `recall` 一次写入 `state.memory_context` → 进入 Loop。
 
-项目聊天入口 `runtime.chat_project(...)` 复用同一运行锁、LLM client、EventBus、Skill 与 MemoryStore。它把模型文本 delta 立即发为 `token`，累积并完成流式 tool-call 参数的 JSON/schema 校验后才发送 `tool_call` 并执行一次 `propose_project_edits`；异常路径显式关闭模型流。若发生工具调用，最多追加一个无工具的流式说明轮次。API 任务终态中的 `reply` 等于本次任务所有可见文本 delta 的顺序拼接，`change_set_ids` 来自工具执行结果；模型没有返回可见文本时，Runtime 发送并持久化明确提示，不能留下无反馈的连续 user 消息。
+项目聊天入口 `runtime.chat_project(...)` 复用同一运行锁、LLM client、EventBus、Skill 与 MemoryStore。它的 system prompt 始终注入 editing Skill 指导，不受助手 `skills` 子集裁剪——写作工作台的审校/改写是核心交互；选区改写入口 `rewrite_selection` 仍校验子集，未启用 editing 的助手拒绝改写（v1.26 明确该差异）。它把模型文本 delta 立即发为 `token`，累积并完成流式 tool-call 参数的 JSON/schema 校验后才发送 `tool_call` 并执行一次 `propose_project_edits`；异常路径显式关闭模型流。若发生工具调用，最多追加一个无工具的流式说明轮次。API 任务终态中的 `reply` 等于本次任务所有可见文本 delta 的顺序拼接，`change_set_ids` 来自工具执行结果；模型没有返回可见文本时，Runtime 发送并持久化明确提示，不能留下无反馈的连续 user 消息。
 
 **项目聊天全程发射工作记录事件（v1.19）**：Runtime 用独立的 `agent/work_log.py` 记录器把编排过程映射为 `work_item_start` / `work_item_delta` / `work_item_done` 三类 SSE 事件（携带稳定的 `work_id`）。确定性阶段进度（"正在读取当前文档与历史上下文"等）、`tool_call`→`tool_result`（合并为同一个 tool 工作项）、上下文 warning、每个 change set（`kind=changes`，含 `change_set_id` 与文档标识）和任务终态（`kind=task`）各成工作项。这里不展示、不持久化模型隐藏推理链；没有可公开的 reasoning summary 时只发编排层的确定性进度。`work_item_delta` 只走流不落库；明细事件仅在 `work_item_done` 时按 §5.7 的上限落库；任务失败或取消时仍处于运行中的工作项统一以 `interrupted` 终结后落库，进程被强杀则不写任何残缺记录，由会话详情对账兜底（§5.9）。`tool_call` / `tool_result` / `change_preview` 事件保持既有语义继续下发，工作事件是它们的展示层投影而非替代。
 
@@ -539,7 +541,7 @@ JOBS = [
 | `GET /api/projects/{project_id}/tree?assistant_id=X` | 返回项目资源树；必须校验项目属于该助手 |
 | `GET /api/projects/{project_id}/documents/{document_id}?assistant_id=X` | 读取可编辑文件及当前 `document_version` |
 | `PUT /api/projects/{project_id}/documents/{document_id}` | 保存手工编辑；body 必含 `assistant_id`、正文和期望版本，冲突返回 409 |
-| `PATCH /api/projects/{project_id}/documents/{document_id}` | 重命名文档（v1.25）：body 必含 `assistant_id` 与新 `relative_path`。仅限可编辑文档；新路径走导入同一套合法性校验且扩展名限 `.md`/`.markdown`/`.txt`；与项目内既有文档路径冲突、文档存在待处理 change set 或活跃写意图均返回 409；文件系统改名先行、元数据随后更新、元数据失败回滚改名（与项目归档同一补偿模式）；助手级 mutation lock 串行 |
+| `PATCH /api/projects/{project_id}/documents/{document_id}` | 重命名文档（v1.25）：body 必含 `assistant_id` 与新 `relative_path`。仅限可编辑文档；新路径走导入同一套合法性校验且扩展名限 `.md`/`.markdown`/`.txt`；与项目内既有文档路径冲突、文档存在待处理 change set 或活跃写意图均返回 409；文件系统改名先行、元数据随后更新、元数据失败回滚改名（与项目归档同一补偿模式）；助手级 mutation lock 串行——该锁以助手运行锁实现：助手任一任务运行期间即拒绝（409），而非仅与并发文档写互斥（v1.26 明确该语义） |
 | `DELETE /api/projects/{project_id}/documents/{document_id}?assistant_id=X` | 删除文档（v1.25）：物理删除受管文件与元数据行；前置拒绝条件同重命名（409）；被删文档为项目入口文档时把入口改指向其余可编辑文档之一（按路径序），没有则置空；返回 `{deleted, entry_document_id}`；历史 change set/工作记录行保留不影响 |
 | `POST /api/projects/{project_id}/documents/{document_id}/selection-rewrites` | 创建选区局部改写任务；body 必含 `assistant_id`、选区文本/范围、指令和版本；返回 `task_id`/`change_set_id` |
 | `POST /api/projects/{project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/accept` | 接受单个 hunk（唯一应用原语）：首次应用按存储范围复核快照，其后按 `old_text` 对当前正文唯一匹配复检；写意图三段式写入、版本 +1，同文档其他任务的建议整组 stale；响应含更新后文档、change set、hunk 与 `staled_change_set_ids` |
@@ -554,7 +556,7 @@ JOBS = [
 | `GET /api/articles/{id}?assistant_id=X` | 只读获取完成态文章；要继续编辑须复制/导入为项目，所有保存统一走项目文档 API |
 | `GET /` | 托管 `web/dist` 静态文件 |
 
-`TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按 TTL/容量有界保留，事件历史用于新订阅者的有界重放，不得无限增长。
+`TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按容量有界保留（最多 128 条已终态且无订阅者的记录，无 TTL 维度——v1.26 口径对齐实现），事件历史用于新订阅者的有界重放，不得无限增长。
 
 **活动连接的事件寻址必须使用单调递增序号，不能使用列表下标**（v1.17）：事件历史是有界滑窗，一次流式回复的 `token` 事件数量很容易超过窗口容量。每个事件在记录时分配任务内唯一且递增的 `seq`；活动订阅者从独立队列收取事件，并用自身游标跳过已经发送的序号。窗口裁剪不得导致活动订阅者停止收流，也不得吞掉 `task_done` / `task_failed` 终态事件。
 
@@ -794,4 +796,4 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 
 ---
 
-当前完成边界：阶段 2、3、4 及 v1.13–v1.25 均已完成；后续阶段须由用户确认目标后另行启动。
+当前完成边界：阶段 2、3、4 及 v1.13–v1.26 均已完成；后续阶段须由用户确认目标后另行启动。

@@ -133,18 +133,3 @@ Python 225/225 · 记忆隔离 10/10 · 前端 102/102 · vue-tsc 与生产构�
 处理过程遵循 RED → GREEN：本轮各修复均先确认针对性用例失败再实现；最终完整基线为 Python `226/226`、记忆隔离红线 `10/10`、前端 `108/108`，`npm run typecheck` 与 `npm run build` 均通过。
 
 本报告已登记到 `docs/README.md`；架构单一事实来源已更新为 v1.24，README、AGENTS.md 与新会话提示词的当前基线已同步。
-
----
-
-## 处理结果（2026-08-22，v1.24）
-
-本节记录审查后的处理闭环；上文发现、行号与 `225/102` 测试数保留为 2026-08-21 审查时点的历史事实，不回写覆盖。
-
-- **P1-1 已闭环**：`_redact_secrets_in_text` 捕获组分支的切片终点修正为 `match.end() - len(value)`。处理遵循 RED → GREEN：先补长前缀（s > 值长）泄漏 RED 用例并确认失败（实证完整泄漏 + 尾部文本复制），同时把既有 `test_recorder_truncates_and_redacts_failure_detail` 断言从「完整密钥串不在」收紧为「`sk-a` 前缀子串不在」（修复前实测泄漏 `api_key=sk-ab***` 形态）。
-- **P2-1 已闭环**：`_note_persist_failure` 在 `work_item_done` 之前补发配对的 `work_item_start`（同一 `work_id`、序号不变、仍占用失败明细空出的槽位），实时会话立即渲染该警告条目；`test_recorder_detail_persists_store_failure_as_warning` 补 SSE start/done 配对序列断言（即 P3-4）。
-- **P3-1 已闭环**：`focusHunk` 在内联装饰不可用（dirty、已非 pending 或重定位失败）时按 hunk 原文在当前正文搜索回退定位并选中命中文本，仍找不到时给出轻提示（`.editor-notice`），不再静默无操作；新增前端用例以 `EditorView.prototype.dispatch` 事务规格断言回退定位的选区位置（jsdom 无布局，选区背景层不渲染）。
-- **继续暂缓**：P3-2（截断标注口径）、P3-3（非 JSON 文本值级扫描）、P3-5（Space 键语义）、P3-6（import 分组）已登记 `docs/guides/backlog.md` 观察项，由后续独立阶段按需处理。
-
-处理过程：Python 针对性 `tests/test_work_log.py` 20/20；记忆隔离红线 `10/10`；最终完整基线 Python `226/226`、前端 `104/104`，`npm run typecheck` 与 `npm run build` 均通过。
-
-本报告已登记到 `docs/README.md`；架构单一事实来源已更新为 v1.24（§5.7 降级配对契约、§5.10 hunk 定位回退），README、AGENTS.md 的当前基线已同步。
