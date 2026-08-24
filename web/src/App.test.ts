@@ -47,6 +47,7 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('./api/client', () => ({ apiClient: apiMocks }))
 
 import App from './App.vue'
+import type { ChangeSetPreview } from './types'
 
 describe('App project creation', () => {
   beforeEach(() => {
@@ -614,5 +615,40 @@ describe('App project creation', () => {
 
     expect(apiMocks.deleteAssistant).toHaveBeenCalledWith('default')
     vi.mocked(window.confirm).mockRestore()
+  })
+
+  it('ends change-set reconciliation after every server item has been fetched', async () => {
+    apiMocks.listChangeSets
+      .mockResolvedValueOnce({
+        items: [{ ...chatChange, change_set_id: 'old', hunks: [{ ...chatChange.hunks[0], status: 'applied' }] }],
+        total: 2, page: 1, page_size: 1,
+      })
+      .mockResolvedValueOnce({ items: [chatChange], total: 2, page: 2, page_size: 1 })
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      reconcileChanges: (projectId: string, documentId: string) => Promise<void>
+    }
+
+    await vm.reconcileChanges('project-1', 'document-1')
+
+    expect(apiMocks.listChangeSets).toHaveBeenCalledTimes(2)
+  })
+
+  it('replaces chat cards only within the loaded session scope', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      pendingChanges: ChangeSetPreview[]
+      setChatChanges: (changes: ChangeSetPreview[], sessionId: string) => void
+    }
+    vm.pendingChanges = [
+      { ...chatChange, change_set_id: 'session-a', chat_session_id: 'a' },
+      { ...chatChange, change_set_id: 'session-b', chat_session_id: 'b' },
+    ]
+
+    vm.setChatChanges([], 'a')
+
+    expect(vm.pendingChanges.map((item) => item.change_set_id)).toEqual(['session-b'])
   })
 })

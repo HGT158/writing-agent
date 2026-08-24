@@ -64,6 +64,7 @@ def _change_preview(change) -> dict:
             "status": hunk.status,
         } for hunk in change.hunks],
         "document_version": change.base_version,
+        "chat_session_id": change.session_id,
         "source": change.source,
         "status": change.status,
     }

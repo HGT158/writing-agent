@@ -2,7 +2,7 @@
 import { onMounted, useTemplateRef } from 'vue'
 import { Sparkles, X } from '@lucide/vue'
 
-defineProps<{ loading: boolean }>()
+defineProps<{ loading: boolean; disabled?: boolean; disabledReason?: string }>()
 const prompt = defineModel<string>({ default: '' })
 const emit = defineEmits<{ submit: []; cancel: [] }>()
 const input = useTemplateRef<HTMLInputElement>('input')
@@ -27,12 +27,13 @@ function keepEditorSelection(event: MouseEvent) {
       ref="input"
       v-model="prompt"
       placeholder="告诉 AI 如何修改这段..."
-      :disabled="loading"
+      :disabled="loading || disabled"
       @keydown.enter.prevent="emit('submit')"
     />
-    <button class="primary-icon" title="生成修改建议" :disabled="loading || !prompt.trim()" @click="emit('submit')">
+    <button class="primary-icon" :title="disabled ? disabledReason : '生成修改建议'" :disabled="loading || disabled || !prompt.trim()" @click="emit('submit')">
       {{ loading ? '生成中' : '改写' }}
     </button>
     <button class="ghost-icon" title="关闭工具栏 (Esc)" @click="emit('cancel')"><X :size="15" /></button>
+    <span v-if="disabled && disabledReason" class="toolbar-disabled-reason">{{ disabledReason }}</span>
   </div>
 </template>

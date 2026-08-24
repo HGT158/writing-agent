@@ -8,6 +8,7 @@ from agent.context import (
     SUMMARY_PREFIX,
     build_chat_context,
     clip_document_content,
+    clip_content_to_token_budget,
     estimate_messages_tokens,
     estimate_tokens,
 )
@@ -273,3 +274,26 @@ def test_compacted_path_also_enforces_budget():
     assert context.summary == "早期对话摘要"
     assert estimate_messages_tokens(context.messages) <= 16_000 - 100
     assert context.messages[-1]["content"] == "正常收尾指令"
+
+
+def test_token_clipping_handles_mixed_width_text_without_exceeding_budget():
+    clipped, changed = clip_content_to_token_budget("中文" * 500 + "abcd" * 500, 120)
+
+    assert changed is True
+    assert estimate_tokens(clipped) <= 120
+    assert "已省略" in clipped
+
+
+def test_system_prompt_over_budget_warns_and_drops_history():
+    context = asyncio.run(build_chat_context(
+        _history(2, size=100),
+        system_tokens=501,
+        token_budget=500,
+        keep_recent=2,
+        existing_summary=None,
+        existing_summary_through=None,
+        summarize=_never_called,
+    ))
+
+    assert context.messages == []
+    assert any("system prompt" in warning for warning in context.warnings)

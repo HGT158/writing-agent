@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.10.4",
     "@codemirror/lang-markdown": "^6.3.4",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.36.0",

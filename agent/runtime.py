@@ -17,7 +17,12 @@ from memory.store import MemoryStore
 from scheduler import RuntimeScheduler
 
 from .assistant_registry import AssistantRegistry
-from .context import build_chat_context, clip_document_content, estimate_tokens
+from .context import (
+    build_chat_context,
+    clip_content_to_token_budget,
+    clip_document_content,
+    estimate_tokens,
+)
 from .events import EventBus, current_task_id
 from .executor import ToolRegistry
 from .llm import chat_text, stream_chat_turn
@@ -233,6 +238,7 @@ class AgentRuntime:
                 }],
                 document_version=document_version,
                 source="selection",
+                chat_session_id=None,
             )
             return change
         except Exception:
@@ -294,6 +300,9 @@ class AgentRuntime:
                 assistant_id, project_id, chat_session_id
             )
             context = "(未打开文档)"
+            document_content = ""
+            document_prefix = ""
+            document_clipped = False
             if current_document_id is not None:
                 document = self.store.get_document(
                     assistant_id, project_id, current_document_id
@@ -301,24 +310,42 @@ class AgentRuntime:
                 body, clipped = clip_document_content(
                     document.content or "", self.settings.chat_context_doc_max_chars
                 )
-                context = (
+                document_prefix = (
                     f"document_id={document.document_id}\n"
                     f"document_version={document.version}\n"
                     f"relative_path={document.relative_path}\n"
-                    + ("content（已按上下文预算截断）:\n" if clipped else "content:\n")
-                    + body
                 )
+                document_content = body
+                document_clipped = clipped
             editing = self.skills.get("editing")
             skill_prompt = editing.body if editing is not None else "帮助用户审校和改写项目文本。"
-            system_prompt = (
+            system_prefix = (
                 f"{assistant.persona}\n\n{skill_prompt}\n\n"
                 "你正在项目 Agent 面板中回答用户。回答应简洁、具体。"
                 "用户要求改写、增删或替换正文时，必须调用 propose_project_edits，"
                 "不要声称已经修改文件，也不要在工具调用前输出解释。"
                 "同一文档的多处修改必须放进同一次调用的 hunks 列表，不要分多次调用。"
                 "普通问答不调用工具。\n\n"
-                f"当前项目文档：\n{context}"
+                "当前项目文档：\n"
             )
+            if current_document_id is not None:
+                content_label = "content（已按上下文预算截断）:\n" if document_clipped else "content:\n"
+                fixed_system = (
+                    f"{system_prefix}{document_prefix}content（已按上下文预算截断）:\n"
+                )
+                max_document_tokens = max(
+                    self.settings.chat_context_token_budget
+                    - estimate_tokens(fixed_system)
+                    - 5,  # 至少给一条历史消息保留 role 开销与一个 token。
+                    0,
+                ) if self.settings.chat_context_token_budget > 0 else estimate_tokens(document_content)
+                document_content, token_clipped = clip_content_to_token_budget(
+                    document_content, max_document_tokens
+                )
+                if token_clipped and not document_clipped:
+                    content_label = "content（已按上下文预算截断）:\n"
+                context = f"{document_prefix}{content_label}{document_content}"
+            system_prompt = f"{system_prefix}{context}"
             user_record = self.store.add_project_chat_message(
                 assistant_id,
                 project_id,
@@ -503,6 +530,7 @@ class AgentRuntime:
                     } for hunk in change.hunks],
                     document_version=change.base_version,
                     source="chat",
+                    chat_session_id=chat_session_id,
                 )
             messages.extend([
                 {

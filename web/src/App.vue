@@ -103,9 +103,11 @@ const agentProjectChanges = computed(() => pendingChanges.value.filter(
   (change) => change.project_id === agentProjectId.value,
 ))
 
-function setChatChanges(changes: ChangeSetPreview[]) {
+function setChatChanges(changes: ChangeSetPreview[], chatSessionId: string | null) {
   pendingChanges.value = [
-    ...pendingChanges.value.filter((change) => change.source !== 'chat'),
+    ...pendingChanges.value.filter((change) => (
+      change.source !== 'chat' || change.chat_session_id !== chatSessionId
+    )),
     ...changes,
   ]
 }
@@ -261,14 +263,16 @@ async function reconcileChanges(projectId: string, documentId: string) {
   const assistantId = workspace.assistantId
   try {
     const collected: ChangeSetPreview[] = []
+    let fetchedCount = 0
     let page = 1
     for (;;) {
       const result = await apiClient.listChangeSets(assistantId, projectId, documentId, page)
       if (workspace.assistantId !== assistantId) return
+      fetchedCount += result.items.length
       collected.push(
         ...result.items.filter((set) => set.hunks.some((hunk) => hunk.status === 'pending' || hunk.status === 'stale')),
       )
-      if (collected.length >= result.total || result.items.length === 0) break
+      if (fetchedCount >= result.total || result.items.length === 0) break
       page += 1
     }
     pendingChanges.value = [

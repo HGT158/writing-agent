@@ -26,7 +26,7 @@ const emit = defineEmits<{
   apply: [change: ChangeSetPreview]
   reject: [change: ChangeSetPreview]
   applyAll: [changes: ChangeSetPreview[]]
-  changesLoaded: [changes: ChangeSetPreview[]]
+  changesLoaded: [changes: ChangeSetPreview[], chatSessionId: string | null]
   changeAdded: [change: ChangeSetPreview]
   openDocument: [projectId: string, documentId: string, hunkId?: string]
 }>()
@@ -63,6 +63,12 @@ const TERMINAL_LABELS: Record<string, string> = {
   failed: '失败',
   interrupted: '已中断',
 }
+const WORK_RECORD_LIMIT = 100
+const WORK_DETAIL_LIMIT = 500
+
+function truncateWorkDetail(value: string) {
+  return value.slice(-WORK_DETAIL_LIMIT)
+}
 
 const message = ref('')
 const messages = ref<ChatMessage[]>([])
@@ -84,8 +90,13 @@ let liveUserIndex: number | null = null
 
 const reviewingIds = computed(() => new Set(props.reviewing))
 const busy = computed(() => sending.value || loadingSession.value)
+const panelChanges = computed(() => props.changes.filter((change) => (
+  change.source !== 'chat'
+  || change.chat_session_id === undefined
+  || change.chat_session_id === activeSessionId.value
+)))
 // 只有本会话产生的 diff 会阻止删除会话；选区改写的建议与会话生命周期无关。
-const chatChanges = computed(() => props.changes.filter((change) => change.source === 'chat'))
+const chatChanges = computed(() => panelChanges.value.filter((change) => change.source === 'chat'))
 
 // Date.now() 不是响应式依赖：运行中的耗时需要每秒更新的时间源驱动重渲染。
 const nowTick = ref(Date.now())
@@ -180,7 +191,7 @@ function recordsFromEvents(events: WorkEventRecord[]): WorkRecordView[] {
         kind: item.kind,
         status: item.status,
         title: item.title,
-        delta: item.result_summary || item.detail || '',
+        delta: truncateWorkDetail(item.result_summary || item.detail || ''),
         changeSetId: item.change_set_id,
         documentId: item.document_id,
       })),
@@ -188,7 +199,7 @@ function recordsFromEvents(events: WorkEventRecord[]): WorkRecordView[] {
       endedAt: terminal ? Date.parse(terminal.completed_at ?? terminal.created_at) || null : null,
     })
   }
-  return records
+  return records.slice(-WORK_RECORD_LIMIT)
 }
 
 function ensureLiveWork(): WorkRecordView {
@@ -236,7 +247,7 @@ function handleWorkEvent(event: TaskEvent) {
       const summary = typeof data.result_summary === 'string' && data.result_summary
         ? data.result_summary
         : typeof data.detail === 'string' ? data.detail : ''
-      if (summary) item.delta = summary
+      if (summary) item.delta = truncateWorkDetail(summary)
     }
   }
 }
@@ -263,7 +274,7 @@ function archiveLiveWork(userIndex: number | null) {
       record.userMessageId = optimistic.message_id
     }
   }
-  workRecords.value = [...workRecords.value, record]
+  workRecords.value = [...workRecords.value, record].slice(-WORK_RECORD_LIMIT)
 }
 
 function toggleWorkRecord(record: WorkRecordView) {
@@ -339,7 +350,10 @@ async function loadSession(
     }))
     workRecords.value = recordsFromEvents(detail.work_events || [])
     liveWork.value = null
-    emit('changesLoaded', detail.pending_changes.filter(isChangePreview))
+    emit('changesLoaded', detail.pending_changes.filter(isChangePreview).map((change) => ({
+      ...change,
+      chat_session_id: chatSessionId,
+    })), chatSessionId)
     lastInstruction.value = [...detail.messages].reverse().find((item) => item.role === 'user')?.content || ''
     void scrollToTail(true)
     return true
@@ -377,9 +391,10 @@ function startNewSession() {
   if (!props.projectId || busy.value) return
   scopeGeneration += 1
   stopStream()
+  const previousSessionId = activeSessionId.value
   activeSessionId.value = null
   clearConversation()
-  emit('changesLoaded', [])
+  emit('changesLoaded', [], previousSessionId)
 }
 
 function selectSession(event: Event) {
@@ -390,8 +405,9 @@ function selectSession(event: Event) {
   const assistantId = props.assistantId
   const projectId = props.projectId
   stopStream()
+  const previousSessionId = activeSessionId.value
   clearConversation()
-  emit('changesLoaded', [])
+  emit('changesLoaded', [], previousSessionId)
   activeSessionId.value = chatSessionId
   if (chatSessionId) void loadSession(assistantId, projectId, chatSessionId, generation)
 }
@@ -494,7 +510,8 @@ async function send(content = message.value.trim(), appendUserMessage = true) {
           error.value = '任务返回了无效的修改预览'
           return
         }
-        emit('changeAdded', event.data)
+        if (event.data.hunks.length === 0) return
+        emit('changeAdded', { ...event.data, chat_session_id: chat_session_id })
         await scrollToTail()
       }
       if (event.type === 'task_failed') {
@@ -632,18 +649,18 @@ onBeforeUnmount(() => {
           </ul>
         </div>
       </template>
-      <div v-if="changes.length" class="change-review">
+      <div v-if="panelChanges.length" class="change-review">
         <div class="change-review-heading">
-          <span>{{ changes.length }} 处待确认修改</span>
+          <span>{{ panelChanges.length }} 处待确认修改</span>
           <button
-            v-if="changes.length > 1"
+            v-if="panelChanges.length > 1"
             class="link-action"
             :disabled="sending || !!reviewing.length"
-            @click="emit('applyAll', [...changes])"
+            @click="emit('applyAll', [...panelChanges])"
           >全部接受</button>
         </div>
         <ChangeDiff
-          v-for="change in changes"
+          v-for="change in panelChanges"
           :key="change.change_set_id"
           :change="change"
           :label="documentLabels[change.document_id]"

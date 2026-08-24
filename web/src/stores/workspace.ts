@@ -14,6 +14,7 @@ export function createWorkspaceStore(api: WorkspaceApi = apiClient) {
     error: '',
   })
   let assistantGeneration = 0
+  let openRequestGeneration = 0
 
   async function switchAssistant(assistantId: string) {
     const generation = ++assistantGeneration
@@ -37,12 +38,15 @@ export function createWorkspaceStore(api: WorkspaceApi = apiClient) {
   }
 
   async function openDocument(projectId: string, documentId: string) {
+    const requestGeneration = ++openRequestGeneration
     const assistantId = state.assistantId
     const generation = assistantGeneration
     const existing = state.tabs.find((tab) => tab.project_id === projectId && tab.document_id === documentId)
     if (existing) {
-      state.activeDocumentId = documentId
-      state.activeTabKey = `${projectId}:${documentId}`
+      if (requestGeneration === openRequestGeneration) {
+        state.activeDocumentId = documentId
+        state.activeTabKey = `${projectId}:${documentId}`
+      }
       return existing
     }
     const document = await api.getDocument(assistantId, projectId, documentId)
@@ -53,8 +57,10 @@ export function createWorkspaceStore(api: WorkspaceApi = apiClient) {
       dirty: false,
     }
     state.tabs.push(tab)
-    state.activeDocumentId = documentId
-    state.activeTabKey = `${projectId}:${documentId}`
+    if (requestGeneration === openRequestGeneration) {
+      state.activeDocumentId = documentId
+      state.activeTabKey = `${projectId}:${documentId}`
+    }
     return tab
   }
 

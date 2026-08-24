@@ -127,7 +127,9 @@ describe('AgentPanel', () => {
     await flushPromises()
 
     expect(wrapper.get('.message.user').text()).toContain('session-1')
-    expect(wrapper.emitted('changesLoaded')?.at(-1)).toEqual([[change]])
+    expect(wrapper.emitted('changesLoaded')?.at(-1)).toEqual([[
+      { ...change, chat_session_id: 'session-1' },
+    ], 'session-1'])
   })
 
   it('renders parent-owned changes and blocks session deletion while they are pending', async () => {
@@ -605,7 +607,9 @@ describe('AgentPanel', () => {
     await flushPromises()
     await callback(taskEvent('change_preview', change as unknown as Record<string, unknown>))
 
-    expect(wrapper.emitted('changeAdded')?.[0]).toEqual([change])
+    expect(wrapper.emitted('changeAdded')?.[0]).toEqual([
+      { ...change, chat_session_id: 'session-1' },
+    ])
   })
 
   it('retries the last instruction as a new visible user message', async () => {
@@ -759,7 +763,9 @@ describe('AgentPanel', () => {
 
     expect(apiMocks.getProjectChatSession).toHaveBeenCalledWith('default', 'project-1', 'session-1')
     expect(wrapper.get('.message.assistant').text()).toContain('完整回复')
-    expect(wrapper.emitted('changesLoaded')?.at(-1)?.[0]).toEqual([change])
+    expect(wrapper.emitted('changesLoaded')?.at(-1)?.[0]).toEqual([
+      { ...change, chat_session_id: 'session-1' },
+    ])
     expect(wrapper.get('textarea').attributes('disabled')).toBeUndefined()
     // 恢复成功后网络中断提示必须消失，不得残留已过时的警告。
     expect(wrapper.find('.inline-error').exists()).toBe(false)
@@ -794,7 +800,9 @@ describe('AgentPanel', () => {
 
     expect(wrapper.get('.inline-error').text()).toContain('模型不可用')
     expect(apiMocks.getProjectChatSession).toHaveBeenCalledWith('default', 'project-1', 'session-1')
-    expect(wrapper.emitted('changesLoaded')?.at(-1)?.[0]).toEqual([change])
+    expect(wrapper.emitted('changesLoaded')?.at(-1)?.[0]).toEqual([
+      { ...change, chat_session_id: 'session-1' },
+    ])
   })
 
   it('closes the old stream and clears the session when the project changes', async () => {
@@ -812,5 +820,82 @@ describe('AgentPanel', () => {
 
     expect(close).toHaveBeenCalledOnce()
     expect(wrapper.findAll('.message')).toHaveLength(0)
+  })
+
+  it('shows chat cards only for the active chat session', async () => {
+    apiMocks.listProjectChatSessions.mockResolvedValue([{
+      chat_session_id: 'session-1', title: '当前会话', created_at: '1', updated_at: '1', message_count: 0,
+    }])
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: { chat_session_id: 'session-1', title: '当前会话', created_at: '1', updated_at: '1', message_count: 0 },
+      messages: [], pending_changes: [], work_events: [],
+    })
+    const wrapper = mountPanel({
+      changes: [
+        { ...change, change_set_id: 'current', chat_session_id: 'session-1' },
+        { ...change, change_set_id: 'other', chat_session_id: 'session-2' },
+      ],
+    })
+    await flushPromises()
+
+    expect(wrapper.findAll('.change-diff')).toHaveLength(1)
+    expect(wrapper.get('.change-diff').attributes('data-change-id')).not.toBe('other')
+  })
+
+  it('silently ignores a valid empty streamed change preview', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.get('textarea').setValue('检查是否需要修改')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    await callback(taskEvent('change_preview', { ...change, hunks: [] }))
+    await nextTick()
+
+    expect(wrapper.emitted('changeAdded')).toBeUndefined()
+    expect(wrapper.find('.inline-error').exists()).toBe(false)
+  })
+
+  it('bounds persisted work records and truncates long result details', async () => {
+    const messages = Array.from({ length: 101 }, (_, index) => ({
+      message_id: index + 1, role: 'user' as const, content: `指令 ${index + 1}`, created_at: '1',
+    }))
+    const work_events = Array.from({ length: 101 }, (_, index) => ([
+      {
+        event_id: index * 2 + 1, task_id: `task-${index}`, user_message_id: index + 1,
+        event_seq: 1, kind: 'progress', status: 'succeeded', title: '处理',
+        detail: `头部${'x'.repeat(600)}尾部`, tool_name: null, args_summary: null,
+        result_summary: null, change_set_id: null, document_id: null,
+        created_at: '2026-08-16T00:00:00Z', completed_at: '2026-08-16T00:00:01Z',
+      },
+      {
+        event_id: index * 2 + 2, task_id: `task-${index}`, user_message_id: index + 1,
+        event_seq: 2, kind: 'task', status: 'succeeded', title: '完成', detail: '',
+        tool_name: null, args_summary: null, result_summary: null,
+        change_set_id: null, document_id: null,
+        created_at: '2026-08-16T00:00:00Z', completed_at: '2026-08-16T00:00:02Z',
+      },
+    ])).flat()
+    apiMocks.listProjectChatSessions.mockResolvedValue([{
+      chat_session_id: 'session-1', title: '历史', created_at: '1', updated_at: '2', message_count: 101,
+    }])
+    apiMocks.getProjectChatSession.mockResolvedValue({
+      session: { chat_session_id: 'session-1', title: '历史', created_at: '1', updated_at: '2', message_count: 101 },
+      messages, pending_changes: [], work_events,
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.findAll('.work-record')).toHaveLength(100)
+    await wrapper.findAll('.work-record-header')[0].trigger('click')
+    const detail = wrapper.get('.work-item-detail').text()
+    expect(detail.length).toBeLessThanOrEqual(500)
+    expect(detail).toContain('尾部')
+    expect(detail).not.toContain('头部')
   })
 })

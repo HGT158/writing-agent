@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { basicSetup } from 'codemirror'
 import { EditorView } from 'codemirror'
 import { EditorState } from '@codemirror/state'
+import { isolateHistory } from '@codemirror/commands'
 import { markdown } from '@codemirror/lang-markdown'
 
 import { apiClient } from '../api/client'
@@ -48,6 +49,12 @@ let syncingExternalContent = false
 let stream: TaskStream | null = null
 let scopeGeneration = 0
 
+function uniqueTextRange(content: string, text: string): { from: number; to: number } | null {
+  const from = content.indexOf(text)
+  if (from < 0 || content.indexOf(text, from + 1) >= 0) return null
+  return { from, to: from + text.length }
+}
+
 /**
  * 内联 diff 逐 hunk 定位（架构 §5.10 v1.20）：标签页正文等于基准版本时按存储
  * 范围对齐；版本推进后以 hunk 原文在当前正文唯一匹配重定位（服务端内容复检
@@ -71,13 +78,13 @@ const locatedHunks = computed<{ diffs: InlineDiff[]; staleCount: number }>(() =>
           from = codePointToUtf16Offset(content, hunk.range.from)
           to = codePointToUtf16Offset(content, hunk.range.to)
         } else {
-          const index = content.indexOf(hunk.original)
-          if (index < 0 || content.indexOf(hunk.original, index + 1) >= 0) {
+          const range = uniqueTextRange(content, hunk.original)
+          if (!range) {
             staleCount += 1
             continue
           }
-          from = index
-          to = index + hunk.original.length
+          from = range.from
+          to = range.to
         }
         diffs.push({
           changeSetId: change.change_set_id,
@@ -154,15 +161,15 @@ function focusHunk(hunkId: string) {
   const hunk = props.changes
     .flatMap((change) => change.hunks)
     .find((item) => item.hunk_id === hunkId)
-  const index = hunk === undefined ? -1 : props.tab.content.indexOf(hunk.original)
-  if (hunk === undefined || index < 0) {
+  const range = hunk === undefined ? null : uniqueTextRange(props.tab.content, hunk.original)
+  if (!range) {
     focusNotice.value = '该处修改建议无法在当前正文中定位，可在右侧 Agent 面板处理。'
     return
   }
   focusNotice.value = ''
   view.dispatch({
-    selection: { anchor: index, head: index + hunk.original.length },
-    effects: EditorView.scrollIntoView(index, { y: 'center' }),
+    selection: { anchor: range.from, head: range.to },
+    effects: EditorView.scrollIntoView(range.from, { y: 'center' }),
   })
   view.focus()
 }
@@ -233,6 +240,10 @@ function destroyEditor() {
 
 async function submitSelection() {
   if (!toolbar.value || !prompt.value.trim()) return
+  if (props.tab.dirty) {
+    error.value = '请先保存文档，再使用选区改写。'
+    return
+  }
   const selection = toolbar.value
   const generation = scopeGeneration
   const assistantId = props.assistantId
@@ -265,6 +276,11 @@ async function submitSelection() {
         if (!isChangePreview(event.data)) {
           error.value = '任务返回了无效的修改预览'
           loading.value = false
+          return
+        }
+        if (event.data.hunks.length === 0) {
+          loading.value = false
+          closeToolbar()
           return
         }
         if (event.data.project_id !== projectId || event.data.document_id !== documentId) return
@@ -325,7 +341,10 @@ watch(() => [props.tab.version, props.tab.content] as const, () => {
     }
     syncingExternalContent = true
     try {
-      view.dispatch({ changes: { from: start, to: oldEnd, insert: newText.slice(start, newEnd) } })
+      view.dispatch({
+        changes: { from: start, to: oldEnd, insert: newText.slice(start, newEnd) },
+        annotations: isolateHistory.of('full'),
+      })
     } finally {
       syncingExternalContent = false
     }
@@ -344,6 +363,8 @@ watch(inlineDiffs, pushInlineDiffs, { deep: true })
       v-if="toolbar"
       v-model="prompt"
       :loading="loading"
+      :disabled="tab.dirty"
+      disabled-reason="请先保存文档，再使用选区改写"
       :style="{ left: `${toolbar.left}px`, top: `${toolbar.top}px` }"
       @submit="submitSelection"
       @cancel="closeToolbar"

@@ -83,13 +83,17 @@ describe('DocumentEditor', () => {
     await flushPromises()
 
     const changeSpec = dispatch.mock.calls
-      .map(([spec]) => spec as { changes?: { from: number; to: number; insert: string } })
+      .map(([spec]) => spec as {
+        changes?: { from: number; to: number; insert: string }
+        annotations?: unknown
+      })
       .find((spec) => spec.changes)
     expect(changeSpec?.changes).toMatchObject({
       from: head.length,
       to: head.length + '旧的中段内容'.length,
       insert: '全新的段落文字',
     })
+    expect(changeSpec?.annotations).toBeDefined()
     // 编辑器实例不得被销毁重建：重建会丢滚动位置、选区与撤销历史。
     expect(wrapper.get('.code-editor .cm-editor').element).toBe(editorElement)
     expect(wrapper.find('.code-editor').text()).toContain('全新的段落文字')
@@ -175,6 +179,42 @@ describe('DocumentEditor', () => {
 
     expect(wrapper.emitted('preview')?.[0][0]).toMatchObject({ change_set_id: 'change-1' })
     expect(wrapper.find('.selection-toolbar').exists()).toBe(false)
+  })
+
+  it('silently closes a selection rewrite that returns an empty preview', async () => {
+    let callback: (event: Record<string, unknown>) => void = () => undefined
+    apiMocks.rewriteSelection.mockResolvedValue({ task_id: 'task-empty' })
+    apiMocks.watchTask.mockImplementation((_assistant, _task, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mount(DocumentEditor, { props: baseProps() })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as EditorVm
+    vm.toolbar = { from: 0, to: 2, left: 0, top: 0, text: '原文' }
+    vm.prompt = '无需修改'
+    await vm.submitSelection()
+
+    callback({ type: 'change_preview', data: { ...change, source: 'selection', hunks: [] } })
+    await flushPromises()
+
+    expect(wrapper.emitted('preview')).toBeUndefined()
+    expect(wrapper.find('.selection-toolbar').exists()).toBe(false)
+    expect(wrapper.find('.editor-error').exists()).toBe(false)
+  })
+
+  it('blocks selection rewrite while the document is dirty', async () => {
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({ tab: { ...tab, dirty: true } }),
+    })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as EditorVm
+    vm.toolbar = { from: 0, to: 2, left: 0, top: 0, text: '原文' }
+    vm.prompt = '改写'
+    await vm.submitSelection()
+
+    expect(apiMocks.rewriteSelection).not.toHaveBeenCalled()
+    expect(wrapper.get('.editor-error').text()).toContain('请先保存')
   })
 
   it('reports an interrupted rewrite stream and keeps the notice after the task ends', async () => {
@@ -349,6 +389,25 @@ describe('DocumentEditor', () => {
     }
     const wrapper = mount(DocumentEditor, {
       props: baseProps({ changes: [applied], tab: { ...tab, content: '完全不同的正文。' } }),
+    })
+    await flushPromises()
+
+    const exposed = (wrapper.vm as unknown as {
+      $: { exposed: { focusHunk: (id: string) => void } }
+    }).$.exposed
+    exposed.focusHunk('hunk-1')
+    await flushPromises()
+
+    expect(wrapper.get('.editor-notice').text()).toContain('无法在当前正文中定位')
+  })
+
+  it('does not focus an ambiguous duplicate hunk fallback', async () => {
+    const applied: ChangeSetPreview = {
+      ...change,
+      hunks: [{ ...change.hunks[0], status: 'applied' as const }],
+    }
+    const wrapper = mount(DocumentEditor, {
+      props: baseProps({ changes: [applied], tab: { ...tab, content: '原文与另一处原文' } }),
     })
     await flushPromises()
 

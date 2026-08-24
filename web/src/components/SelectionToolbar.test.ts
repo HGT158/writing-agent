@@ -43,4 +43,14 @@ describe('SelectionToolbar', () => {
 
     expect(wrapper.emitted('cancel')).toHaveLength(1)
   })
+
+  it('disables rewrite controls and explains that a dirty document must be saved', () => {
+    const wrapper = mount(SelectionToolbar, {
+      props: { loading: false, disabled: true, disabledReason: '请先保存文档' },
+    })
+
+    expect(wrapper.get('input').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.primary-icon').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('请先保存文档')
+  })
 })

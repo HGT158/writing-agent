@@ -53,6 +53,37 @@ def clip_document_content(content: str, max_chars: int) -> tuple[str, bool]:
     return f"{content[:head]}{_TRUNCATION_MARK}{content[-tail:]}", True
 
 
+def clip_content_to_token_budget(content: str, max_tokens: int) -> tuple[str, bool]:
+    """按本模块的 token 估算口径保留首尾，并保证结果不超过上限。"""
+    if estimate_tokens(content) <= max_tokens:
+        return content, False
+    if max_tokens <= 0:
+        return "", True
+    if estimate_tokens(_TRUNCATION_MARK) >= max_tokens:
+        low, high = 0, len(content)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if estimate_tokens(content[:middle]) <= max_tokens:
+                low = middle
+            else:
+                high = middle - 1
+        return content[:low], True
+
+    low, high = 0, len(content)
+    while low < high:
+        kept = (low + high + 1) // 2
+        head = kept * 2 // 3
+        tail = kept - head
+        candidate = f"{content[:head]}{_TRUNCATION_MARK}{content[-tail:] if tail else ''}"
+        if estimate_tokens(candidate) <= max_tokens:
+            low = kept
+        else:
+            high = kept - 1
+    head = low * 2 // 3
+    tail = low - head
+    return f"{content[:head]}{_TRUNCATION_MARK}{content[-tail:] if tail else ''}", True
+
+
 @dataclass(frozen=True)
 class ChatContext:
     """一次聊天要发给模型的历史部分，以及是否产生了新摘要。"""
@@ -84,7 +115,7 @@ def _render_for_summary(messages: Iterable[ChatMessage]) -> str:
     return "\n\n".join(lines)
 
 
-_PER_MESSAGE_CAP_FLOOR = 1000
+_PER_MESSAGE_CAP_FLOOR_TOKENS = 250
 
 
 def _fit_messages_to_budget(
@@ -92,16 +123,23 @@ def _fit_messages_to_budget(
 ) -> tuple[list[dict[str, str]], list[str]]:
     """保留窗口总量兜底（架构 §3.3 v1.21）。
 
-    先按"预算 60%、至少 1000 字符"的单条上限做首尾截断（复用文档截断标记），
+    先按 token 预算计算单条上限并做首尾截断（复用文档截断标记），
     再从最旧开始收缩窗口；最新一条消息单独超预算时同样截断，
     保证 prompt 估算恒不超预算。只影响 prompt，不影响可见历史与服务端精确匹配。
     """
     warnings: list[str] = []
-    cap = max(int(token_budget * 0.6), _PER_MESSAGE_CAP_FLOOR)
+    available = token_budget - system_tokens
+    if available <= 0:
+        warnings.append("system prompt 已达到或超出上下文预算，本轮不注入历史消息")
+        return [], warnings
+    cap = min(
+        max(int(token_budget * 0.6), _PER_MESSAGE_CAP_FLOOR_TOKENS),
+        max(available - _MESSAGE_OVERHEAD_TOKENS, 0),
+    )
     fitted: list[dict[str, str]] = []
     truncated = 0
     for message in messages:
-        body, clipped = clip_document_content(message["content"], cap)
+        body, clipped = clip_content_to_token_budget(message["content"], cap)
         if clipped:
             truncated += 1
             fitted.append({**message, "content": body})
@@ -125,14 +163,15 @@ def _fit_messages_to_budget(
         and system_tokens + estimate_messages_tokens(fitted) > token_budget
         and len(fitted) == 1
     ):
-        allowance = max(
-            token_budget - system_tokens - _MESSAGE_OVERHEAD_TOKENS,
-            _PER_MESSAGE_CAP_FLOOR,
-        )
-        body, clipped = clip_document_content(fitted[0]["content"], allowance)
+        allowance = max(token_budget - system_tokens - _MESSAGE_OVERHEAD_TOKENS, 0)
+        body, clipped = clip_content_to_token_budget(fitted[0]["content"], allowance)
         if clipped:
-            fitted = [{**fitted[0], "content": body}]
+            fitted = [{**fitted[0], "content": body}] if body else []
             warnings.append("最新一条消息超出预算，已按首尾窗口截断后发送")
+    while fitted and system_tokens + estimate_messages_tokens(fitted) > token_budget:
+        fitted = fitted[1:]
+    if system_tokens + estimate_messages_tokens(fitted) > token_budget:
+        fitted = []
     return fitted, warnings
 
 
@@ -159,6 +198,14 @@ async def build_chat_context(
     if token_budget <= 0:
         messages = _as_prompt_messages(history)
         return ChatContext(messages=messages)
+
+    if system_tokens >= token_budget:
+        return ChatContext(
+            messages=[],
+            summary=existing_summary,
+            summary_through_message_id=covered_through,
+            warnings=["system prompt 已达到或超出上下文预算，本轮不注入历史消息"],
+        )
 
     baseline = ([carried] if carried else []) + _as_prompt_messages(pending)
     if system_tokens + estimate_messages_tokens(baseline) <= token_budget:

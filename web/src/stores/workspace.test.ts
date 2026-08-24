@@ -125,4 +125,31 @@ describe('workspace store', () => {
     expect(store.tabs).toHaveLength(0)
     expect(store.assistantId).toBe('writer-b')
   })
+
+  it('keeps the newest open request active when responses finish out of order', async () => {
+    const resolvers = new Map<string, (document: ProjectDocument) => void>()
+    const racingApi = {
+      ...api,
+      getDocument: vi.fn((_assistantId: string, projectId: string, documentId: string) => (
+        new Promise<ProjectDocument>((resolve) => { resolvers.set(documentId, resolve) })
+      )),
+    }
+    const store = createWorkspaceStore(racingApi)
+    await store.switchAssistant('writer-a')
+    const first = store.openDocument('project-a', 'document-a')
+    const second = store.openDocument('project-a', 'document-b')
+    resolvers.get('document-b')?.({
+      document_id: 'document-b', project_id: 'project-a', assistant_id: 'writer-a',
+      relative_path: 'b.md', version: 1, editable: true, content: 'B',
+    })
+    await second
+    resolvers.get('document-a')?.({
+      document_id: 'document-a', project_id: 'project-a', assistant_id: 'writer-a',
+      relative_path: 'a.md', version: 1, editable: true, content: 'A',
+    })
+    await first
+
+    expect(store.tabs).toHaveLength(2)
+    expect(store.activeTab?.document_id).toBe('document-b')
+  })
 })

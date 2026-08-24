@@ -44,6 +44,7 @@ export interface ChangeSetPreview {
   hunks: ChangeHunkPreview[]
   document_version: number
   source: 'selection' | 'chat'
+  chat_session_id?: string | null
   status?: string
 }
 
@@ -140,7 +141,6 @@ export function isChangePreview(value: unknown): value is ChangeSetPreview {
     && typeof item.document_id === 'string'
     && typeof item.document_version === 'number'
     && Array.isArray(item.hunks)
-    && item.hunks.length > 0
     && item.hunks.every((hunk) =>
       typeof hunk.hunk_id === 'string'
       && typeof hunk.original === 'string'
@@ -167,6 +167,7 @@ export function toChangeSetPreview(record: ChangeSetRecord): ChangeSetPreview {
     })),
     document_version: record.base_version,
     source: record.source,
+    chat_session_id: record.session_id,
     status: record.status,
   }
 }

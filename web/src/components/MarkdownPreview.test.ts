@@ -21,4 +21,12 @@ describe('MarkdownPreview', () => {
     expect(indexHtml).toContain("img-src 'self' data:")
     expect(indexHtml).not.toMatch(/img-src[^;]*https:/)
   })
+
+  it('opens sanitized links in an isolated tab', () => {
+    const wrapper = mount(MarkdownPreview, { props: { content: '[文档](https://example.com)' } })
+    const link = wrapper.get('a')
+
+    expect(link.attributes('target')).toBe('_blank')
+    expect(link.attributes('rel')).toBe('noopener noreferrer')
+  })
 })
