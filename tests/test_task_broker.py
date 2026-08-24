@@ -5,6 +5,7 @@ import asyncio
 import json
 
 from agent.events import EventBus
+from api import tasks as task_module
 from api.tasks import TaskBroker
 
 
@@ -48,6 +49,37 @@ def test_task_broker_broadcasts_to_each_subscriber():
     first, second = asyncio.run(scenario())
     assert first["data"]["text"] == "同时到达"
     assert second == first
+
+
+def test_task_broker_emits_named_heartbeat_for_idle_stream(monkeypatch):
+    real_wait_for = task_module.asyncio.wait_for
+
+    async def timeout_idle_queue(awaitable, *, timeout):
+        if timeout == 15:
+            awaitable.close()
+            raise TimeoutError
+        return await real_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(task_module.asyncio, "wait_for", timeout_idle_queue)
+
+    async def scenario():
+        broker = TaskBroker(EventBus())
+        release = asyncio.Event()
+
+        async def operation():
+            await release.wait()
+            return {"ok": True}
+
+        task_id = broker.start("writer-a", operation)
+        stream = broker.stream(task_id, "writer-a")
+        heartbeat = await anext(stream)
+        await stream.aclose()
+        release.set()
+        await broker.records[task_id].handle
+        return heartbeat
+
+    heartbeat = asyncio.run(scenario())
+    assert heartbeat == "event: heartbeat\ndata: {}\n\n"
 
 
 def test_task_broker_marks_cancelled_tasks_terminal():

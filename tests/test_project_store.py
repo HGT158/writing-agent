@@ -378,8 +378,12 @@ def test_memory_store_startup_recovers_project_operation_artifacts(tmp_path):
     root = tmp_path / "assistants" / "writer-a" / "projects" / project.project_id
     purge_staging = root.parent / f".purge-{project.project_id}-crashed"
     os.replace(root, purge_staging)
-    orphan_import = root.parent / ".import-orphan"
+    orphan_import = root.parent / ".import-orphan1"
     orphan_import.mkdir()
+    project_storage._write_project_marker(orphan_import, "writer-a", "orphan1")
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp()
+    os.utime(purge_staging, (old, old))
+    os.utime(orphan_import, (old, old))
     store.close()
 
     recovered_store = MemoryStore(tmp_path)
@@ -390,6 +394,33 @@ def test_memory_store_startup_recovers_project_operation_artifacts(tmp_path):
     assert recovered_store.get_document(
         "writer-a", project.project_id, project.entry_document_id
     ).content == ""
+    recovered_store.close()
+
+
+def test_startup_reconciliation_only_deletes_old_validly_marked_orphans(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.close()
+    projects_root = tmp_path / "assistants" / "writer-a" / "projects"
+    projects_root.mkdir(parents=True, exist_ok=True)
+    old_marked = projects_root / "oldmarked"
+    fresh_marked = projects_root / "freshmarked"
+    unmarked = projects_root / "unmarked"
+    mismatched = projects_root / "mismatched"
+    for directory in (old_marked, fresh_marked, unmarked, mismatched):
+        directory.mkdir()
+    project_storage._write_project_marker(old_marked, "writer-a", "oldmarked")
+    project_storage._write_project_marker(fresh_marked, "writer-a", "freshmarked")
+    project_storage._write_project_marker(mismatched, "writer-b", "mismatched")
+    old = (datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp()
+    for directory in (old_marked, unmarked, mismatched):
+        os.utime(directory, (old, old))
+
+    recovered_store = MemoryStore(tmp_path)
+
+    assert not old_marked.exists()
+    assert fresh_marked.is_dir()
+    assert unmarked.is_dir()
+    assert mismatched.is_dir()
     recovered_store.close()
 
 
@@ -609,6 +640,38 @@ def test_archive_project_rejects_pending_change_set_without_moving_files(tmp_pat
     store.close()
 
 
+@pytest.mark.parametrize("operation", ["archive", "purge"])
+def test_project_archive_and_purge_reject_active_write_intents(
+    tmp_path, monkeypatch, operation
+):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "写入中的项目")
+    root = tmp_path / "assistants" / "writer-a" / "projects" / project.project_id
+    store._conn.execute(
+        "INSERT INTO document_write_intents "
+        "(intent_id, assistant_id, project_id, document_id, change_set_id, hunk_id, "
+        "expected_version, target_version, relative_path, content, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            f"intent-{operation}", "writer-a", project.project_id,
+            project.entry_document_id, None, "", 1, 2, "article.md",
+            "尚未写完", datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    monkeypatch.setattr(project_storage, "_owner_is_live", lambda *_args: True)
+
+    with pytest.raises(ResourceConflictError, match="写入"):
+        getattr(store, f"{operation}_project")("writer-a", project.project_id)
+
+    assert root.is_dir()
+    assert store.list_projects("writer-a") == [project]
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM document_write_intents WHERE project_id = ?",
+        (project.project_id,),
+    ).fetchone()[0] == 1
+    store.close()
+
+
 def test_create_change_set_rejects_mismatched_original_text(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "快照校验")
@@ -663,6 +726,24 @@ def test_purge_project_can_remove_an_archived_project(tmp_path):
     store.purge_project("writer-a", project.project_id)
 
     assert not archived.exists()
+    assert store.list_projects("writer-a") == []
+    store.close()
+
+
+def test_purge_cleanup_is_idempotent_after_commit(tmp_path, monkeypatch):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "幂等清理")
+    real_rmtree = project_storage.shutil.rmtree
+    calls: list[bool] = []
+
+    def record_rmtree(path, *args, **kwargs):
+        calls.append(bool(kwargs.get("ignore_errors")))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(project_storage.shutil, "rmtree", record_rmtree)
+    store.purge_project("writer-a", project.project_id)
+
+    assert calls[-1] is True
     assert store.list_projects("writer-a") == []
     store.close()
 

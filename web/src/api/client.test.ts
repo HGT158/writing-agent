@@ -8,8 +8,17 @@ class FakeEventSource {
   onerror: (() => void) | null = null
   onopen: (() => void) | null = null
   close = vi.fn()
+  listeners = new Map<string, Set<EventListener>>()
   constructor(public readonly url: string) {
     FakeEventSource.instances.push(this)
+  }
+  addEventListener(type: string, listener: EventListener) {
+    const listeners = this.listeners.get(type) ?? new Set<EventListener>()
+    listeners.add(listener)
+    this.listeners.set(type, listeners)
+  }
+  emit(type: string) {
+    for (const listener of this.listeners.get(type) ?? []) listener(new Event(type))
   }
 }
 
@@ -25,6 +34,7 @@ describe('apiClient.watchTask', () => {
   })
   afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllGlobals()
   })
 
   it('scopes SSE by assistant and closes on parse errors without reconnecting', () => {
@@ -145,5 +155,54 @@ describe('apiClient.watchTask', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(FakeEventSource.instances).toHaveLength(1)
     expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('reconnects when an open SSE connection is idle for 60 seconds', async () => {
+    const handle = apiClient.watchTask('writer-a', 'task-1', vi.fn())
+    const first = FakeEventSource.instances[0]
+    first.onopen?.()
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(first.close).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(FakeEventSource.instances).toHaveLength(2)
+    handle.close()
+  })
+
+  it('counts heartbeat events as SSE activity', async () => {
+    const handle = apiClient.watchTask('writer-a', 'task-1', vi.fn())
+    const source = FakeEventSource.instances[0]
+    source.onopen?.()
+
+    await vi.advanceTimersByTimeAsync(59_000)
+    source.emit('heartbeat')
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect(source.close).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(source.close).toHaveBeenCalled()
+    handle.close()
+  })
+})
+
+describe('apiClient request timeout', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('aborts a fetch that does not settle within 60 seconds', async () => {
+    const fetchMock = vi.fn((_path: string, init?: RequestInit) => new Promise<Response>(
+      (_resolve, reject) => init?.signal?.addEventListener(
+        'abort', () => reject(new DOMException('aborted', 'AbortError')),
+      ),
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiClient.listAssistants()
+    const rejected = expect(pending).rejects.toThrow('请求超时')
+    await vi.advanceTimersByTimeAsync(60_000)
+    await rejected
+    expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true)
   })
 })

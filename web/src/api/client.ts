@@ -10,25 +10,34 @@ import type {
 } from '../types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init)
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`
-    try {
-      const body = await response.json() as {
-        detail?: string | { code?: string; message?: string }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const response = await fetch(path, { ...init, signal: controller.signal })
+    if (!response.ok) {
+      let detail = `${response.status} ${response.statusText}`
+      try {
+        const body = await response.json() as {
+          detail?: string | { code?: string; message?: string }
+        }
+        if (typeof body.detail === 'string') {
+          detail = body.detail || detail
+        } else if (body.detail && typeof body.detail === 'object' && body.detail.message) {
+          // 稳定错误码（stale / already_applied / already_rejected / conflict）取可读消息。
+          detail = body.detail.message
+        }
+      } catch {
+        // Non-JSON server errors keep the HTTP status text.
       }
-      if (typeof body.detail === 'string') {
-        detail = body.detail || detail
-      } else if (body.detail && typeof body.detail === 'object' && body.detail.message) {
-        // 稳定错误码（stale / already_applied / already_rejected / conflict）取可读消息。
-        detail = body.detail.message
-      }
-    } catch {
-      // Non-JSON server errors keep the HTTP status text.
+      throw new Error(detail)
     }
-    throw new Error(detail)
+    return await response.json() as T
+  } catch (cause) {
+    if (controller.signal.aborted) throw new Error('请求超时，请稍后重试')
+    throw cause
+  } finally {
+    clearTimeout(timeout)
   }
-  return response.json() as Promise<T>
 }
 
 function parseTaskEvent(value: unknown): TaskEvent {
@@ -47,6 +56,8 @@ export interface TaskStream {
 
 const RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000, 8000]
 const TERMINAL_TASK_EVENTS = new Set(['task_done', 'task_failed'])
+const FETCH_TIMEOUT_MS = 60_000
+const SSE_IDLE_TIMEOUT_MS = 60_000
 
 export const apiClient = {
   listAssistants: () => request<Assistant[]>('/api/assistants'),
@@ -162,11 +173,30 @@ export const apiClient = {
     let gapped = false
     let retries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
+    let idleTimer: ReturnType<typeof setTimeout> | null = null
     let closed = false
 
+    function clearIdleWatchdog() {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer)
+        idleTimer = null
+      }
+    }
+
     function stopSource() {
+      clearIdleWatchdog()
       source?.close()
       source = null
+    }
+
+    function resetIdleWatchdog() {
+      clearIdleWatchdog()
+      if (closed) return
+      idleTimer = setTimeout(() => {
+        if (closed) return
+        stopSource()
+        scheduleReconnect()
+      }, SSE_IDLE_TIMEOUT_MS)
     }
 
     function finish(error?: Error) {
@@ -193,8 +223,13 @@ export const apiClient = {
       if (closed) return
       const cursor = lastSeq >= 0 ? `&after_seq=${lastSeq}` : ''
       source = new EventSource(`/api/tasks/${taskId}/stream?assistant_id=${encodeURIComponent(assistantId)}${cursor}`)
-      source.onopen = () => { retries = 0 }
+      source.onopen = () => {
+        retries = 0
+        resetIdleWatchdog()
+      }
+      source.addEventListener('heartbeat', resetIdleWatchdog)
       source.onmessage = (message) => {
+        resetIdleWatchdog()
         try {
           const event = parseTaskEvent(JSON.parse(message.data))
           if (event.type === 'reconnect_gap') {

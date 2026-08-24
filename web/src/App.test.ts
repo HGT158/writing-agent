@@ -102,6 +102,128 @@ describe('App project creation', () => {
     await flushPromises()
   })
 
+  it('keeps keystrokes entered while save is in flight', async () => {
+    let resolveSave: (value: typeof document) => void = () => undefined
+    apiMocks.saveDocument.mockReturnValue(new Promise((resolve) => { resolveSave = resolve }))
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      workspace: {
+        updateActiveContent: (content: string) => void
+        activeTab: { content: string; dirty: boolean; version: number }
+      }
+      saveActive: () => Promise<void>
+    }
+    vm.workspace.updateActiveContent('点击保存时的正文')
+    const saving = vm.saveActive()
+    vm.workspace.updateActiveContent('请求期间继续输入')
+    resolveSave({ ...document, version: 2, content: '点击保存时的正文' })
+    await saving
+
+    expect(vm.workspace.activeTab.content).toBe('请求期间继续输入')
+    expect(vm.workspace.activeTab.dirty).toBe(true)
+    expect(vm.workspace.activeTab.version).toBe(1)
+    expect(wrapper.get('.global-error').text()).toContain('已保留本地修改')
+  })
+
+  it('keeps in-flight keystrokes when accepting one hunk', async () => {
+    let resolveApply: (value: Record<string, unknown>) => void = () => undefined
+    apiMocks.acceptChangeHunk.mockReturnValue(new Promise((resolve) => { resolveApply = resolve }))
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      workspace: {
+        updateActiveContent: (content: string) => void
+        activeTab: { content: string; dirty: boolean }
+      }
+      applyAgentHunk: (change: typeof chatChange, hunk: (typeof chatChange.hunks)[number]) => Promise<void>
+    }
+    const applying = vm.applyAgentHunk(chatChange, chatChange.hunks[0])
+    vm.workspace.updateActiveContent('接受期间输入')
+    resolveApply({
+      document: { ...document, version: 2, content: 'Agent 修改' },
+      change_set: appliedRecord,
+      hunk: appliedRecord.hunks[0],
+      staled_change_set_ids: [],
+    })
+    await applying
+
+    expect(vm.workspace.activeTab.content).toBe('接受期间输入')
+    expect(vm.workspace.activeTab.dirty).toBe(true)
+  })
+
+  it('keeps in-flight keystrokes when accepting a whole change set', async () => {
+    let resolveApply: (value: Record<string, unknown>) => void = () => undefined
+    apiMocks.acceptAllChangeHunks.mockReturnValue(new Promise((resolve) => { resolveApply = resolve }))
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      workspace: {
+        updateActiveContent: (content: string) => void
+        activeTab: { content: string; dirty: boolean }
+      }
+      applyAgentChangeSet: (change: typeof chatChange) => Promise<void>
+    }
+    const applying = vm.applyAgentChangeSet(chatChange)
+    vm.workspace.updateActiveContent('整组接受期间输入')
+    resolveApply({
+      document: { ...document, version: 2, content: 'Agent 修改' },
+      change_set: appliedRecord,
+      applied_hunk_ids: ['hunk-1'],
+      stopped: null,
+      staled_change_set_ids: [],
+    })
+    await applying
+
+    expect(vm.workspace.activeTab.content).toBe('整组接受期间输入')
+    expect(vm.workspace.activeTab.dirty).toBe(true)
+  })
+
+  it('reuses the same in-flight guard for project-level accept all', async () => {
+    let resolveApply: (value: Record<string, unknown>) => void = () => undefined
+    apiMocks.acceptAllChangeHunks.mockReturnValue(new Promise((resolve) => { resolveApply = resolve }))
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('button[title="新建空白项目"]').trigger('click')
+    await wrapper.get('[role="dialog"] input').setValue('新项目')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      workspace: {
+        updateActiveContent: (content: string) => void
+        activeTab: { content: string; dirty: boolean }
+      }
+      pendingChanges: (typeof chatChange)[]
+      applyAllChanges: (changes: (typeof chatChange)[]) => Promise<void>
+    }
+    vm.pendingChanges = [chatChange]
+    const applying = vm.applyAllChanges([chatChange])
+    vm.workspace.updateActiveContent('批量接受期间输入')
+    resolveApply({
+      document: { ...document, version: 2, content: 'Agent 修改' },
+      change_set: appliedRecord,
+      applied_hunk_ids: ['hunk-1'],
+      stopped: null,
+      staled_change_set_ids: [],
+    })
+    await applying
+
+    expect(vm.workspace.activeTab.content).toBe('批量接受期间输入')
+    expect(vm.workspace.activeTab.dirty).toBe(true)
+  })
+
   it('creates a project through an in-app dialog', async () => {
     const wrapper = mount(App)
     await flushPromises()

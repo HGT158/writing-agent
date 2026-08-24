@@ -521,6 +521,29 @@ def test_recorder_interrupts_running_items_on_failure(tmp_path):
     store.close()
 
 
+def test_interrupt_running_uses_snapshot_when_persist_failure_adds_warning(tmp_path, monkeypatch):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "中断快照项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+    first = recorder.start("tool", "第一个运行项")
+    second = recorder.start("progress", "第二个运行项")
+    real_persist = recorder._persist_item
+
+    def fail_first(item):
+        if item.work_id == first:
+            raise OSError("模拟明细落库失败")
+        real_persist(item)
+
+    monkeypatch.setattr(recorder, "_persist_item", fail_first)
+    recorder.interrupt_running()
+
+    assert recorder._items[first].status == "interrupted"
+    assert recorder._items[second].status == "interrupted"
+    assert any(item.kind == "warning" for item in recorder._items.values())
+    store.close()
+
+
 # ---------- Runtime ----------
 
 def _runtime(tmp_path: Path) -> AgentRuntime:

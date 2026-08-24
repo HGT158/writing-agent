@@ -156,7 +156,9 @@ class TaskBroker:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                 except TimeoutError:
-                    yield ": keepalive\n\n"
+                    # 命名事件既维持代理/浏览器连接，也让前端空闲看门狗可观察；
+                    # 不带业务 data，不进入 TaskEvent/seq 去重链路。
+                    yield "event: heartbeat\ndata: {}\n\n"
                     continue
                 if event["seq"] < cursor:
                     continue

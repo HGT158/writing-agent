@@ -315,7 +315,7 @@ class WorkLogRecorder:
 
     def interrupt_running(self) -> None:
         """可控失败/取消时，运行中的工作项统一以 interrupted 终结落库。"""
-        for item in self._items.values():
+        for item in list(self._items.values()):
             if item.status == "running":
                 self.done(item.work_id, status="interrupted")
 

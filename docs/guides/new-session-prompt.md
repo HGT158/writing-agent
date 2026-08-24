@@ -15,9 +15,9 @@
 项目当前状态：
 
 - 阶段 1 架构、阶段 2 MVP、阶段 3 Memory + Scheduler、阶段 4 写作工作台均已完成。
-- 当前完整测试基线是 **pytest 234/234 全绿**；记忆隔离红线为 10/10；前端测试为 118/118，类型检查通过；最近一次生产构建基线通过。
+- 当前完整测试基线是 **pytest 244/244 全绿**；记忆隔离红线为 10/10；前端测试为 125/125，类型检查通过；最近一次生产构建基线通过。
 - 已实现多助手隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写、项目 Agent 流式编辑和每项目多会话历史）。
-- 架构文档当前版本是 v1.27；v1.26 完成 phase9 四处文档口径对齐，v1.27 完成 phase9 第一梯队与 P3-34：批量接受 dirty 确认、SQLite autocommit、MCP 同名工具保护、工作记录字符串叶子值级脱敏、API Host 白名单、`save_summary` 显式异常。其余 phase9 发现项仍按梯队登记在 backlog，当前没有自动开始的新阶段。
+- 架构文档当前版本是 v1.27；v1.26 完成 phase9 四处文档口径对齐，phase9 第一、第二梯队与 P3-34 均归入 v1.27：第二梯队包含项目目录标记/宽限期安全对账、archive/purge 写意图拒绝、前端回写版本+正文守卫、fetch/SSE 60 秒停滞边界、MCP 三步启动超时与临时 exit stack、work_log 快照迭代。其余审查遗留仍登记在 backlog。
 - 项目使用 Git，默认分支为 `main`，跟踪私有远程 `origin/main`。不要擅自使用 checkout、reset 等破坏性命令，也不要覆盖未提交内容。
 
 必须遵守：

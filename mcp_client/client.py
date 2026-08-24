@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import AsyncExitStack
 from typing import Any, Callable
@@ -15,6 +16,7 @@ from mcp.client.stdio import stdio_client
 from agent.schemas import ToolContext, ToolSpec
 
 logger = logging.getLogger(__name__)
+MCP_STARTUP_STEP_TIMEOUT_SECONDS = 10.0
 
 
 class MCPManager:
@@ -36,14 +38,34 @@ class MCPManager:
                 warn(f"MCP server {name} 启动失败（其工具不注册，不影响启动）：{exc}")
 
     async def _connect(self, name: str, cfg: dict[str, Any]) -> None:
-        assert self._stack is not None
+        if self._stack is None:
+            raise RuntimeError("MCP manager 尚未启动")
         params = StdioServerParameters(command=cfg["command"], args=cfg["args"], env=cfg["env"])
-        read, write = await self._stack.enter_async_context(stdio_client(params))
-        session = await self._stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        listed = await session.list_tools()
-        for tool in listed.tools:
-            self.tools.append(self._wrap(name, session, tool))
+        server_stack = AsyncExitStack()
+        await server_stack.__aenter__()
+        try:
+            async def open_session() -> ClientSession:
+                read, write = await server_stack.enter_async_context(stdio_client(params))
+                return await server_stack.enter_async_context(ClientSession(read, write))
+
+            session = await asyncio.wait_for(
+                open_session(), timeout=MCP_STARTUP_STEP_TIMEOUT_SECONDS
+            )
+            await asyncio.wait_for(
+                session.initialize(), timeout=MCP_STARTUP_STEP_TIMEOUT_SECONDS
+            )
+            listed = await asyncio.wait_for(
+                session.list_tools(), timeout=MCP_STARTUP_STEP_TIMEOUT_SECONDS
+            )
+            wrapped_tools = [self._wrap(name, session, tool) for tool in listed.tools]
+
+            # 只有完整启动成功的 server 才把清理责任晋升给 manager 长命栈；
+            # 失败时 server_stack 仍持有全部回调，会在 finally 即时关闭子进程。
+            promoted = server_stack.pop_all()
+            self._stack.push_async_callback(promoted.aclose)
+            self.tools.extend(wrapped_tools)
+        finally:
+            await server_stack.aclose()
 
     def _wrap(self, server_name: str, session: ClientSession, tool: Any) -> ToolSpec:
         async def handler(args: dict[str, Any], ctx: ToolContext) -> str:

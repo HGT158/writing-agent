@@ -5,6 +5,7 @@ SQL 和受管文件系统操作都留在 memory 层，由 MemoryStore 注入 ass
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -116,6 +117,9 @@ _WRITE_GUARDS: weakref.WeakValueDictionary[tuple[str, str, str], threading.Lock]
 )
 _WRITE_GUARDS_LOCK = threading.Lock()
 _WRITE_INTENT_TTL = timedelta(hours=2)
+_PROJECT_MARKER_NAME = ".writing-agent-project.json"
+_PROJECT_MARKER_FORMAT = 1
+_ARTIFACT_GRACE_PERIOD = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,76 @@ def _project_root(data_dir: Path, assistant_id: str, project_id: str) -> Path:
     return root
 
 
+def _write_project_marker(directory: Path, assistant_id: str, project_id: str) -> None:
+    """写入只供残骸对账使用的内部身份标记；业务元数据仍以 SQLite 为准。"""
+    marker = directory / _PROJECT_MARKER_NAME
+    temporary = marker.with_suffix(f"{marker.suffix}.{uuid.uuid4().hex}.tmp")
+    payload = json.dumps(
+        {
+            "format": _PROJECT_MARKER_FORMAT,
+            "assistant_id": assistant_id,
+            "project_id": project_id,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    try:
+        temporary.write_text(payload, encoding="utf-8")
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _has_valid_project_marker(
+    directory: Path, assistant_id: str, project_id: str
+) -> bool:
+    try:
+        payload = json.loads(
+            (directory / _PROJECT_MARKER_NAME).read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return payload == {
+        "format": _PROJECT_MARKER_FORMAT,
+        "assistant_id": assistant_id,
+        "project_id": project_id,
+    }
+
+
+def _artifact_is_recent(path: Path) -> bool:
+    try:
+        modified_at = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+    except OSError:
+        return True
+    return datetime.now(timezone.utc) - modified_at < _ARTIFACT_GRACE_PERIOD
+
+
+def _backfill_registered_project_marker(
+    data_dir: Path,
+    assistant_id: str,
+    project_id: str,
+    root_path: Path,
+    archived_at: str | None,
+) -> None:
+    """升级旧项目标记；只向数据库可唯一归属且仍位于受管根下的目录写入。"""
+    if not root_path.is_dir():
+        return
+    resolved = root_path.resolve()
+    if archived_at is None:
+        if resolved != _project_root(data_dir, assistant_id, project_id):
+            return
+    else:
+        archive_parent = (
+            data_dir / "archive" / "projects" / assistant_id
+        ).resolve()
+        if resolved.parent != archive_parent or not resolved.name.startswith(
+            f"{project_id}-"
+        ):
+            return
+    if not _has_valid_project_marker(resolved, assistant_id, project_id):
+        _write_project_marker(resolved, assistant_id, project_id)
+
+
 def recover_project_artifacts(conn: sqlite3.Connection, data_dir: Path) -> None:
     """对账项目级崩溃残骸；只处理受管目录中的确定性路径。"""
     rows = conn.execute(
@@ -247,12 +321,23 @@ def recover_project_artifacts(conn: sqlite3.Connection, data_dir: Path) -> None:
         for project_id, assistant_id, root_path, archived_at in rows
     }
 
+    for (assistant_id, project_id), (root_path, archived_at) in projects_by_id.items():
+        _backfill_registered_project_marker(
+            data_dir, assistant_id, project_id, root_path, archived_at
+        )
+
     def reconcile_purge(staging: Path, assistant_id: str) -> None:
         suffix = staging.name.removeprefix(".purge-")
         project_id = suffix.split("-", 1)[0]
+        if (
+            not _ID_RE.fullmatch(project_id)
+            or _artifact_is_recent(staging)
+            or not _has_valid_project_marker(staging, assistant_id, project_id)
+        ):
+            return
         record = projects_by_id.get((assistant_id, project_id))
         if record is None:
-            shutil.rmtree(staging)
+            shutil.rmtree(staging, ignore_errors=True)
             return
         root_path, archived_at = record
         target = (
@@ -273,12 +358,23 @@ def recover_project_artifacts(conn: sqlite3.Connection, data_dir: Path) -> None:
             assistant_id = assistant_root.name
             for child in list(projects_root.iterdir()):
                 if child.name.startswith(".import-"):
-                    shutil.rmtree(child)
+                    project_id = child.name.removeprefix(".import-")
+                    if (
+                        child.is_dir()
+                        and _ID_RE.fullmatch(project_id)
+                        and not _artifact_is_recent(child)
+                        and _has_valid_project_marker(child, assistant_id, project_id)
+                    ):
+                        shutil.rmtree(child, ignore_errors=True)
                 elif child.name.startswith(".purge-"):
                     reconcile_purge(child, assistant_id)
                 elif child.is_dir() and _ID_RE.fullmatch(child.name):
-                    if (assistant_id, child.name) not in projects_by_id:
-                        shutil.rmtree(child)
+                    if (
+                        (assistant_id, child.name) not in projects_by_id
+                        and not _artifact_is_recent(child)
+                        and _has_valid_project_marker(child, assistant_id, child.name)
+                    ):
+                        shutil.rmtree(child, ignore_errors=True)
 
     archive_projects_root = data_dir / "archive" / "projects"
     if archive_projects_root.is_dir():
@@ -770,6 +866,7 @@ def create_project(conn: sqlite3.Connection, data_dir: Path, assistant_id: str, 
     root = _project_root(data_dir, assistant_id, project_id)
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir()
+    _write_project_marker(root, assistant_id, project_id)
     entry = root / "article.md"
     entry.write_text("", encoding="utf-8")
     now = _now()
@@ -938,7 +1035,9 @@ def archive_project(
     conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str
 ) -> Path:
     project = _row_to_project(_project_row(conn, assistant_id, project_id))
+    _recover_write_intents(conn, data_dir, assistant_id, project_id)
     _reject_pending_change_sets(conn, assistant_id, project_id)
+    _reject_project_write_intents(conn, assistant_id, project_id)
     source = _project_root(data_dir, assistant_id, project_id)
     archive_root = data_dir / "archive" / "projects" / assistant_id
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -970,15 +1069,32 @@ def _reject_pending_change_sets(
         raise ResourceConflictError("项目存在待处理 change set，拒绝归档")
 
 
+def _reject_project_write_intents(
+    conn: sqlite3.Connection, assistant_id: str, project_id: str
+) -> None:
+    busy = conn.execute(
+        "SELECT 1 FROM document_write_intents "
+        "WHERE assistant_id = ? AND project_id = ? LIMIT 1",
+        (assistant_id, project_id),
+    ).fetchone()
+    if busy is not None:
+        raise DocumentWriteBusyError("项目内文档正在被写入，稍后再试")
+
+
 def purge_project(
     conn: sqlite3.Connection, data_dir: Path, assistant_id: str, project_id: str
 ) -> None:
     project = _project_row_any(conn, assistant_id, project_id)
     archived = project[5] is not None
     if not archived:
+        _recover_write_intents(conn, data_dir, assistant_id, project_id)
         _reject_pending_change_sets(conn, assistant_id, project_id)
+    _reject_project_write_intents(conn, assistant_id, project_id)
     source = Path(project[3]) if archived else _project_root(data_dir, assistant_id, project_id)
     staging = source.parent / f".purge-{project_id}-{uuid.uuid4().hex}"
+    # rename 会保留原目录 mtime；先刷新时间，确保并发启动对账把该 staging
+    # 视为正在操作中的新近目录，而不会在 purge 提交前擅自移回。
+    os.utime(source, None)
     os.replace(source, staging)
     try:
         conn.execute(
@@ -1023,7 +1139,9 @@ def purge_project(
         conn.rollback()
         os.replace(staging, source)
         raise
-    shutil.rmtree(staging)
+    # 提交后目录已在逻辑上被清除；并发对账或外部清理使 staging 不存在时
+    # 也不应把成功的 purge 误报为失败。
+    shutil.rmtree(staging, ignore_errors=True)
 
 
 def delete_assistant_rows(conn: sqlite3.Connection, assistant_id: str) -> None:
@@ -1092,6 +1210,7 @@ def _import_project(
     entries: list[tuple[str, bool]] = []
     total = 0
     try:
+        _write_project_marker(staging, assistant_id, project_id)
         for index, (raw_path, stream) in enumerate(files, start=1):
             if index > max_files:
                 raise ValueError("导入文件数量超过限制")
@@ -1709,5 +1828,3 @@ def accept_all_change_hunks(
             "stopped": stopped,
             "staled_change_set_ids": staled_union,
         }
-
-

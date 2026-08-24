@@ -32,6 +32,52 @@ const saving = ref(false)
 const documentEditor = ref<InstanceType<typeof DocumentEditor> | null>(null)
 let projectRequestGeneration = 0
 
+interface WritebackBaseline {
+  projectId: string
+  documentId: string
+  version: number
+  fingerprint: string
+}
+
+// 使用正文精确快照作为无碰撞指纹。请求期间只保留一个短生命周期引用，
+// 避免散列碰撞把用户新输入误判成“未变化”。
+function contentFingerprint(content: string) {
+  return content
+}
+
+function captureWritebackBaseline(tab: ProjectDocument & { content?: string }): WritebackBaseline {
+  return {
+    projectId: tab.project_id,
+    documentId: tab.document_id,
+    version: tab.version,
+    fingerprint: contentFingerprint(tab.content || ''),
+  }
+}
+
+function writeBackServerSnapshot(
+  baseline: WritebackBaseline | null,
+  document: ProjectDocument,
+) {
+  if (!baseline) return true
+  const current = workspace.getTab(baseline.projectId, baseline.documentId)
+  if (!current) return true
+  if (
+    current.version !== baseline.version
+    || contentFingerprint(current.content) !== baseline.fingerprint
+  ) {
+    globalError.value = '请求期间文档已继续编辑，已保留本地修改；请确认服务端结果后重试。'
+    statusText.value = '本地修改已保留'
+    return false
+  }
+  workspace.replaceTab({
+    ...current,
+    ...document,
+    content: document.content || '',
+    dirty: false,
+  })
+  return true
+}
+
 /**
  * 待确认 change set（hunk 容器）的唯一状态源：编辑器内联视图与 Agent 面板
  * 卡片都是它的视图；接受/放弃以 hunk 为最小单元，也只经过这里一条通道
@@ -280,6 +326,7 @@ async function imported(projectId: string) {
 async function saveActive() {
   const tab = workspace.activeTab
   if (!tab || !tab.dirty || saving.value) return
+  const baseline = captureWritebackBaseline(tab)
   saving.value = true
   statusText.value = '保存中...'
   globalError.value = ''
@@ -287,8 +334,9 @@ async function saveActive() {
     const document = await apiClient.saveDocument(
       workspace.assistantId, tab.project_id, tab.document_id, tab.content, tab.version,
     )
-    workspace.replaceTab({ ...tab, ...document, content: document.content || '', dirty: false })
-    statusText.value = '已保存'
+    if (writeBackServerSnapshot(baseline, document)) {
+      statusText.value = '已保存'
+    }
     void reconcileChanges(tab.project_id, tab.document_id)
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
@@ -327,6 +375,7 @@ function syncAfterMutation(projectId: string, documentId: string) {
 async function applyAgentHunk(change: ChangeSetPreview, hunk: ChangeHunkPreview) {
   const tab = workspace.getTab(change.project_id, change.document_id)
   if (tab?.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) return
+  const baseline = tab ? captureWritebackBaseline(tab) : null
   markReviewing(change.change_set_id, true)
   try {
     const result = await apiClient.acceptChangeHunk(
@@ -335,12 +384,10 @@ async function applyAgentHunk(change: ChangeSetPreview, hunk: ChangeHunkPreview)
       change.change_set_id,
       hunk.hunk_id,
     )
-    if (tab) {
-      workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
-    }
+    const wroteBack = writeBackServerSnapshot(baseline, result.document)
     upsertChangeSet(toChangeSetPreview(result.change_set))
     markChangeSetsStaled(result.staled_change_set_ids)
-    statusText.value = '已应用修改'
+    if (wroteBack) statusText.value = '已应用修改'
   } catch (error) {
     globalError.value = error instanceof Error ? error.message : String(error)
     syncAfterMutation(change.project_id, change.document_id)
@@ -371,6 +418,7 @@ async function rejectAgentHunk(change: ChangeSetPreview, hunk: ChangeHunkPreview
 async function applyAgentChangeSet(change: ChangeSetPreview) {
   const tab = workspace.getTab(change.project_id, change.document_id)
   if (tab?.dirty && !window.confirm('当前文档有未保存修改，接受 AI 修改会丢弃这些修改。继续吗？')) return
+  const baseline = tab ? captureWritebackBaseline(tab) : null
   markReviewing(change.change_set_id, true)
   try {
     const result = await apiClient.acceptAllChangeHunks(
@@ -378,15 +426,13 @@ async function applyAgentChangeSet(change: ChangeSetPreview) {
       change.project_id,
       change.change_set_id,
     )
-    if (tab) {
-      workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
-    }
+    const wroteBack = writeBackServerSnapshot(baseline, result.document)
     upsertChangeSet(toChangeSetPreview(result.change_set))
     markChangeSetsStaled(result.staled_change_set_ids)
     if (result.stopped) {
       // 报告第 P3-3 项：原文案删掉计数变量后残留"第 部分修改建议已失效"。
       globalError.value = '部分修改建议已失效或无法应用，其余建议请逐处确认。'
-    } else {
+    } else if (wroteBack) {
       statusText.value = '已应用全部修改'
     }
   } catch (error) {
@@ -453,15 +499,14 @@ async function applyAllChanges(changes: ChangeSetPreview[]) {
     let ok = true
     markReviewing(change.change_set_id, true)
     try {
+      const tab = workspace.getTab(change.project_id, change.document_id)
+      const baseline = tab ? captureWritebackBaseline(tab) : null
       const result = await apiClient.acceptAllChangeHunks(
         workspace.assistantId,
         change.project_id,
         change.change_set_id,
       )
-      const tab = workspace.getTab(change.project_id, change.document_id)
-      if (tab) {
-        workspace.replaceTab({ ...tab, ...result.document, content: result.document.content || '', dirty: false })
-      }
+      if (!writeBackServerSnapshot(baseline, result.document)) ok = false
       upsertChangeSet(toChangeSetPreview(result.change_set))
       markChangeSetsStaled(result.staled_change_set_ids)
       if (result.stopped) ok = false

@@ -248,3 +248,16 @@ TCP 黑洞（休眠恢复、VPN 掉线、NAT 超时）时 EventSource 不触发 
 - **P3-34 已闭环**：`save_summary` 写后回读为空时显式抛 `RuntimeError`，不再依赖 `python -O` 可移除的 assert；用例注入回读空值验证异常分支。
 
 处理过程先完成基线门槛（Python `228/228`、前端 `117/117`、`vue-tsc` 通过），再实施并完成针对性验证。最终全量回归为 Python `234/234`、前端 `118/118`，`npm run typecheck` 通过；架构单一事实来源已升为 v1.27，backlog 已将本批 6 项移入已完成区。
+
+## 第二梯队处理结果记录（2026-08-24，归入 v1.27）
+
+本节记录第二梯队加固闭环；上文审查时点与第一梯队历史数字保持不变。
+
+- **P1-2 已闭环**：正式项目与 import staging 写入 assistant/project 内部身份标记；启动对账仅删除超过五分钟宽限期且标记完整、身份与路径一致的目录，无标记、损坏标记和新近目录全部保留。purge 移动前刷新目录时间，提交后以 `rmtree(staging, ignore_errors=True)` 幂等收尾。用例覆盖 purge/import 崩溃恢复、合法旧残骸删除及新近/无标记/身份不符目录保留。
+- **P2-17 已闭环**：archive/purge 对活动项目先沿用既有写意图恢复，再在目录移动前拒绝仍活跃的项目级 `document_write_intents`；归档与物理清除两条路径均验证冲突时目录、项目记录和意图行不变。
+- **P1-5 已闭环**：`saveActive`、`applyAgentHunk`、`applyAgentChangeSet` 与 `applyAllChanges` 共用同一响应回写守卫；请求发起时捕获标签版本和正文精确快照，响应时任一变化即保留本地正文/dirty/version 并提示冲突，不再用服务端快照抹掉在途击键。四条入口均有前端用例。
+- **P1-6 已闭环**：普通 fetch 的请求与响应体阶段统一受 60 秒 AbortController 超时；SSE `onopen` 后启动 60 秒空闲看门狗，数据帧和服务端每 15 秒命名 heartbeat 都刷新计时，超时主动关闭并沿用既有游标、去重和退避重连。客户端超时/空闲/heartbeat 及服务端 heartbeat 帧均有用例。
+- **P1-8 已闭环**：MCP stdio+session 建立、initialize、list_tools 三步分别 `asyncio.wait_for(10s)`；每个 server 使用独立临时 `AsyncExitStack`，失败/超时即时关闭，只有成功 session 的清理回调晋升到 manager 长命栈。用例覆盖三步超时清理与成功连接延迟到 manager.close 清理。
+- **P2-1 已闭环**：`interrupt_running()` 改为遍历工作项快照；用例模拟首个 interrupted 明细落库失败并插入 warning，验证后续运行项仍全部终结。
+
+处理过程先完成当前主干基线门槛（Python `234/234`、前端 `118/118`、`vue-tsc` 通过），再实施并完成针对性验证（Python 相关模块 `77 passed`、App/API 客户端 `34 passed`）。最终全量回归为 Python `244/244`、前端 `125/125`，`npm run typecheck` 通过；本批继续归入架构 v1.27，backlog 已将本批 6 项移入已完成区。
