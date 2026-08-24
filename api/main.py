@@ -1,7 +1,9 @@
 """FastAPI 应用工厂：本地单用户接口、SSE 与静态前端托管。"""
 from __future__ import annotations
 
+import asyncio
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -97,10 +99,18 @@ def create_app(
     app.state.runtime = runtime
     app.state.tasks = broker
 
-    def validate_task_submission(assistant_id: str) -> None:
+    def reserve_task_submission(assistant_id: str) -> str:
         runtime.assistants.get(assistant_id)
-        if runtime.store.is_locked(assistant_id):
-            raise AssistantBusyError(assistant_id, "已有任务运行中")
+        task_id = uuid.uuid4().hex[:16]
+        runtime.store.acquire_lock(assistant_id, task_id)
+        return task_id
+
+    def start_reserved_task(assistant_id: str, task_id: str, operation) -> str:
+        try:
+            return broker.start(assistant_id, operation, task_id=task_id)
+        except Exception:
+            runtime.store.release_lock(assistant_id, task_id)
+            raise
 
     @app.get("/api/assistants")
     async def list_assistants():
@@ -112,7 +122,9 @@ def create_app(
     @app.post("/api/assistants", status_code=status.HTTP_201_CREATED)
     async def create_assistant(body: AssistantCreate):
         try:
-            item = runtime.assistants.create(body.id, body.name, body.description)
+            item = await asyncio.to_thread(
+                runtime.assistants.create, body.id, body.name, body.description
+            )
             return {"id": item.id, "name": item.name, "description": item.description}
         except Exception as exc:
             _raise_http(exc)
@@ -120,7 +132,9 @@ def create_app(
     @app.delete("/api/assistants/{assistant_id}")
     async def delete_assistant(assistant_id: str, purge: bool = Query(False)):
         try:
-            archived = runtime.assistants.delete(assistant_id, purge=purge)
+            archived = await asyncio.to_thread(
+                runtime.assistants.delete, assistant_id, purge
+            )
             return {"archived_path": str(archived), "purged": purge}
         except Exception as exc:
             _raise_http(exc)
@@ -128,15 +142,21 @@ def create_app(
     @app.post("/api/tasks", status_code=status.HTTP_202_ACCEPTED)
     async def start_task(body: AgentTaskRequest):
         try:
-            validate_task_submission(body.assistant_id)
+            task_id = reserve_task_submission(body.assistant_id)
         except Exception as exc:
             _raise_http(exc)
 
         async def operation():
-            result = await runtime.run(body.assistant_id, body.task, body.session_id)
-            return dict(result)
+            try:
+                result = await runtime.run(
+                    body.assistant_id, body.task, body.session_id,
+                    lock_task_id=task_id, lock_already_held=True,
+                )
+                return dict(result)
+            finally:
+                runtime.store.release_lock(body.assistant_id, task_id)
 
-        return {"task_id": broker.start(body.assistant_id, operation)}
+        return {"task_id": start_reserved_task(body.assistant_id, task_id, operation)}
 
     @app.get("/api/articles")
     async def list_articles(assistant_id: str = Query(...)):
@@ -282,19 +302,23 @@ def create_app(
     )
     async def selection_rewrite(project_id: str, document_id: str, body: SelectionRewriteRequest):
         try:
-            validate_task_submission(body.assistant_id)
+            task_id = reserve_task_submission(body.assistant_id)
         except Exception as exc:
             _raise_http(exc)
 
         async def operation():
-            change = await runtime.rewrite_selection(
-                body.assistant_id, project_id, document_id,
-                start=body.start, end=body.end, selected_text=body.selected_text,
-                instruction=body.instruction, document_version=body.document_version,
-            )
-            return {"change_set_id": change.change_set_id}
+            try:
+                change = await runtime.rewrite_selection(
+                    body.assistant_id, project_id, document_id,
+                    start=body.start, end=body.end, selected_text=body.selected_text,
+                    instruction=body.instruction, document_version=body.document_version,
+                    lock_task_id=task_id, lock_already_held=True,
+                )
+                return {"change_set_id": change.change_set_id}
+            finally:
+                runtime.store.release_lock(body.assistant_id, task_id)
 
-        return {"task_id": broker.start(body.assistant_id, operation)}
+        return {"task_id": start_reserved_task(body.assistant_id, task_id, operation)}
 
     @app.post(
         "/api/projects/{project_id}/change-sets/{change_set_id}/hunks/{hunk_id}/accept"
@@ -363,10 +387,13 @@ def create_app(
 
     @app.post("/api/projects/{project_id}/agent/messages", status_code=status.HTTP_202_ACCEPTED)
     async def project_chat(project_id: str, body: ProjectChatRequest):
+        task_id: str | None = None
+        created_chat_session = False
+        chat_session_id: str | None = None
         try:
             if not body.message.strip():
                 raise ValueError("消息不能为空")
-            validate_task_submission(body.assistant_id)
+            task_id = reserve_task_submission(body.assistant_id)
             runtime.store.get_project_tree(body.assistant_id, project_id)
             if body.current_document_id is not None:
                 runtime.store.get_document(
@@ -378,26 +405,39 @@ def create_app(
                     body.assistant_id, project_id
                 ).chat_session_id
             else:
-                created_chat_session = False
                 runtime.store.get_project_chat_session(
                     body.assistant_id, project_id, body.chat_session_id
                 )
                 chat_session_id = body.chat_session_id
         except Exception as exc:
+            if task_id is not None:
+                runtime.store.release_lock(body.assistant_id, task_id)
+            if created_chat_session and chat_session_id is not None:
+                try:
+                    runtime.store.delete_empty_project_chat_session(
+                        body.assistant_id, project_id, chat_session_id
+                    )
+                except Exception:
+                    logger.warning("清理未受理的空项目聊天会话失败", exc_info=True)
             _raise_http(exc)
 
         async def operation():
+            if chat_session_id is None or task_id is None:
+                raise RuntimeError("任务占位或聊天会话未初始化")
             try:
                 result = await runtime.chat_project(
                     body.assistant_id, project_id, body.message,
                     chat_session_id=chat_session_id,
                     current_document_id=body.current_document_id,
+                    lock_task_id=task_id,
+                    lock_already_held=True,
                 )
                 return {
                     "reply": result.reply,
                     "change_set_ids": [item.change_set_id for item in result.changes],
                 }
             finally:
+                runtime.store.release_lock(body.assistant_id, task_id)
                 if created_chat_session:
                     try:
                         runtime.store.delete_empty_project_chat_session(
@@ -413,7 +453,7 @@ def create_app(
                         )
 
         return {
-            "task_id": broker.start(body.assistant_id, operation),
+            "task_id": start_reserved_task(body.assistant_id, task_id, operation),
             "chat_session_id": chat_session_id,
         }
 

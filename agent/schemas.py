@@ -55,7 +55,7 @@ class ToolSpec:
     args_schema: dict[str, Any]
     handler: ToolHandler
     source: str = "builtin"  # "builtin" 或 "mcp:<server>"
-    idempotent: bool = True  # 非幂等工具（如 finalize_article）失败后不重试
+    idempotent: bool = True  # 非幂等工具（如 finalize_article/MCP）须显式关闭重试
     captures_source: bool = False  # 结果全文是否入库 sources 表（fetch 类工具显式标记）
 
     async def call(self, args: dict[str, Any], ctx: ToolContext) -> str:

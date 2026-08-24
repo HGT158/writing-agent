@@ -1,6 +1,7 @@
 """阶段 4 助手、普通任务与完成态文章 API。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -32,6 +33,22 @@ def _app(tmp_path: Path, runtime: AgentRuntime | None = None):
     from api.main import create_app
 
     return create_app(settings=_settings(tmp_path), runtime=runtime, start_runtime=False)
+
+
+def test_task_submission_reserves_lock_before_returning_202(tmp_path):
+    runtime = AgentRuntime(_settings(tmp_path))
+
+    async def slow_run(*_args, **_kwargs):
+        await asyncio.sleep(0.2)
+        return {"status": "done"}
+
+    runtime.run = AsyncMock(side_effect=slow_run)
+    with TestClient(_app(tmp_path, runtime)) as client:
+        first = client.post("/api/tasks", json={"assistant_id": "default", "task": "一"})
+        second = client.post("/api/tasks", json={"assistant_id": "default", "task": "二"})
+        assert first.status_code == 202
+        assert second.status_code == 409
+        _wait_task(client, first.json()["task_id"])
 
 
 def _wait_task(client: TestClient, task_id: str, assistant_id: str = "default") -> dict:
@@ -98,7 +115,11 @@ def test_general_agent_task_api_uses_runtime_and_task_broker(tmp_path):
 
     assert finished["status"] == "done"
     assert finished["result"]["output_path"] == "article.md"
-    runtime.run.assert_awaited_once_with("default", "写一篇短文", "session-1")
+    runtime.run.assert_awaited_once()
+    args, kwargs = runtime.run.await_args
+    assert args == ("default", "写一篇短文", "session-1")
+    assert kwargs["lock_already_held"] is True
+    assert kwargs["lock_task_id"] == started.json()["task_id"]
 
 
 def test_general_task_rejects_unknown_or_busy_assistant_before_enqueue(tmp_path):
@@ -173,7 +194,7 @@ def _sse_frames(text: str) -> list[tuple[int | None, dict]]:
 def test_task_stream_resumes_from_explicit_or_header_cursor(tmp_path):
     runtime = AgentRuntime(_settings(tmp_path))
 
-    async def emit_and_finish(assistant_id, task, session_id=None):
+    async def emit_and_finish(assistant_id, task, session_id=None, **_kwargs):
         for index in range(3):
             runtime.bus.emit("token", text=f"t{index}")
         return {"status": "done"}

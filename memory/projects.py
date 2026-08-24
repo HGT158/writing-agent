@@ -118,6 +118,7 @@ _WRITE_GUARDS: weakref.WeakValueDictionary[tuple[str, str, str], threading.Lock]
 )
 _WRITE_GUARDS_LOCK = threading.Lock()
 _WRITE_INTENT_TTL = timedelta(hours=2)
+_SAME_PROCESS_WRITE_INTENT_GRACE = timedelta(seconds=30)
 _PROJECT_MARKER_NAME = ".writing-agent-project.json"
 _PROJECT_MARKER_FORMAT = 1
 _ARTIFACT_GRACE_PERIOD = timedelta(minutes=5)
@@ -576,14 +577,14 @@ def _process_started_at(pid: int) -> float:
         return 0.0
 
 
-def _timestamp_expired(value: str) -> bool:
+def _timestamp_expired(value: str, ttl: timedelta = _WRITE_INTENT_TTL) -> bool:
     try:
         timestamp = datetime.fromisoformat(value)
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return True
-    return datetime.now(timezone.utc) - timestamp > _WRITE_INTENT_TTL
+    return datetime.now(timezone.utc) - timestamp > ttl
 
 
 def _owner_is_live(
@@ -592,7 +593,13 @@ def _owner_is_live(
     claimed_at: str,
     created_at: str,
 ) -> bool:
-    if not owner_pid or owner_pid == os.getpid() or not psutil.pid_exists(owner_pid):
+    if not owner_pid:
+        return False
+    if owner_pid == os.getpid():
+        return not _timestamp_expired(
+            claimed_at or created_at, _SAME_PROCESS_WRITE_INTENT_GRACE
+        )
+    if not psutil.pid_exists(owner_pid):
         return False
     if owner_started_at:
         actual_started_at = _process_started_at(owner_pid)

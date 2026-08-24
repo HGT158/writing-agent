@@ -120,6 +120,14 @@ class MemoryStore:
         with self._lock:
             short_term.create_session(self._conn, assistant_id, session_id, task)
 
+    def validate_session_owner(self, assistant_id: str, session_id: str) -> None:
+        with self._lock:
+            owners = short_term.session_assistant_ids(self._conn, session_id)
+        if not owners:
+            raise ValueError("resume session 不存在")
+        if assistant_id not in owners:
+            raise ValueError("resume session 不属于当前助手")
+
     def add_message(self, assistant_id: str, session_id: str, role: str, content: str) -> None:
         with self._lock:
             short_term.add_message(self._conn, assistant_id, session_id, role, content[:8000])

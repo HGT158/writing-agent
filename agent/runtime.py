@@ -50,6 +50,7 @@ class AgentRuntime:
         self.llm = AsyncOpenAI(
             api_key=settings.openai_api_key or "missing",
             base_url=settings.openai_base_url,
+            timeout=settings.llm_timeout_seconds,
         )
 
     async def start(self, *, enable_scheduler: bool = False) -> None:
@@ -87,16 +88,22 @@ class AgentRuntime:
             await self.mcp.close()
         self.store.close()
 
-    async def run(self, assistant_id: str, task: str, session_id: str | None = None) -> AgentState:
+    async def run(
+        self, assistant_id: str, task: str, session_id: str | None = None, *,
+        lock_task_id: str | None = None, lock_already_held: bool = False,
+    ) -> AgentState:
         if not self.settings.openai_api_key:
             raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
 
         assistant = self.assistants.get(assistant_id)  # KeyError 内含可用助手列表
+        if session_id is not None:
+            self.store.validate_session_owner(assistant_id, session_id)
         session_id = session_id or uuid.uuid4().hex[:12]
-        task_id = uuid.uuid4().hex[:12]
+        task_id = lock_task_id or uuid.uuid4().hex[:12]
 
         # 跨进程运行锁（架构 §4.6）：冲突抛 AssistantBusyError
-        self.store.acquire_lock(assistant_id, task_id)
+        if not lock_already_held:
+            self.store.acquire_lock(assistant_id, task_id)
         try:
             self.store.create_session(assistant_id, session_id, task)
             memory_context = self.store.recall(assistant_id, task)
@@ -138,6 +145,8 @@ class AgentRuntime:
                         "recursion_limit": self.settings.max_steps * 6 + 20,
                     },
                 )
+            if final.get("status") == "failed":
+                raise RuntimeError(final.get("finish_note") or "任务失败")
             return final
         finally:
             self.store.release_lock(assistant_id, task_id)  # 只释放自己持有的锁（审查 P1-3）
@@ -153,14 +162,17 @@ class AgentRuntime:
         selected_text: str,
         instruction: str,
         document_version: int,
+        lock_task_id: str | None = None,
+        lock_already_held: bool = False,
     ):
         """生成待确认的选区 change set，不直接修改项目文件。"""
         if not self.settings.openai_api_key:
             raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
         assistant = self.assistants.get(assistant_id)
-        task_id = uuid.uuid4().hex[:12]
+        task_id = lock_task_id or uuid.uuid4().hex[:12]
         session_id = uuid.uuid4().hex[:12]
-        self.store.acquire_lock(assistant_id, task_id)
+        if not lock_already_held:
+            self.store.acquire_lock(assistant_id, task_id)
         try:
             document = self.store.get_document(assistant_id, project_id, document_id)
             if document.version != document_version:
@@ -223,8 +235,7 @@ class AgentRuntime:
                 source="selection",
             )
             return change
-        except Exception as exc:
-            self.bus.emit("failed", reason=str(exc))
+        except Exception:
             raise
         finally:
             self.store.release_lock(assistant_id, task_id)
@@ -262,14 +273,19 @@ class AgentRuntime:
         *,
         chat_session_id: str,
         current_document_id: str | None = None,
+        lock_task_id: str | None = None,
+        lock_already_held: bool = False,
     ) -> ProjectChatResult:
         """项目 Agent 对话；文件修改只生成待确认 change set。"""
         if not self.settings.openai_api_key:
             raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
         assistant = self.assistants.get(assistant_id)
-        lock_task_id = uuid.uuid4().hex[:12]
-        self.store.acquire_lock(assistant_id, lock_task_id)
+        lock_task_id = lock_task_id or uuid.uuid4().hex[:12]
+        if not lock_already_held:
+            self.store.acquire_lock(assistant_id, lock_task_id)
         recorder: WorkLogRecorder | None = None
+        user_record = None
+        assistant_persisted = False
         try:
             if not message.strip():
                 raise ValueError("消息不能为空")
@@ -390,6 +406,7 @@ class AgentRuntime:
                 messages,
                 tools=tool_schema,
                 on_text=emit_text,
+                total_timeout_seconds=self.settings.llm_stream_timeout_seconds,
             )
             if not first.tool_calls:
                 reply = "".join(visible)
@@ -403,6 +420,7 @@ class AgentRuntime:
                     "assistant",
                     reply,
                 )
+                assistant_persisted = True
                 recorder.finish_task(
                     "succeeded", title=message.strip()[:80], detail="无工具调用"
                 )
@@ -512,6 +530,7 @@ class AgentRuntime:
                 self.settings.model_name,
                 messages,
                 on_text=emit_followup,
+                total_timeout_seconds=self.settings.llm_stream_timeout_seconds,
             )
             reply = "".join(visible)
             if not reply.strip():
@@ -524,6 +543,7 @@ class AgentRuntime:
                 "assistant",
                 reply,
             )
+            assistant_persisted = True
             recorder.finish_task(
                 "succeeded",
                 title=message.strip()[:80],
@@ -542,6 +562,14 @@ class AgentRuntime:
                         "工作记录中断终态写入失败（assistant=%s session=%s）",
                         assistant_id, chat_session_id, exc_info=True,
                     )
+            if user_record is not None and not assistant_persisted:
+                try:
+                    self.store.add_project_chat_message(
+                        assistant_id, project_id, chat_session_id,
+                        "assistant", "[interrupted] 本轮任务已取消。",
+                    )
+                except Exception:
+                    logger.warning("写入取消轮次占位失败", exc_info=True)
             raise
         except Exception as exc:
             if recorder is not None:
@@ -553,7 +581,14 @@ class AgentRuntime:
                         "工作记录失败终态写入失败（assistant=%s session=%s）",
                         assistant_id, chat_session_id, exc_info=True,
                     )
-            self.bus.emit("failed", reason=str(exc))
+            if user_record is not None and not assistant_persisted:
+                try:
+                    self.store.add_project_chat_message(
+                        assistant_id, project_id, chat_session_id,
+                        "assistant", "[interrupted] 本轮处理失败，请重试。",
+                    )
+                except Exception:
+                    logger.warning("写入失败轮次占位失败", exc_info=True)
             raise
         finally:
             self.store.release_lock(assistant_id, lock_task_id)

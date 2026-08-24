@@ -268,6 +268,15 @@ def test_save_document_recovers_committed_write_intent_after_interruption(tmp_pa
         )
     store.close()
 
+    # 同进程恢复保留 claimed_at 短宽限，模拟宽限已过后再启动恢复。
+    conn = sqlite3.connect(tmp_path / "app.db")
+    conn.execute(
+        "UPDATE document_write_intents SET claimed_at = ? WHERE project_id = ?",
+        ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), project.project_id),
+    )
+    conn.commit()
+    conn.close()
+
     recovered_store = MemoryStore(tmp_path)
     recovered = recovered_store.get_document("writer-a", project.project_id, document_id)
     recovered_store.close()
@@ -622,6 +631,28 @@ def test_write_intent_insert_race_maps_to_resource_conflict(tmp_path, monkeypatc
         store.save_document(
             "writer-a", project.project_id, document_id, "我的正文", expected_version=1,
         )
+    store.close()
+
+
+def test_same_process_recent_write_intent_is_not_recovered(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "同进程写入")
+    document_id = project.entry_document_id
+    now = datetime.now(timezone.utc).isoformat()
+    store._conn.execute(
+        "INSERT INTO document_write_intents "
+        "(intent_id, assistant_id, project_id, document_id, expected_version, "
+        "target_version, relative_path, content, owner_pid, claimed_at, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            "same-process", "writer-a", project.project_id, document_id, 1, 2,
+            "article.md", "正在写", os.getpid(), now, now,
+        ),
+    )
+
+    with pytest.raises(ResourceConflictError, match="写入"):
+        store.get_document("writer-a", project.project_id, document_id)
+
     store.close()
 
 

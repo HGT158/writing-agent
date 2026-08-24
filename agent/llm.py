@@ -1,6 +1,7 @@
 """LLM 调用辅助（审查 P1-8）：json_object 模式不可用时自动回退纯文本 + 宽容解析。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -59,11 +60,13 @@ async def stream_chat_turn(
     tools: list[dict[str, Any]] | None = None,
     on_text: Callable[[str], None] | None = None,
     max_tool_argument_bytes: int = 1024 * 1024,
+    total_timeout_seconds: float = 300.0,
+    temperature: float = 0.3,
 ) -> StreamedTurn:
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "temperature": 0.3,
+        "temperature": temperature,
         "stream": True,
     }
     if tools is not None:
@@ -79,32 +82,33 @@ async def stream_chat_turn(
     calls: dict[int, dict[str, str]] = {}
     argument_sizes: dict[int, int] = {}
     try:
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            content = delta.content
-            if content:
-                text_parts.append(content)
-                if on_text is not None:
-                    on_text(content)
-            for item in delta.tool_calls or []:
-                current = calls.setdefault(
-                    item.index,
-                    {"id": "", "name": "", "arguments": ""},
-                )
-                if item.id:
-                    current["id"] = item.id
-                if item.function and item.function.name:
-                    current["name"] = item.function.name
-                if item.function and item.function.arguments:
-                    fragment = item.function.arguments
-                    current["arguments"] += fragment
-                    argument_sizes[item.index] = argument_sizes.get(item.index, 0) + len(
-                        fragment.encode("utf-8")
+        async with asyncio.timeout(total_timeout_seconds):
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                content = delta.content
+                if content:
+                    text_parts.append(content)
+                    if on_text is not None:
+                        on_text(content)
+                for item in getattr(delta, "tool_calls", None) or []:
+                    current = calls.setdefault(
+                        item.index,
+                        {"id": "", "name": "", "arguments": ""},
                     )
-                    if argument_sizes[item.index] > max_tool_argument_bytes:
-                        raise RuntimeError("工具参数超过 1 MiB 上限")
+                    if item.id:
+                        current["id"] = item.id
+                    if item.function and item.function.name:
+                        current["name"] = item.function.name
+                    if item.function and item.function.arguments:
+                        fragment = item.function.arguments
+                        current["arguments"] += fragment
+                        argument_sizes[item.index] = argument_sizes.get(item.index, 0) + len(
+                            fragment.encode("utf-8")
+                        )
+                        if argument_sizes[item.index] > max_tool_argument_bytes:
+                            raise RuntimeError("工具参数超过 1 MiB 上限")
     finally:
         close = getattr(stream, "aclose", None)
         if close is not None:

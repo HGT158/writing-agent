@@ -183,6 +183,14 @@ def create_session(conn: sqlite3.Connection, assistant_id: str, session_id: str,
     conn.commit()
 
 
+def session_assistant_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
+    return {
+        row[0] for row in conn.execute(
+            "SELECT assistant_id FROM sessions WHERE session_id = ?", (session_id,)
+        )
+    }
+
+
 def add_message(conn: sqlite3.Connection, assistant_id: str, session_id: str, role: str, content: str) -> None:
     conn.execute(
         "INSERT INTO messages (assistant_id, session_id, role, content, created_at) VALUES (?,?,?,?,?)",

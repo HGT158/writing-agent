@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -21,6 +23,8 @@ from pydantic import ValidationError
 from .events import current_task_id
 from .project_editing import ProjectEditBatch, edit_documents_payload, hunk_count
 from .schemas import ToolContext, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 
 def _safe_resolve(data_dir: Path, rel_path: str) -> Path:
@@ -65,27 +69,41 @@ def finalize_article_impl(
         path = out_dir / f"{slug}-{ts}-{counter}.md"
         counter += 1
     path.write_text(content, encoding="utf-8")
-    store.memorize(ctx.assistant_id, "article", f"{title} | {path}", session_id=ctx.session_id)
+    try:
+        store.memorize(
+            ctx.assistant_id, "article", f"{title} | {path}", session_id=ctx.session_id
+        )
+    except Exception:
+        logger.warning("文章已定稿但记忆登记失败：%s", path, exc_info=True)
     return path
 
 
 def make_builtin_tools(data_dir: Path, store: MemoryStore) -> list[ToolSpec]:
 
     async def save_markdown(args: dict[str, Any], ctx: ToolContext) -> str:
-        path = _safe_resolve(Path(ctx.data_dir), args["path"])
-        _reject_managed_assistant_write(Path(ctx.data_dir), path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(args["content"], encoding="utf-8")
+        def write() -> Path:
+            path = _safe_resolve(Path(ctx.data_dir), args["path"])
+            _reject_managed_assistant_write(Path(ctx.data_dir), path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(args["content"], encoding="utf-8")
+            return path
+
+        path = await asyncio.to_thread(write)
         return f"已保存：{path}"
 
     async def read_file(args: dict[str, Any], ctx: ToolContext) -> str:
-        path = _safe_resolve(Path(ctx.data_dir), args["path"])
-        if not path.exists():
-            raise FileNotFoundError(f"文件不存在：{path}")
-        return path.read_text(encoding="utf-8")[:2000]
+        def read() -> str:
+            path = _safe_resolve(Path(ctx.data_dir), args["path"])
+            if not path.exists():
+                raise FileNotFoundError(f"文件不存在：{path}")
+            return path.read_text(encoding="utf-8")[:2000]
+
+        return await asyncio.to_thread(read)
 
     async def finalize_article(args: dict[str, Any], ctx: ToolContext) -> str:
-        path = finalize_article_impl(store, ctx, args["title"], args["content"])
+        path = await asyncio.to_thread(
+            finalize_article_impl, store, ctx, args["title"], args["content"]
+        )
         return f"文章已定稿：{path}"
 
     return [
@@ -138,7 +156,8 @@ def make_project_edit_tool(store: MemoryStore, project_id: str) -> ToolSpec:
         except ValidationError as exc:
             raise ValueError("修改建议参数无效，请重试") from exc
         task_id = current_task_id() or f"edit-{uuid.uuid4().hex[:12]}"
-        changes = store.create_change_set_hunks(
+        changes = await asyncio.to_thread(
+            store.create_change_set_hunks,
             ctx.assistant_id,
             project_id,
             task_id=task_id,

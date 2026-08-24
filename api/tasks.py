@@ -77,10 +77,11 @@ class TaskBroker:
             self.records.pop(task_id, None)
 
     def start(
-        self, assistant_id: str, operation: Callable[[], Awaitable[dict[str, Any]]]
+        self, assistant_id: str, operation: Callable[[], Awaitable[dict[str, Any]]],
+        *, task_id: str | None = None,
     ) -> str:
         self._trim_records()
-        task_id = uuid.uuid4().hex[:16]
+        task_id = task_id or uuid.uuid4().hex[:16]
         record = TaskRecord(task_id=task_id, assistant_id=assistant_id)
         self.records[task_id] = record
 

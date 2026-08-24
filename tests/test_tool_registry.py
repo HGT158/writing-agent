@@ -67,6 +67,41 @@ def test_finalize_article_uses_tool_context(tmp_path):
     store.close()
 
 
+def test_finalize_article_keeps_written_file_when_memorize_fails(tmp_path, monkeypatch, caplog):
+    store = MemoryStore(tmp_path)
+    tools = {tool.name: tool for tool in make_builtin_tools(tmp_path, store)}
+    monkeypatch.setattr(store, "memorize", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        sqlite3.OperationalError("memory unavailable")
+    ))
+
+    result = asyncio.run(tools["finalize_article"].call(
+        {"title": "降级定稿", "content": "# 正文"}, _ctx(tmp_path, "tech-writer")
+    ))
+
+    assert "文章已定稿" in result
+    assert list((tmp_path / "articles" / "tech-writer").glob("降级定稿-*.md"))
+    assert "记忆登记失败" in caplog.text
+    store.close()
+
+
+def test_executor_uses_configurable_tool_timeout(tmp_path):
+    async def hangs(_args, _ctx):
+        await asyncio.Event().wait()
+
+    registry = ToolRegistry()
+    registry.register(ToolSpec(
+        name="hangs", description="hangs", args_schema={}, handler=hangs,
+        idempotent=False,
+    ))
+    observations = asyncio.run(execute_tool_calls(
+        [ToolCall(tool="hangs", args={})], registry, _ctx(tmp_path), EventBus(),
+        timeout_seconds=0.01,
+    ))
+
+    assert observations[0].success is False
+    assert isinstance(observations[0].error, str)
+
+
 def _hunk(old: str, new: str) -> dict:
     return {"old_text": old, "new_text": new}
 

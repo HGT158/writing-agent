@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from memory.store import MemoryStore
 from .assistant_registry import Assistant
 from .events import EventBus
 from .executor import ToolRegistry, execute_tool_calls
-from .llm import chat_text, extract_json
+from .llm import chat_text, extract_json, stream_chat_turn
 from .planner import Planner, observations_text
 from .schemas import ActionPlan, AgentState, Observation, ToolContext
 from .skills import Skill, missing_dependencies
@@ -106,7 +107,14 @@ async def node_act(state: AgentState, services: RuntimeServices) -> dict[str, An
         services.bus.emit("tool_result", tool=obs.tool, ok=False, error=obs.error)
         return {"observations": [obs.model_dump()]}
 
-    observations = await execute_tool_calls(plan.tool_calls, services.tools, ctx, services.bus, services.store)
+    observations = await execute_tool_calls(
+        plan.tool_calls,
+        services.tools,
+        ctx,
+        services.bus,
+        services.store,
+        timeout_seconds=services.settings.tool_timeout_seconds,
+    )
     return {"observations": [o.model_dump() for o in observations]}
 
 
@@ -148,9 +156,10 @@ async def node_write(state: AgentState, services: RuntimeServices) -> dict[str, 
     parts: list[str] = []
     for section in outline:
         services.bus.emit("section", title=section)
-        stream = await services.llm.chat.completions.create(
-            model=services.model,
-            messages=[
+        streamed = await stream_chat_turn(
+            services.llm,
+            services.model,
+            [
                 {"role": "system", "content": f"{services.assistant.persona}\n\n{writing_guide}"},
                 {"role": "user", "content": (
                     f"撰写文章《{title}》的其中一节：「{section}」。\n"
@@ -159,18 +168,11 @@ async def node_write(state: AgentState, services: RuntimeServices) -> dict[str, 
                     "要求：300-600 字，只输出本节正文（不要重复节标题），事实须来自素材，来源在句末以（来源：URL）标注。"
                 )},
             ],
-            stream=True,
+            on_text=lambda text: services.bus.emit("token", text=text),
+            total_timeout_seconds=services.settings.llm_stream_timeout_seconds,
             temperature=0.6,
         )
-        buf: list[str] = []
-        async for chunk in stream:
-            if not chunk.choices:  # 部分服务的尾包仅带 usage，无 choices（审查 P2-15）
-                continue
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                services.bus.emit("token", text=delta)
-                buf.append(delta)
-        parts.append(f"## {section}\n\n{''.join(buf).strip()}")
+        parts.append(f"## {section}\n\n{streamed.text.strip()}")
 
     draft = f"# {title}\n\n" + "\n\n".join(parts)
     return {"draft": draft, "outline": outline, "title": title}
@@ -203,7 +205,7 @@ async def node_reflect(state: AgentState, services: RuntimeServices) -> dict[str
         missing = [str(m) for m in result.get("missing", [])]
         preferences = [str(p) for p in result.get("new_preferences", [])]
     except json.JSONDecodeError:
-        passed, missing, preferences = True, [], []
+        passed, missing, preferences = False, ["质检结果不是有效 JSON"], []
 
     for pref in preferences[:3]:
         services.store.memorize(state["assistant_id"], "preference", pref, session_id=state["session_id"])
@@ -223,7 +225,6 @@ async def node_done(state: AgentState, services: RuntimeServices) -> dict[str, A
     draft = state.get("draft", "")
     if not draft:
         reason = "未能产出草稿（可能工具不可用或规划异常终止）"
-        services.bus.emit("failed", reason=reason)
         return {"status": "failed", "finish_note": reason}
 
     notes: list[str] = []
@@ -243,12 +244,16 @@ async def node_done(state: AgentState, services: RuntimeServices) -> dict[str, A
     title = state.get("title") or state["task"][:30]
     # 直接调用结构化实现（审查 P1-6：不再字符串反解路径、去掉 assert、不绕过异常处理）
     try:
-        path = finalize_article_impl(services.store, ctx, title, draft)
+        path = await asyncio.to_thread(
+            finalize_article_impl, services.store, ctx, title, draft
+        )
     except Exception as exc:
-        services.bus.emit("failed", reason=f"定稿失败：{exc}")
         return {"status": "failed", "finish_note": f"定稿失败：{exc}"}
-    services.store.add_message(state["assistant_id"], state["session_id"], "assistant",
-                               f"完成文章：《{title}》 {path}")
+    await asyncio.to_thread(
+        services.store.add_message,
+        state["assistant_id"], state["session_id"], "assistant",
+        f"完成文章：《{title}》 {path}",
+    )
     services.bus.emit("done", path=str(path))
     return {"status": "done", "output_path": str(path), "finish_note": note or None}
 

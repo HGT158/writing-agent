@@ -30,6 +30,9 @@ class Settings:
     model_name: str
     max_steps: int = 25
     run_lock_ttl_hours: float = 2.0
+    llm_timeout_seconds: float = 120.0
+    llm_stream_timeout_seconds: float = 300.0
+    tool_timeout_seconds: float = 30.0
     project_import_max_files: int = 5000
     project_import_max_total_mb: int = 512
     project_import_max_file_mb: int = 100
@@ -55,6 +58,9 @@ def load_settings() -> Settings:
         model_name=os.environ.get("MODEL_NAME", "deepseek-chat"),
         max_steps=int(os.environ.get("MAX_STEPS", "25")),
         run_lock_ttl_hours=float(os.environ.get("RUN_LOCK_TTL", "2")),
+        llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "120")),
+        llm_stream_timeout_seconds=float(os.environ.get("LLM_STREAM_TIMEOUT_SECONDS", "300")),
+        tool_timeout_seconds=float(os.environ.get("TOOL_TIMEOUT_SECONDS", "30")),
         project_import_max_files=int(os.environ.get("PROJECT_IMPORT_MAX_FILES", "5000")),
         project_import_max_total_mb=int(os.environ.get("PROJECT_IMPORT_MAX_TOTAL_MB", "512")),
         project_import_max_file_mb=int(os.environ.get("PROJECT_IMPORT_MAX_FILE_MB", "100")),

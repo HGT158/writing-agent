@@ -56,6 +56,8 @@ async def execute_tool_calls(
     ctx: ToolContext,
     bus: EventBus,
     store: MemoryStore | None = None,
+    *,
+    timeout_seconds: float = 30.0,
 ) -> list[Observation]:
     async def run_one(tc: ToolCall) -> Observation:
         bus.emit("tool_call", tool=tc.tool, args=tc.args)
@@ -69,7 +71,9 @@ async def execute_tool_calls(
         attempts = 2 if spec.idempotent else 1  # 非幂等写工具失败不重试（防重复写文件/重复登记）
         for _attempt in range(attempts):
             try:
-                result = await asyncio.wait_for(spec.call(tc.args, ctx), timeout=30)
+                result = await asyncio.wait_for(
+                    spec.call(tc.args, ctx), timeout=timeout_seconds
+                )
                 if store is not None and spec.captures_source and tc.args.get("url"):
                     store.save_source(ctx.assistant_id, ctx.session_id, tc.args["url"], tc.args["url"], result)
                 obs = Observation(tool=tc.tool, success=True, summary=_summarize(result))

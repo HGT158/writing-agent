@@ -29,6 +29,15 @@ def _settings(tmp_path: Path) -> Settings:
     )
 
 
+def test_runtime_configures_explicit_llm_timeout(tmp_path):
+    settings = _settings(tmp_path)
+    settings.llm_timeout_seconds = 17
+    runtime = AgentRuntime(settings)
+
+    assert runtime.llm.timeout == 17
+    runtime.store.close()
+
+
 def _response(content: str):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
@@ -120,6 +129,35 @@ def test_stream_chat_turn_forwards_text_deltas():
     assert turn.text == "你好"
     assert turn.tool_calls == []
     assert llm.calls[0]["stream"] is True
+
+
+def test_stream_chat_turn_enforces_total_timeout():
+    class HangingStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            return None
+
+    stream = HangingStream()
+
+    class HangingLLM:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=self)
+
+        async def create(self, **_kwargs):
+            return stream
+
+    llm = HangingLLM()
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(stream_chat_turn(
+            llm, "fake", [{"role": "user", "content": "等待"}],
+            total_timeout_seconds=0.01,
+        ))
 
 
 def test_stream_chat_turn_accumulates_tool_argument_deltas():
@@ -324,7 +362,7 @@ def test_rewrite_selection_releases_lock_when_llm_fails(tmp_path):
             instruction="改写", document_version=document.version,
         ))
     assert not runtime.store.is_locked("default")
-    assert any(event["type"] == "failed" for event in events)
+    assert not any(event["type"] == "failed" for event in events)
     asyncio.run(runtime.close())
 
 
@@ -419,6 +457,7 @@ def test_project_chat_failure_persists_user_without_partial_assistant(tmp_path):
     )
     assert [(item.role, item.content) for item in persisted] == [
         ("user", "失败问题"),
+        ("assistant", "[interrupted] 本轮处理失败，请重试。"),
     ]
     assert not runtime.store.is_locked("default")
     asyncio.run(runtime.close())
@@ -739,7 +778,7 @@ def test_project_chat_keeps_pending_change_when_followup_stream_fails(tmp_path):
         "default", project.project_id, previews[0]["data"]["change_set_id"]
     )
     assert change.status == "pending"
-    assert any(event["type"] == "failed" for event in events)
+    assert not any(event["type"] == "failed" for event in events)
     assert not runtime.store.is_locked("default")
     asyncio.run(runtime.close())
 
@@ -755,7 +794,7 @@ def test_project_chat_releases_lock_when_stream_fails(tmp_path):
             current_document_id=document.document_id,
         ))
 
-    assert any(event["type"] == "failed" for event in events)
+    assert not any(event["type"] == "failed" for event in events)
     assert not runtime.store.is_locked("default")
     asyncio.run(runtime.close())
 

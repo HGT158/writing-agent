@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from agent.assistant_registry import Assistant
 from agent.events import EventBus
 from agent.executor import ToolRegistry
-from agent.loop import RuntimeServices, build_graph
+from agent.loop import RuntimeServices, build_graph, node_reflect
 from agent.schemas import ToolSpec
 from agent.skills import load_skills
 from agent.tools import make_builtin_tools
@@ -149,4 +149,24 @@ def test_normal_write_pass_finalize(tmp_path):
     content = Path(final["output_path"]).read_text(encoding="utf-8")
     assert "# 测试文章" in content and "## 第一节" in content
     assert "tester" in str(final["output_path"])  # 文章落在本助手目录（隔离）
+    services.store.close()
+
+
+def test_reflect_invalid_json_counts_as_failure(tmp_path):
+    services = _services(tmp_path, _PLAN_WRITE, reflect_passed=True, max_steps=25)
+
+    class InvalidCompletions:
+        async def create(self, **_kwargs):
+            return _resp("not-json")
+
+    services.llm = SimpleNamespace(
+        chat=SimpleNamespace(completions=InvalidCompletions())
+    )
+    state = {**_initial_state(), "draft": "# 草稿"}
+
+    result = asyncio.run(node_reflect(state, services))
+
+    assert result["quality_passed"] is False
+    assert result["reflect_fails"] == 1
+    assert "有效 JSON" in result["observations"][0]["error"]
     services.store.close()

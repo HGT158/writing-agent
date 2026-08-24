@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -580,6 +581,26 @@ def test_interrupt_running_uses_snapshot_when_persist_failure_adds_warning(tmp_p
     assert recorder._items[first].status == "interrupted"
     assert recorder._items[second].status == "interrupted"
     assert any(item.kind == "warning" for item in recorder._items.values())
+    store.close()
+
+
+def test_persist_failure_warning_logs_when_its_own_persist_fails(
+    tmp_path, monkeypatch, caplog
+):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "二次落库失败")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+    work_id = recorder.start("progress", "会失败")
+    monkeypatch.setattr(
+        recorder, "_persist_item",
+        lambda _item: (_ for _ in ()).throw(OSError("disk failure")),
+    )
+    caplog.set_level(logging.DEBUG, logger="agent.work_log")
+
+    recorder.done(work_id)
+
+    assert "降级 warning 落库仍失败" in caplog.text
     store.close()
 
 

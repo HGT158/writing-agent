@@ -305,7 +305,7 @@ class WorkLogRecorder:
         try:
             self._persist_item(warning)
         except Exception:
-            pass
+            logger.debug("工作记录降级 warning 落库仍失败", exc_info=True)
 
     def note(self, kind: str, title: str) -> str:
         """瞬时事件（warning 等）：start 与 done 连续完成。"""

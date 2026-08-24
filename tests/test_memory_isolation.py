@@ -26,6 +26,19 @@ def test_recall_isolated_between_assistants(tmp_path):
     store.close()
 
 
+def test_resume_session_must_exist_and_belong_to_assistant(tmp_path):
+    store = MemoryStore(tmp_path)
+    store.create_session("tech-writer", "resume-1", "原任务")
+
+    store.validate_session_owner("tech-writer", "resume-1")
+    with pytest.raises(ValueError, match="不属于"):
+        store.validate_session_owner("marketing", "resume-1")
+    with pytest.raises(ValueError, match="不存在"):
+        store.validate_session_owner("tech-writer", "missing")
+
+    store.close()
+
+
 def test_profile_files_physically_separated(tmp_path):
     store = MemoryStore(tmp_path)
     store.memorize("tech-writer", "style", "结构先行")

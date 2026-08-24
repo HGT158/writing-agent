@@ -83,8 +83,8 @@ class MCPManager:
             args_schema=tool.inputSchema or {"type": "object", "properties": {}},
             handler=handler,
             source=f"mcp:{server_name}",
-            # 抓取类工具的结果全文入库 sources 表（显式标记，不靠调用点子串匹配）
-            captures_source="fetch" in tool.name,
+            idempotent=False,
+            captures_source=False,
         )
 
     async def close(self) -> None:

@@ -96,6 +96,8 @@ def test_successful_mcp_session_is_promoted_until_manager_close(monkeypatch):
     async def run():
         await manager.start()
         assert [tool.name for tool in manager.tools] == ["remote_tool"]
+        assert manager.tools[0].idempotent is False
+        assert manager.tools[0].captures_source is False
         assert "session-exit" not in events
         await manager.close()
 
