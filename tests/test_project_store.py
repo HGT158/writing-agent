@@ -32,6 +32,22 @@ def test_create_project_creates_entry_document_under_assistant(tmp_path):
     store.close()
 
 
+def test_shared_connection_uses_autocommit_without_implicit_transaction_leak(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "事务项目")
+
+    assert store._conn.isolation_level is None
+    store._conn.execute(
+        "UPDATE projects SET name = ? WHERE assistant_id = ? AND project_id = ?",
+        ("已更新", "writer-a", project.project_id),
+    )
+    assert store._conn.in_transaction is False
+    store._conn.execute("BEGIN IMMEDIATE")
+    assert store._conn.in_transaction is True
+    store._conn.rollback()
+    store.close()
+
+
 def test_same_display_name_creates_distinct_projects_without_overwrite(tmp_path):
     store = MemoryStore(tmp_path)
 

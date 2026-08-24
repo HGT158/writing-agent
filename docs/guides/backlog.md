@@ -30,7 +30,7 @@
 - 删除死代码 `_row_to_change_set`（phase7 P3-2）：无调用且字段为旧结构，防止误导后续维护。
 - 截断标注口径（phase8 P3-2）与 import 分组（phase8 P3-6）：同文件顺手改——"原始 N 字符"改为"脱敏后 N 字符"，`import logging` 与标准库导入归组。
 - 上下文预算最终截断分支（phase7 P3-1）：截断标注计入 allowance、截断后复核一次，兑现 v1.21"prompt 估算恒不超预算"承诺。
-- phase9 全库审查发现项（2026-08-23，见 `docs/reviews/phase9-code-review.md`，定稿修订后 P0×1 / P1×8 / P2×18）：P0-1（批量接受绕过脏文档确认）与第一梯队 P1（事务泄漏、MCP 工具同名覆盖、脱敏值级缺口、Host 白名单）建议作为独立加固阶段评估实施；其 P2/P3 与本节既有条目合并排期。文档口径项 P2-2 与 P3-35/36/37 已由 v1.26 架构口径对齐关闭（纯文档升版）；P3-34（`save_summary` 残留 assert 改显式 raise）属代码修复，并入本批次。
+- phase9 全库审查剩余项（2026-08-23，见 `docs/reviews/phase9-code-review.md`，定稿修订后 P0×1 / P1×8 / P2×18）：第一梯队及 P3-34 已由 v1.27 关闭（见「已完成并移出待办」）；第二、三梯队继续按报告排期。文档口径项 P2-2 与 P3-35/36/37 已由 v1.26 关闭。
 
 ## 随功能绑定实施（不单独排期）
 
@@ -54,6 +54,7 @@
 
 ## 已完成并移出待办
 
+- phase9 第一梯队加固批次已在 v1.27 完成：P0-1（项目级「全部接受」对全部受影响 dirty 文档一次性列单确认）、P1-3（共享 SQLite 连接改 `isolation_level=None`，多语句写继续显式事务）、P1-1（MCP 同名工具拒绝覆盖内置工具，实际注册计数与 warning 对齐）、P1-4（工作记录 JSON 载荷的字符串叶子追加值级脱敏）、P1-7（FastAPI Host 白名单，Vite 默认 `changeOrigin=false` 已核查相容）及 P3-34（`save_summary` 写后回读由 assert 改显式 `RuntimeError`）均有对应回归测试；现行契约见架构文档 v1.27 §5.2/§5.4/§5.7/§5.9/§5.10/§9。
 - 压缩 `info`/`warning` 前端可见性（phase6 P3-1）已由 v1.19 工作记录解决：压缩提示进入工作记录的进度/警告条目，无需单独事件分支。
 - 多 hunk change set 与逐 hunk 审查已在 v1.20 实现：`change_sets` 父表 + `change_set_hunks`（单事务迁移、`legacy-<id>` 合成任务 id、`(task_id, document_id)` 唯一）；`propose_project_edits` 按文档分组接收 hunks（同文档多处一次提交，修复"每个文档只能出现一次"缺陷，≤100 hunk / ≤1 MiB、创建即冻结）；接受单个 hunk 为唯一应用原语（三段式写入、版本 +1），同组其余 hunk 以 `old_text` 内容复检保持可审，其他任务建议整组 stale；API 提供 hunk 级 accept/reject、accept-all 与按文档分页查询（稳定错误码 + `staled_change_set_ids`）；前端内联 diff 一次渲染全部 hunk、每个 hunk 自带独立接受/放弃按钮（TRAE 式），侧栏卡片按 hunk 摘要展示并提供批量入口。现行契约见架构文档 §4.7/§5.9/§5.10。
 - 项目聊天持久化工作记录已在 v1.19 实现：`project_chat_work_events` 表、`work_item_start/delta/done` SSE 事件（delta 不落库、done 落库，单任务 199+1 条上限、参数 4,000/结果 8,000 字符脱敏截断）、失败/取消 interrupted 终结、会话详情按 TaskBroker 活动对账补写终态、前端运行中展开终态折叠。现行契约见架构文档 §5.4/§5.7/§5.9/§5.10。

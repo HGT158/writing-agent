@@ -97,7 +97,11 @@ class MemoryStore:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self.data_dir / "app.db"), check_same_thread=False)
+        self._conn = sqlite3.connect(
+            str(self.data_dir / "app.db"),
+            check_same_thread=False,
+            isolation_level=None,
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=10000")
         short_term.create_tables(self._conn)

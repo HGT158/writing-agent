@@ -283,6 +283,36 @@ def test_recorder_redacts_sensitive_fields_in_string_payloads(tmp_path):
     store.close()
 
 
+def test_recorder_redacts_secrets_embedded_in_string_leaves(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "值级脱敏项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+
+    work_id = recorder.start("tool", "调用工具", args={
+        "new_text": "请使用 sk-abcdefgh123456 继续处理",
+        "nested": ["请求头 Bearer abcdefghijklmnop", {"safe": "保留正文"}],
+    })
+    recorder.done(work_id, result={
+        "message": "上游返回 token=abcdefghijklmnop 后完成",
+        "safe": "可见结果",
+    })
+    recorder.finish_task("succeeded")
+
+    persisted = store.list_project_chat_work_events(
+        "writer-a", project.project_id, session.chat_session_id
+    )
+    args_summary = persisted[0].args_summary
+    result_summary = persisted[0].result_summary
+    assert "sk-abcdefgh" not in args_summary
+    assert "Bearer abcdefgh" not in args_summary
+    assert "abcdefghijklmnop" not in result_summary
+    assert "保留正文" in args_summary and "可见结果" in result_summary
+    assert args_summary.count("***") == 2
+    assert result_summary.count("***") == 1
+    store.close()
+
+
 def test_recorder_keeps_non_json_strings_verbatim(tmp_path):
     """非 JSON 字符串按原文保留，不因解析失败丢失内容。"""
     store = MemoryStore(tmp_path)

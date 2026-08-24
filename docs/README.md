@@ -6,7 +6,7 @@
 
 | 文档 | 用途 |
 |---|---|
-| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.26） |
+| [architecture/phase1-architecture.md](architecture/phase1-architecture.md) | 架构单一事实来源（v1.27） |
 | [../AGENTS.md](../AGENTS.md) | Agent 工作约定、环境和硬性规则 |
 | [guides/new-session-prompt.md](guides/new-session-prompt.md) | 新对话的可复制启动提示词 |
 | [guides/windows-task-scheduler.md](guides/windows-task-scheduler.md) | Windows 登录启动 Scheduler 的配置 |
@@ -14,7 +14,7 @@
 
 ## 版本化专题设计
 
-下列文档记录具体版本的设计与实施边界，用于追溯决策，不是当前架构的单一事实来源；后续版本已经改变其中部分契约，冲突时以 v1.26 主架构为准。
+下列文档记录具体版本的设计与实施边界，用于追溯决策，不是当前架构的单一事实来源；后续版本已经改变其中部分契约，冲突时以 v1.27 主架构为准。
 
 | 文档 | 版本范围 |
 |---|---|
@@ -35,7 +35,7 @@
 | [reviews/phase6-code-review.md](reviews/phase6-code-review.md) | v1.16–v1.18 已提交改动复审；P2 与多数 P3 已在 v1.21 处理，其余见 backlog 观察项 |
 | [reviews/phase7-code-review.md](reviews/phase7-code-review.md) | v1.19–v1.22 已提交改动复审及 v1.23 处理闭环；P1/P2 已处理，剩余 P3 登记 backlog |
 | [reviews/phase8-code-review.md](reviews/phase8-code-review.md) | v1.23 提交区间复审及 v1.24 处理闭环；P1/P2 与 P3-1/P3-4 已处理，剩余 P3 登记 backlog |
-| [reviews/phase9-code-review.md](reviews/phase9-code-review.md) | v1.25 现状全库四模块深审（补 v1.25 复审缺口）；定稿修订后 P0×1 / P1×8 / P2×18 待处理（口径项 P2-2/P3-35/36/37 已由 v1.26 关闭），测试基线 228/117 实跑核验 |
+| [reviews/phase9-code-review.md](reviews/phase9-code-review.md) | v1.25 现状全库四模块深审（补 v1.25 复审缺口）；口径项由 v1.26 关闭，第一梯队与 P3-34 由 v1.27 关闭；其余梯队待处理 |
 
 ## 历史设计
 

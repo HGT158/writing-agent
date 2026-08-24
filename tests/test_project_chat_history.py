@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from memory import project_chat as project_chat_storage
 from memory.errors import ResourceConflictError
 from memory.store import AssistantBusyError, MemoryStore
 
@@ -155,6 +156,21 @@ def test_context_summary_is_scoped_and_reusable(tmp_path):
     assert store.get_project_chat_summary(
         "writer-b", other.project_id, other_session.chat_session_id
     ) is None
+    store.close()
+
+
+def test_context_summary_raises_explicitly_when_saved_record_cannot_be_reloaded(
+    tmp_path, monkeypatch,
+):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "摘要回读失败")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    monkeypatch.setattr(project_chat_storage, "get_summary", lambda *args: None)
+
+    with pytest.raises(RuntimeError, match="保存后无法回读"):
+        store.save_project_chat_summary(
+            "writer-a", project.project_id, session.chat_session_id, "摘要", 1
+        )
     store.close()
 
 

@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.26 · 2026-08-23
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理及 v1.26 文档口径对齐均已完成
+> 版本：v1.27 · 2026-08-24
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐及 v1.27 phase9 第一梯队加固均已完成
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -43,13 +43,15 @@
 
 > v1.26 变更：文档口径对齐（phase9 审查 P2-2 与 P3-35/36/37；纯文档修正，不改变任何运行时行为与代码）。**（1）** §5.9 任务终态记录的有界保留口径由「TTL/容量」修正为「按容量有界保留（最多 128 条已终态且无订阅者的记录，无 TTL 维度）」，与 TaskBroker 实现一致。**（2）** §3.3 fetch 结果的上下文口径修正为「全文（最多 20,000 字符）落 `sources` 表备查，进入 Observation 的只有 ≤500 字符摘要」，删除与实现矛盾的「截断至 2000 字符后进 Observation」表述。**（3）** §5.9 明确文档重命名/删除的「助手级 mutation lock」以该助手的运行锁实现：助手任一任务运行期间即拒绝（409），而非仅与并发文档写互斥。**（4）** §5.4 明确项目聊天的 system prompt 始终注入 editing Skill 指导、不受助手技能子集裁剪（写作工作台的审校/改写是核心交互），选区改写入口仍校验子集。
 
+> v1.27 变更：处理 phase9 第一梯队加固项。**（1）批量接受保护（P0-1）**：侧栏项目级「全部接受」在发起任何请求前汇总所有受影响且已打开的 dirty 文档，一次性列出清单并确认；拒绝即整批不执行，避免服务端快照静默覆盖未保存正文（§5.10）。**（2）SQLite 事务纪律（P1-3）**：MemoryStore 共享连接固定 `isolation_level=None` 进入 autocommit 模式，所有需要原子性的多语句写路径继续显式 `BEGIN IMMEDIATE`，简单单语句 DML 不再产生跨调用隐式事务泄漏（§5.4/§5.7）。**（3）工具名冲突（P1-1）**：统一工具表禁止重复注册；内置工具先注册且优先，后发现的同名 MCP 工具跳过并发 warning，启动统计按实际成功注册数计算（§1/§5.2/§5.4）。**（4）工作记录值级脱敏（P1-4）**：递归脱敏对 JSON 对象/数组中的每个字符串叶子追加密钥值模式扫描，敏感键名替换规则保持；无法解析的非 JSON 普通文本仍按既定边界保留原文（§5.7）。**（5）本地 API Host 边界（P1-7）**：FastAPI 安装 Host 白名单，生产只接受 `127.0.0.1` 与 `localhost`（端口不限；测试工厂模式额外接受 TestClient 的 `testserver`），拒绝 DNS rebinding Host；Vite 开发代理保持默认 `changeOrigin=false`，将浏览器原始本机 Host 透传给 API（§5.9）。**（6）显式运行时兜底（P3-34）**：`save_summary` 写后回读为空时显式抛 `RuntimeError`，不依赖可被 `python -O` 移除的 assert（§5.7/§9）。
+
 ---
 
 ## 0. 设计假设
 
 | # | 假设 | 影响 |
 |---|------|------|
-| A1 | 单用户、本地运行，无鉴权 | FastAPI 只绑 `127.0.0.1`；SQLite 单文件 |
+| A1 | 单用户、本地运行，无鉴权 | FastAPI 只绑 `127.0.0.1`，并校验 Host 仅为本机白名单；SQLite 单文件 |
 | A2 | LLM 走 OpenAI 兼容接口，默认 DeepSeek | 一套 client 代码，`base_url` 切换服务商 |
 | A3 | 搜索首选 Tavily MCP Server，Brave 备选 | `mcp_servers.json` 配置切换，代码无关 |
 | A4 | 中文写作为主，长文分段生成 | 大纲→逐节成文→合并，避免单次输出截断 |
@@ -65,7 +67,7 @@
 | Agent vs Workflow | **Planner 每轮动态决策**，而非固定 DAG | 满足"根据任务动态决定调用哪些 Skill/Tool"的核心判定标准 |
 | Agent Loop 实现 | LangGraph `StateGraph` + 条件边 | 状态机显式建模"观察→规划→执行→反思"循环，自带流式事件与 checkpoint |
 | Planner 输出 | **强类型 Pydantic 模型**（子任务 + 工具/Skill 选择 + 选择理由）；**降级兜底也必须可路由**（强制 finish 或 failed） | 理由可观测；兜底不产生无法驱动状态机的中间态 |
-| 工具协议 | 统一 `ToolSpec` 抽象，内置工具与 MCP 工具**同一张表**；内置文件工具**沙箱限制在 `data/` 内** | Agent 核心对工具来源无感知；文件写入不越界 |
+| 工具协议 | 统一 `ToolSpec` 抽象，内置工具与 MCP 工具**同一张表且名称唯一**；内置文件工具**沙箱限制在 `data/` 内**，后注册的同名 MCP 工具拒绝覆盖 | Agent 核心对工具来源无感知；文件写入不越界且安全声明不被旁路 |
 | Skill 机制 | 对齐 Claude Code：`SKILL.md`（YAML frontmatter + 正文 prompt），**渐进式披露**；激活前校验依赖工具可用性 | 规划时只注入元数据（省 token）；依赖缺失时激活失败可见、可决策 |
 | MCP | 官方 `mcp` Python SDK，stdio 传输，配置文件注册 | 严格遵循官方规范，不自造协议 |
 | **多助手与记忆隔离** | **Assistant 为一等概念，`assistant_id` 是所有持久化数据的命名空间** | 助手间零共享（记忆/文章/会话），同助手跨会话全共享 |
@@ -370,6 +372,8 @@ class ActionPlan(BaseModel):
 
 **错误即观察**原则：工具抛异常不打断 Loop，而是变成 `Observation(success=False, error=...)` 交回 Planner——这是 Agent 自愈能力的基础。
 
+**工具名唯一且内置优先（v1.27）**：`ToolRegistry.register()` 对任何重复名称返回拒绝结果，绝不覆盖既有 `ToolSpec`。Runtime 固定先注册内置工具、再逐个尝试注册 MCP 工具；碰撞项跳过并发 warning，启动日志中的 MCP 数量只统计实际加入工具表的数量。由此 `read_file` / `save_markdown` / `finalize_article` 的沙箱与幂等声明不会被同名 MCP 实现替换。
+
 项目聊天的 `propose_project_edits` 仍使用 `ToolSpec`，定义位于 `agent/tools.py` 并声明 `idempotent=False`、`captures_source=False`。它只注册到本次项目聊天的临时工具表，不进入普通写作 Agent Loop 的全局工具清单；闭包绑定已校验的 `project_id`，`ToolContext` 继续注入不可由模型伪造的 `assistant_id` / `session_id` / `data_dir`。工具参数流结束并通过 schema 校验后才执行，部分 JSON 参数不得产生数据库副作用。
 
 ### 5.3 `agent/loop.py` — 状态机装配
@@ -387,9 +391,9 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 2. 初始化 LLM client（OpenAI 兼容）
 3. 启动 MCP Client，连接 `mcp_servers.json` 中的全部 server，`list_tools()` 发现工具
 4. 扫描 `skills/` 目录，注册 Skill 元数据
-5. 构建 Unified Tool Registry = 内置工具（`agent/tools.py`：save_markdown / read_file / finalize_article，**全部沙箱限制在 `data/` 内**）+ MCP 工具
+5. 构建 Unified Tool Registry = 内置工具（`agent/tools.py`：save_markdown / read_file / finalize_article，**全部沙箱限制在 `data/` 内**）+ 与既有名称不冲突的 MCP 工具；同名 MCP 工具跳过并告警
 6. AssistantRegistry 扫描 `data/assistants/`，加载全部助手定义（缺 `default` 则自动创建）
-7. 初始化 Memory（SQLite 建表，**开启 WAL**，建 FTS5 trigram 虚拟表与 `run_locks` 表）
+7. 初始化 Memory（SQLite 共享连接使用 `isolation_level=None` 的 autocommit 模式并**开启 WAL**，建 FTS5 trigram 虚拟表与 `run_locks` 表；多语句原子写显式 `BEGIN IMMEDIATE`）
 8. 编译 LangGraph 状态机
 9. 仅当以 `schedule` 长驻模式启动时，在**当前 Runtime 的 asyncio 事件循环**上注册并启动 APScheduler；一次性 `run` 不启动 Scheduler
 
@@ -500,7 +504,9 @@ def recall_semantic(assistant_id: str, query: str) -> str  # 预留向量接口�
 - **同助手跨会话共享**：`recall` 的检索范围 = 本助手全部历史会话 + 本助手 profile.md；**跨助手隔离**：SQL 强制 `WHERE assistant_id = ?`，profile 按目录物理隔离。
 - **项目与建议隔离**：`projects`、`project_documents`、`change_sets`、`document_write_intents` 的所有查询必须同时校验 `assistant_id`；`project_id` / `document_id` 不能单独作为授权或查询条件。保存文档和应用 change set 必须在写事务内执行版本号、状态与原文快照校验，使用持久化写入意图 + 临时文件 + 原子替换更新正文；冲突方不得触碰磁盘，进程崩溃后的残留意图必须可恢复。聊天产生多条建议时使用 MemoryStore 批量接口原子创建。
 - **项目聊天隔离与生命周期**：项目会话、消息和上下文摘要的所有查询必须同时过滤 `assistant_id + project_id + chat_session_id`，不得混入普通 Agent Loop 的 `sessions/messages` 或 FTS 索引。摘要是可重建的派生数据，只影响发给模型的 prompt，永远不进入会话详情接口返回的可见历史，UI 展示的消息列表不受压缩影响。第一条用户消息自动生成会话标题；列表按更新时间倒序。会话详情同时返回 `source='chat'` 且仍为 pending 的关联 change set。存在 pending diff 或助手运行锁时删除会话返回冲突；无 pending 且成功获取助手级 mutation lock 时，删除消息、会话及已处理 chat change set 元数据，但不回滚已写入正文。消息正文按可见原文保存，只以 trim 后结果判断空值和生成标题。项目 purge 与助手 purge 必须级联清理项目聊天表，归档项目保留历史但不可访问。
-- **工作记录的数据边界与上限（v1.19，v1.23 加固）**：`project_chat_work_events` 只服务界面展示，与聊天消息、模型上下文和上下文摘要完全隔离——`build_chat_context` 与摘要生成只读 `project_chat_messages`，工作记录不进 FTS、长期记忆、摘要或 prompt。所有读写同时过滤 `assistant_id + project_id + chat_session_id`；会话删除、项目 purge 与助手 purge 必须级联清理。`(task_id, event_seq)` 唯一，`event_seq` 在 `work_item_start` 时按发起顺序分配（并行工具保留发起顺序，完成可乱序落库）；`kind='task'` 终态受 `(assistant_id, project_id, task_id)` 唯一部分索引约束，每个任务最多一条，重复写入幂等复用既有行。单任务持久化明细（非终态）最多 199 条，`event_seq=200` 固定保留给溢出摘要（"省略 N 条记录"，按类型合并计数；无溢出不创建），任务终态不受该限制、尽力写入；明细落库失败必须降级为 warning 且不得中断任务，降级记录复用失败明细未占用的 `event_seq`，不得占用预留的 200；降级 warning 以配对的 `work_item_start` + `work_item_done` 事件下发（同一 `work_id`，v1.24）——实时视图按 start 建条目，只发 done 的孤儿事件会被前端静默丢弃。工具参数摘要正文最多 4,000 字符、结果摘要正文最多 8,000 字符（保留前 6,000 + 后 2,000），截断时追加原始长度标注，标注本身不计入正文上限。参数或结果为 JSON 字符串时，先解析对象/数组再递归脱敏；无法解析的普通文本保持原文。写入前对名称匹配 `api_key`/`token`/`authorization`/`cookie`/`secret`/`password` 的字段值替换为 `***`。失败详情还须扫描 `sk-`、`tvly-`、Bearer 与 `key=value` 等常见值级凭据形态，完整匹配的敏感值不得落库；详情正文最多 2,000 字符，截断标注不计入该上限。
+- **工作记录的数据边界与上限（v1.19，v1.23/v1.27 加固）**：`project_chat_work_events` 只服务界面展示，与聊天消息、模型上下文和上下文摘要完全隔离——`build_chat_context` 与摘要生成只读 `project_chat_messages`，工作记录不进 FTS、长期记忆、摘要或 prompt。所有读写同时过滤 `assistant_id + project_id + chat_session_id`；会话删除、项目 purge 与助手 purge 必须级联清理。`(task_id, event_seq)` 唯一，`event_seq` 在 `work_item_start` 时按发起顺序分配（并行工具保留发起顺序，完成可乱序落库）；`kind='task'` 终态受 `(assistant_id, project_id, task_id)` 唯一部分索引约束，每个任务最多一条，重复写入幂等复用既有行。单任务持久化明细（非终态）最多 199 条，`event_seq=200` 固定保留给溢出摘要（"省略 N 条记录"，按类型合并计数；无溢出不创建），任务终态不受该限制、尽力写入；明细落库失败必须降级为 warning 且不得中断任务，降级记录复用失败明细未占用的 `event_seq`，不得占用预留的 200；降级 warning 以配对的 `work_item_start` + `work_item_done` 事件下发（同一 `work_id`，v1.24）——实时视图按 start 建条目，只发 done 的孤儿事件会被前端静默丢弃。工具参数摘要正文最多 4,000 字符、结果摘要正文最多 8,000 字符（保留前 6,000 + 后 2,000），截断时追加原始长度标注，标注本身不计入正文上限。参数或结果为 JSON 字符串时，先解析对象/数组再递归脱敏；无法解析的普通文本保持原文。写入前对名称匹配 `api_key`/`token`/`authorization`/`cookie`/`secret`/`password` 的字段值替换为 `***`，并对对象/数组中的**每个字符串叶子**扫描 `sk-`、`tvly-`、Bearer 与 `key=value` 等值级凭据形态；失败详情使用同一值级扫描，完整匹配的敏感值不得落库。详情正文最多 2,000 字符，截断标注不计入该上限。
+
+- **共享连接事务纪律（v1.27）**：MemoryStore 的进程内共享 `sqlite3.Connection` 固定以 `isolation_level=None` 打开，简单单语句 DML 各自 autocommit，不允许由驱动隐式开启并跨方法遗留未决事务；需要多语句原子性的路径必须显式 `BEGIN IMMEDIATE`，并在异常路径 rollback。`save_summary` 写后若无法按同一助手/项目/会话回读记录，显式抛 `RuntimeError`，不得用 assert 充当运行时正确性检查。
 - **新会话失败补偿**：首次发送由 API 同步创建会话并返回 `chat_session_id`。后台任务成功、失败或取消后，API 都对本次新建会话执行幂等条件清理：会话仍存在、消息数为 0、且无任何关联 change set 时才删除；已有 user/assistant 消息或 diff 时必须保留，避免模型失败后丢失已送达内容。继续既有会话不得触发会话删除；补偿清理失败只记 warning，不得覆盖原始任务结果或错误。
 - **工具写边界**：`save_markdown` 只允许写 `data/` 下的非受管中间产物，必须拒绝 `assistants/<assistant_id>/projects/` 及任意其他助手项目路径；项目正文只能经项目文档/change set API 修改。
 
@@ -558,6 +564,8 @@ JOBS = [
 
 `TaskBroker` 是 EventBus 与 SSE 的桥接层，Runtime 对 SSE 零感知——阶段 2 的 CLI 和阶段 4 的 Web 复用同一个 Runtime。每条任务记录包含 `assistant_id`，每个 SSE 连接使用独立通知队列，取消也必须进入终态。终态记录按容量有界保留（最多 128 条已终态且无订阅者的记录，无 TTL 维度——v1.26 口径对齐实现），事件历史用于新订阅者的有界重放，不得无限增长。
 
+**本地 Host 信任边界（v1.27）**：应用不引入用户鉴权，但所有 HTTP/SSE/静态资源请求先经过 Host 白名单，生产仅接受 `127.0.0.1` 与 `localhost`（端口不限）；`start_runtime=False` 的测试工厂模式额外接受 Starlette TestClient 的 `testserver`。其他 Host 返回 400，阻断 DNS rebinding。Vite 开发服务器绑定 `127.0.0.1`，`/api` 代理保持默认 `changeOrigin=false`，使浏览器的本机 Host 原样透传并通过白名单；若未来改为自定义域名或非本机绑定，必须显式扩展白名单并重新评估鉴权/CORS，而不是关闭校验。
+
 **活动连接的事件寻址必须使用单调递增序号，不能使用列表下标**（v1.17）：事件历史是有界滑窗，一次流式回复的 `token` 事件数量很容易超过窗口容量。每个事件在记录时分配任务内唯一且递增的 `seq`；活动订阅者从独立队列收取事件，并用自身游标跳过已经发送的序号。窗口裁剪不得导致活动订阅者停止收流，也不得吞掉 `task_done` / `task_failed` 终态事件。
 
 **断线重连按游标续传**（v1.18）：每个数据帧以标准 SSE `id: <seq>` 行加 `data` JSON 下发。流端点接受显式 `after_seq` 查询参数或 `Last-Event-ID` 请求头，语义为"客户端已消费 `seq <= 游标` 的一切事件"，参数优先于请求头，无法解析的头按全新订阅处理。游标仍被重放窗口覆盖时，服务端从游标之后精确补发，不重复不遗漏，尤其不能重复追加 `token`；游标落后于窗口（请求位置早于窗口起点）时，先发送一条不带 `seq` 的 `reconnect_gap` 控制事件（携带 `after_seq` 与 `available_from`），再从窗口起点继续活动流——客户端据此得知回复已不可完整重建，不得静默拼接残缺回复，应等待终态后从持久化会话恢复；超出已记录范围的未来游标回拨为重发末尾事件，保证终态送达而非返回空流，重复帧由客户端按 `seq` 去重。所有返回 202 的任务创建端点必须在入队前校验助手存在且当前没有有效运行锁；未知助手返回 404，已忙返回 409，不得先创建注定失败的任务或在异步错误中泄漏助手列表。`api.main` 只提供 `create_app` 工厂；生产入口为 `api.server:app`，避免导入 API 模块时打开真实数据库。局部改写与聊天沿用任务流；聊天文本 delta 使用 `token`，工具开始/终结使用 `tool_call` / `tool_result`，修改建议使用 `change_preview`（v1.20 起携带 `change_set_id`、项目/文档 id、`hunks` 数组——每项含 `hunk_id`、code point 范围、原文、建议文本与状态——和基准版本）。正文只有在接受单个 hunk 成功后更新。项目聊天同时下发工作记录事件（v1.19）：`work_item_start`（携带 `work_id`、`kind`、`title`、可选 `tool_name`/`args_summary`/`change_set_id`/`document_id`）、`work_item_delta`（对同一 `work_id` 追加进度文本，不落库）、`work_item_done`（更新同一 `work_id` 的 `status` 与摘要，此刻才落库）。**工作记录终态对账**：应用加载、页面恢复或客户端重连请求会话详情时，服务端对本会话中缺少 `kind='task'` 终态的工作事件组逐个核对 TaskBroker——任务仍处于 running 时保持运行中不得提前终结；任务不存在或已结束时，在短事务内以 `event_seq = max(event_seq) + 1` 幂等补写一条 `status='interrupted'` 的任务终态。正常终态与对账补写共用 `(assistant_id, project_id, task_id)` 上的唯一部分索引，并发时只有第一条写入成功，后续写入复用既有终态。
@@ -591,7 +599,7 @@ Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部
 - **单一通道**：两个视图的接受/放弃都调用同一个父级方法（hunk 粒度），同一 hunk 正在处理时两边同时置为忙，终态后两边同步移除该 hunk，失败保留以便重试；`staled_change_set_ids` 只是低延迟优化，页面加载与 SSE 重连时必须通过 change set 查询 API 遍历全部分页完成 hunk 级状态对账。禁止任一视图各自调用 API 或各自维护 pending 列表。
 - **作用域过滤（v1.21）**：Agent 面板只显示当前 Agent 作用域项目的待审 change set；资源管理器切换选中项目不得清空其他项目的 pending 集合（内存状态保留，作用域切回即恢复显示），切换助手时才整体清空。
 
-接受/放弃以 hunk 为粒度（v1.20），客户端无需提交文档版本：首次应用按存储范围复核快照，之后由服务端以 hunk 的 `old_text` 对当前正文唯一匹配复检，目标文档未打开也可以操作；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。hunk 终态（applied/rejected/stale）只在父级操作成功后更新并移除，请求失败必须保留以便重试；页面加载与 SSE 重连后按查询 API 分页全量对账。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属事件流订阅；任务事件流的订阅由统一的 `watchTask` 封装（v1.18）：连接只在任务终态或调用方主动关闭（作用域切换/卸载）时结束，可恢复的网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带最后 `seq` 游标自动重连并按 `seq` 去重，重连成功后退避计数复位，多次重连耗尽或流解析错误才退出 loading 状态并提示可刷新恢复。收到 `reconnect_gap` 后订阅层丢弃一切非终态事件并通知组件：聊天面板移除半截 assistant 回复、提示回复不完整，任务终态（无论成功或失败）到达后从服务端重载持久化会话，恢复完整回复与漏发的 pending diff；选区改写在编辑器保留"建议可能未送达，可重新生成"的提示。聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
+接受/放弃以 hunk 为粒度（v1.20），客户端无需提交文档版本：首次应用按存储范围复核快照，之后由服务端以 hunk 的 `old_text` 对当前正文唯一匹配复检，目标文档未打开也可以操作；若目标标签存在则同步服务端正文，若 dirty 则先显式确认。项目级「全部接受」是唯一会跨多个 change set/文档的批量入口：必须在第一个 API 请求前汇总这批 change set 所影响且当前已打开的全部 dirty 文档，按文档去重列出名称并只确认一次；用户取消时整批不发请求，确认后才进入既有逐组应用与遇错停止流程。hunk 终态（applied/rejected/stale）只在父级操作成功后更新并移除，请求失败必须保留以便重试；页面加载与 SSE 重连后按查询 API 分页全量对账。关闭 dirty 标签或离开页面同样需要保护。组件切换助手、项目、会话或卸载时必须关闭所属事件流订阅；任务事件流的订阅由统一的 `watchTask` 封装（v1.18）：连接只在任务终态或调用方主动关闭（作用域切换/卸载）时结束，可恢复的网络错误按退避（0.5s 起步、8s 封顶、最多 6 次）携带最后 `seq` 游标自动重连并按 `seq` 去重，重连成功后退避计数复位，多次重连耗尽或流解析错误才退出 loading 状态并提示可刷新恢复。收到 `reconnect_gap` 后订阅层丢弃一切非终态事件并通知组件：聊天面板移除半截 assistant 回复、提示回复不完整，任务终态（无论成功或失败）到达后从服务端重载持久化会话，恢复完整回复与漏发的 pending diff；选区改写在编辑器保留"建议可能未送达，可重新生成"的提示。聊天异步响应按助手、项目、会话校验，文档切换不丢弃同会话事件，不能把旧会话内容注入新上下文。会话列表或详情加载时禁止发送；POST 未成功时回滚本次未持久化 user 气泡，任务失败或 SSE 断线后移除未持久化的 assistant 文本；token 增量到达时保持视图跟随底部，任务终态清理短期工具状态；重新生成按新的可见 user 消息处理。
 
 前端只能通过 API 读写，不能直接读取 SQLite、助手目录或外部原路径。`npm run build` 产物由 FastAPI 托管，单进程交付。
 
@@ -736,6 +744,8 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 |------|------|
 | LLM 返回非法 JSON（Planner） | Pydantic 校验失败 → 错误回喂重试 1 次 → 仍失败则**强制构造可路由的 finish**（有 draft 照常落盘并标注异常终止；无 draft 则 `status=failed`），见 §5.1 |
 | MCP server 启动失败 | 记 warning，该 server 工具不注册，**不阻断启动**（Planner 会看到工具表里没有它） |
+| MCP 工具名与既有工具冲突 | 保留先注册工具（内置优先），跳过碰撞 MCP 工具并发 warning；启动统计只计实际注册项 |
+| API 请求 Host 不在本机白名单 | 中间件在进入业务路由前返回 400；不得通过关闭校验兼容自定义域名 |
 | profile 或 SQLite recall 读取失败 | 分路记 warning 并继续组合其余 profile / FTS / LIKE / 最近文章结果；检索故障不阻断写作任务，见 §5.7 |
 | CLI Runtime 启动或任务执行出现未预期异常 | 发 failed 事件并返回非零退出码；`finally` 始终关闭 Runtime 已分配资源，见 §5.4 |
 | **Skill 依赖工具缺失**（如 Tavily 未配置时激活 research） | 激活失败，返回结构化 Observation 交回 Planner 决策（换工具 / 跳过 / finish 并说明），见 §5.5 |
@@ -772,6 +782,7 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 | SSE 断线重连时游标落后于重放窗口 | 服务端先发 `reconnect_gap` 控制事件再继续活动流；前端移除半截回复、只等终态，终态后重载持久化会话恢复完整内容，不得静默拼接残缺回复（§5.9/§5.10） |
 | SSE 多次重连耗尽或流解析错误 | 订阅关闭并上报错误，前端退出 loading 状态并提示任务仍可能在后台完成、可刷新恢复 |
 | 项目聊天上下文压缩调用失败 | 记 warning 并降级为丢弃最早的窗口外消息，本轮聊天继续；不得因压缩失败让用户消息失败（§3.3） |
+| 项目聊天摘要写后回读为空 | 显式抛 `RuntimeError`，不得依赖 `assert`（在 `python -O` 下也必须保留兜底） |
 | 保留窗口自身超过上下文预算（超长粘贴） | 先按单条上限首尾截断、再从最旧收缩窗口，最新一条单独超预算时同样截断；prompt 恒不超预算，兜底动作记 warning（§3.3） |
 | 项目聊天任务失败或取消时仍有运行中的工作项 | 统一以 `interrupted` 终结后落库再进入终态；已 `done` 的工作项状态不变（§5.4） |
 | 进程在任务终态前被强制终止 | 不保存残缺 chunk 或伪造单项完成；下次会话详情对账发现无终态且 TaskBroker 无活动任务时幂等补写 `interrupted` 任务终态（§5.9） |
@@ -796,4 +807,4 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 
 ---
 
-当前完成边界：阶段 2、3、4 及 v1.13–v1.26 均已完成；后续阶段须由用户确认目标后另行启动。
+当前完成边界：阶段 2、3、4 及 v1.13–v1.27 均已完成；后续阶段须由用户确认目标后另行启动。

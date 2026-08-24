@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 
+import agent.runtime as runtime_module
 from agent.executor import ToolRegistry, execute_tool_calls
 from agent.events import EventBus
+from agent.runtime import AgentRuntime
 from agent.schemas import ToolCall, ToolContext, ToolSpec
 from agent.tools import make_builtin_tools, make_project_edit_tool
+from config.settings import Settings
 from memory.errors import ResourceConflictError
 from memory.store import MemoryStore
 
@@ -379,6 +382,87 @@ def test_registry_mixes_builtin_and_mcp_specs(tmp_path):
     ))
     assert obs[0].success and obs[0].summary == "echo:模型蒸馏"
     store.close()
+
+
+def test_registry_rejects_duplicate_name_and_counts_only_new_tools():
+    async def original_handler(args, ctx):
+        return "builtin"
+
+    async def replacement_handler(args, ctx):
+        return "mcp"
+
+    original = ToolSpec(
+        name="read_file", description="builtin", args_schema={},
+        handler=original_handler, source="builtin",
+    )
+    replacement = ToolSpec(
+        name="read_file", description="mcp", args_schema={},
+        handler=replacement_handler, source="mcp:filesystem",
+    )
+    unique = ToolSpec(
+        name="search", description="mcp", args_schema={},
+        handler=replacement_handler, source="mcp:search",
+    )
+    registry = ToolRegistry()
+
+    assert registry.register(original) is True
+    assert registry.register_all([replacement, unique]) == 1
+    assert registry.get("read_file") is original
+    assert registry.names() == {"read_file", "search"}
+
+
+def test_runtime_skips_conflicting_mcp_tool_and_reports_actual_count(tmp_path, monkeypatch):
+    async def mcp_handler(args, ctx):
+        return "mcp"
+
+    mcp_tools = [
+        ToolSpec(
+            name="read_file", description="collision", args_schema={},
+            handler=mcp_handler, source="mcp:filesystem",
+        ),
+        ToolSpec(
+            name="search", description="unique", args_schema={},
+            handler=mcp_handler, source="mcp:search",
+        ),
+    ]
+
+    class FakeMCPManager:
+        def __init__(self, configs):
+            self.tools = mcp_tools
+            self.failed_servers = []
+
+        async def start(self, warn=None):
+            return None
+
+        async def close(self):
+            return None
+
+    empty = tmp_path / "empty.json"
+    empty.write_text('{"mcpServers": {}}', encoding="utf-8")
+    settings = Settings(
+        project_root=tmp_path,
+        data_dir=tmp_path,
+        skills_dir=Path(__file__).resolve().parents[1] / "skills",
+        mcp_config=empty,
+        openai_api_key="fake",
+        openai_base_url="",
+        model_name="fake",
+    )
+    monkeypatch.setattr(runtime_module, "MCPManager", FakeMCPManager)
+    events = []
+    bus = EventBus()
+    bus.subscribe(events.append)
+    runtime = AgentRuntime(settings, bus)
+
+    asyncio.run(runtime.start())
+
+    assert runtime.tools.get("read_file").source == "builtin"
+    assert runtime.tools.get("search").source == "mcp:search"
+    warnings = [event["data"]["text"] for event in events if event["type"] == "warning"]
+    infos = [event["data"]["text"] for event in events if event["type"] == "info"]
+    assert any("read_file" in text and "已跳过" in text for text in warnings)
+    assert any("内置 3 + MCP 1" in text for text in infos)
+    asyncio.run(runtime.close())
 
 
 def test_error_becomes_observation(tmp_path):

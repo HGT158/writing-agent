@@ -58,7 +58,7 @@ def _now() -> str:
 
 
 def redact(value):
-    """递归脱敏：名称匹配敏感词的字段值替换为 ***（架构 §5.7）。"""
+    """递归脱敏：敏感键整值替换，字符串叶子追加值级扫描（架构 §5.7）。"""
     if isinstance(value, dict):
         return {
             key: (REDACTED if any(word in str(key).lower() for word in REDACT_KEYS)
@@ -67,6 +67,8 @@ def redact(value):
         }
     if isinstance(value, list):
         return [redact(item) for item in value]
+    if isinstance(value, str):
+        return _redact_secrets_in_text(value)
     return value
 
 

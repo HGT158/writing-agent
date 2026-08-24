@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from agent.runtime import AgentRuntime
 from config.settings import Settings, load_settings
@@ -86,6 +87,13 @@ def create_app(
             await runtime.close()
 
     app = FastAPI(title="个人写作 Agent", version="1.0", lifespan=lifespan)
+    trusted_hosts = ["127.0.0.1", "localhost"]
+    if not start_runtime:
+        trusted_hosts.append("testserver")
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=trusted_hosts,
+    )
     app.state.runtime = runtime
     app.state.tasks = broker
 

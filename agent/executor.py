@@ -28,12 +28,17 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
 
-    def register(self, spec: ToolSpec) -> None:
+    def register(self, spec: ToolSpec) -> bool:
+        if spec.name in self._tools:
+            return False
         self._tools[spec.name] = spec
+        return True
 
-    def register_all(self, specs: list[ToolSpec]) -> None:
+    def register_all(self, specs: list[ToolSpec]) -> int:
+        registered = 0
         for spec in specs:
-            self.register(spec)
+            registered += self.register(spec)
+        return registered
 
     def get(self, name: str) -> ToolSpec | None:
         return self._tools.get(name)

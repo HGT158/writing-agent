@@ -169,6 +169,43 @@ describe('App project creation', () => {
     )
   })
 
+  it('confirms all dirty target documents before accepting any change set', async () => {
+    const secondDocument = {
+      ...document, document_id: 'document-2', relative_path: 'notes.md',
+    }
+    apiMocks.getDocument.mockImplementation(
+      (_assistantId: string, _projectId: string, documentId: string) => Promise.resolve(
+        documentId === 'document-2' ? secondDocument : document,
+      ),
+    )
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const wrapper = mount(App)
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      openDocument: (projectId: string, documentId: string) => Promise<void>
+      applyAllChanges: (changes: Record<string, unknown>[]) => Promise<void>
+      workspace: { updateActiveContent: (content: string) => void }
+      pendingChanges: Record<string, unknown>[]
+    }
+    await vm.openDocument('project-1', 'document-1')
+    vm.workspace.updateActiveContent('未保存正文')
+    await vm.openDocument('project-1', 'document-2')
+    vm.workspace.updateActiveContent('未保存笔记')
+    const changes = [
+      chatChange,
+      { ...chatChange, change_set_id: 'change-2', document_id: 'document-2' },
+    ]
+    vm.pendingChanges = changes
+
+    await vm.applyAllChanges(changes)
+
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(confirm.mock.calls[0][0]).toContain('article.md')
+    expect(confirm.mock.calls[0][0]).toContain('notes.md')
+    expect(apiMocks.acceptAllChangeHunks).not.toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
   it('can dismiss a fully stale change set through reject-all', async () => {    apiMocks.rejectChangeHunk.mockResolvedValue({
       change_set: {
         ...appliedRecord, status: 'rejected',

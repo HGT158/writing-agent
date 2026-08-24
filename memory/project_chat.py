@@ -352,7 +352,8 @@ def save_summary(
     )
     conn.commit()
     record = get_summary(conn, assistant_id, project_id, chat_session_id)
-    assert record is not None
+    if record is None:
+        raise RuntimeError("上下文摘要保存后无法回读")
     return record
 
 

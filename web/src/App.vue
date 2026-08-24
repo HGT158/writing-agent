@@ -422,6 +422,29 @@ async function rejectAgentChangeSet(change: ChangeSetPreview) {
 }
 
 async function applyAllChanges(changes: ChangeSetPreview[]) {
+  const dirtyDocuments = changes.reduce<{ projectId: string; documentId: string; label: string }[]>(
+    (items, change) => {
+      const tab = workspace.getTab(change.project_id, change.document_id)
+      if (!tab?.dirty || items.some((item) => (
+        item.projectId === change.project_id && item.documentId === change.document_id
+      ))) return items
+      items.push({
+        projectId: change.project_id,
+        documentId: change.document_id,
+        label: tab.relative_path,
+      })
+      return items
+    },
+    [],
+  )
+  if (dirtyDocuments.length) {
+    const list = dirtyDocuments.map((item) => `- ${item.label}`).join('\n')
+    const confirmed = window.confirm(
+      `以下文档有未保存修改，全部接受会丢弃这些修改：\n${list}\n\n继续吗？`,
+    )
+    if (!confirmed) return
+  }
+
   // 一旦某个 change set 失败（例如建议已因版本递增失效）就停下，
   // 避免连续 409 把错误提示刷成噪音，剩余卡片保留以便用户重新生成。
   for (const change of changes) {

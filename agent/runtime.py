@@ -55,11 +55,20 @@ class AgentRuntime:
         configs = load_server_configs(self.settings.mcp_config, self.settings.project_root, warn=warn)
         self.mcp = MCPManager(configs)
         await self.mcp.start(warn=warn)
-        self.tools.register_all(self.mcp.tools)
-        builtin_count = len(self.tools.list()) - len(self.mcp.tools)
+        builtin_count = len(self.tools.list())
+        mcp_count = 0
+        for spec in self.mcp.tools:
+            if self.tools.register(spec):
+                mcp_count += 1
+                continue
+            registered = self.tools.get(spec.name)
+            warn(
+                f"MCP 工具 {spec.name} 与已注册工具同名，已跳过"
+                f"（保留 {registered.source if registered else '既有实现'}）"
+            )
         self.bus.emit(
             "info",
-            text=f"工具表就绪：内置 {builtin_count} + MCP {len(self.mcp.tools)}"
+            text=f"工具表就绪：内置 {builtin_count} + MCP {mcp_count}"
                  + (f"（失败 server：{', '.join(self.mcp.failed_servers)}）" if self.mcp.failed_servers else ""),
         )
         if enable_scheduler:

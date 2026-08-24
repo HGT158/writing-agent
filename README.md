@@ -3,7 +3,7 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.26；多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底、值级脱敏加固与树形资源管理器均已实现，v1.26 为文档口径对齐）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.27；多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底、值级脱敏加固与树形资源管理器均已实现，v1.27 为 phase9 第一梯队加固）。
 
 ## 核心能力
 
@@ -110,7 +110,7 @@ npm run typecheck
 npm run build
 ```
 
-当前基线：Python `228/228`、记忆隔离 `10/10`、前端 `117/117`，类型检查与生产构建通过。
+当前基线：Python `234/234`、记忆隔离 `10/10`、前端 `118/118`，类型检查通过；最近一次生产构建基线通过。
 
 ## 目录
 
@@ -129,7 +129,7 @@ npm run build
 
 - [项目约定与 Agent 交接](AGENTS.md)
 - [文档导航](docs/README.md)
-- [架构 v1.26](docs/architecture/phase1-architecture.md)
+- [架构 v1.27](docs/architecture/phase1-architecture.md)
 - [后续待办](docs/guides/backlog.md)
 - [审查记录索引](docs/README.md)
 - [Windows Task Scheduler](docs/guides/windows-task-scheduler.md)

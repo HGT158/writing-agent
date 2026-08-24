@@ -66,6 +66,19 @@ def test_importing_api_main_does_not_construct_a_default_runtime():
     assert not hasattr(api_main, "app")
 
 
+def test_api_rejects_untrusted_host_and_allows_vite_local_host(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        rejected = client.get(
+            "/api/assistants", headers={"host": "attacker.example"}
+        )
+        allowed = client.get(
+            "/api/assistants", headers={"host": "127.0.0.1:5173"}
+        )
+
+    assert rejected.status_code == 400
+    assert allowed.status_code == 200
+
+
 def test_general_agent_task_api_uses_runtime_and_task_broker(tmp_path):
     runtime = AgentRuntime(_settings(tmp_path))
     runtime.run = AsyncMock(return_value={
