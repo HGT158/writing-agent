@@ -13,6 +13,7 @@ from agent.events import EventBus
 from agent.runtime import AgentRuntime
 from agent.work_log import WorkLogRecorder, summarize_detail
 from config.settings import Settings
+from memory.errors import ResourceConflictError
 from memory.store import MemoryStore
 
 
@@ -105,6 +106,44 @@ def test_work_event_seq_unique_and_task_terminal_idempotent(tmp_path):
         ) if item.kind == "task"
     ]
     assert len(terminals) == 2
+    store.close()
+
+
+def test_task_terminal_seq_collision_raises_resource_conflict(tmp_path):
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "终态冲突")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    _add_event(store, project, session.chat_session_id, task_id="same-task", seq=1)
+
+    with pytest.raises(ResourceConflictError, match="序号冲突"):
+        _add_event(
+            store, project, session.chat_session_id,
+            task_id="same-task", seq=1, kind="task",
+        )
+
+    store.close()
+
+
+def test_interrupt_uses_task_global_next_seq_to_avoid_cross_scope_collision(tmp_path):
+    store = MemoryStore(tmp_path)
+    project_a = store.create_project("writer-a", "项目 A")
+    project_b = store.create_project("writer-b", "项目 B")
+    session_a = store.create_project_chat_session("writer-a", project_a.project_id)
+    session_b = store.create_project_chat_session("writer-b", project_b.project_id)
+    _add_event(store, project_a, session_a.chat_session_id, task_id="shared-task", seq=1)
+    _add_event(
+        store, project_b, session_b.chat_session_id,
+        task_id="shared-task", seq=2, assistant="writer-b",
+    )
+
+    store.interrupt_project_chat_work_task(
+        "writer-a", project_a.project_id, session_a.chat_session_id, "shared-task"
+    )
+
+    events = store.list_project_chat_work_events(
+        "writer-a", project_a.project_id, session_a.chat_session_id
+    )
+    assert [(item.event_seq, item.kind) for item in events] == [(1, "progress"), (3, "task")]
     store.close()
 
 
@@ -754,7 +793,7 @@ def test_session_detail_respects_run_lock_for_direct_tasks(tmp_path):
     user = runtime.store.add_project_chat_message(
         "default", project.project_id, session.chat_session_id, "user", "直连指令"
     )
-    runtime.store.acquire_lock("default", "direct-task-1", 2)
+    runtime.store.acquire_lock("default", "direct-task-1")
     _add_event(runtime.store, project, session.chat_session_id,
                task_id="direct-task-1", seq=1, user_message_id=user.message_id,
                assistant="default")

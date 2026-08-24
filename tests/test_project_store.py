@@ -32,6 +32,22 @@ def test_create_project_creates_entry_document_under_assistant(tmp_path):
     store.close()
 
 
+def test_new_database_schema_contains_hunk_id_and_scoped_change_set_index(tmp_path):
+    store = MemoryStore(tmp_path)
+    intent_columns = {
+        row[1] for row in store._conn.execute("PRAGMA table_info(document_write_intents)")
+    }
+    index_columns = [
+        row[2] for row in store._conn.execute(
+            "PRAGMA index_info(idx_change_sets_task_document)"
+        )
+    ]
+
+    assert "hunk_id" in intent_columns
+    assert index_columns == ["assistant_id", "task_id", "document_id"]
+    store.close()
+
+
 def test_shared_connection_uses_autocommit_without_implicit_transaction_leak(tmp_path):
     store = MemoryStore(tmp_path)
     project = store.create_project("writer-a", "事务项目")
@@ -523,6 +539,36 @@ def test_legacy_run_lock_is_reclaimed_after_ttl_even_if_pid_is_alive(tmp_path, m
     store.close()
 
 
+@pytest.mark.parametrize("acquired_at", ["not-a-timestamp", "2026-99-99"])
+def test_invalid_run_lock_timestamp_is_treated_as_expired(tmp_path, acquired_at):
+    store = MemoryStore(tmp_path, run_lock_ttl_hours=12)
+    store._conn.execute(
+        "INSERT INTO run_locks (assistant_id, task_id, pid, acquired_at, pid_started_at) "
+        "VALUES (?,?,?,?,?)",
+        ("writer-a", "broken-lock", 999999, acquired_at, 0),
+    )
+
+    assert store.is_locked("writer-a") is False
+    store.acquire_lock("writer-a", "new-task")
+    assert store.current_lock_task_id("writer-a") == "new-task"
+    store.close()
+
+
+def test_memory_store_run_lock_ttl_is_shared_by_acquire_and_live_checks(tmp_path):
+    store = MemoryStore(tmp_path, run_lock_ttl_hours=0.001)
+    old_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    store._conn.execute(
+        "INSERT INTO run_locks (assistant_id, task_id, pid, acquired_at, pid_started_at) "
+        "VALUES (?,?,?,?,?)",
+        ("writer-a", "stale-task", 999999, old_at, 0),
+    )
+
+    assert store.is_locked("writer-a") is False
+    store.acquire_lock("writer-a", "fresh-task")
+    assert store.current_lock_task_id("writer-a") == "fresh-task"
+    store.close()
+
+
 def test_change_set_migration_failure_keeps_legacy_table_for_retry(tmp_path):
     db_path = tmp_path / "app.db"
     conn = sqlite3.connect(db_path)
@@ -760,4 +806,36 @@ def test_import_folder_enforces_file_count_and_total_size_limits(tmp_path):
             "writer-a", "too-large", [("a.txt", BytesIO(b"1234"))], max_total_bytes=3
         )
     assert store.list_projects("writer-a") == []
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        ("Chapter.md", "chapter.md"),
+        ("café.md", "cafe\u0301.md"),
+    ],
+)
+def test_import_folder_rejects_casefold_and_nfc_equivalent_paths(tmp_path, paths):
+    store = MemoryStore(tmp_path)
+
+    with pytest.raises(ValueError, match="导入路径重复"):
+        store.import_folder_project(
+            "writer-a",
+            "重复路径",
+            [(paths[0], BytesIO(b"a")), (paths[1], BytesIO(b"b"))],
+        )
+
+    assert store.list_projects("writer-a") == []
+    store.close()
+
+
+def test_long_term_and_purge_reject_invalid_assistant_ids(tmp_path):
+    store = MemoryStore(tmp_path)
+
+    with pytest.raises(ValueError, match="assistant_id"):
+        store.recall("../escape", "query")
+    with pytest.raises(ValueError, match="assistant_id"):
+        store.purge_assistant("../escape")
+
     store.close()

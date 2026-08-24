@@ -39,7 +39,7 @@ def test_create_and_duplicate(tmp_path):
 def test_delete_archives_and_locked_rejected(tmp_path):
     registry, store = _registry(tmp_path)
     registry.create("marketing", "营销文案")
-    store.acquire_lock("marketing", "task-1", ttl_hours=2)
+    store.acquire_lock("marketing", "task-1")
     with pytest.raises(RuntimeError, match="运行中"):
         registry.delete("marketing")
     store.release_lock("marketing", "task-1")

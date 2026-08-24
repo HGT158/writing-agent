@@ -350,6 +350,52 @@ def test_reject_hunk_is_metadata_only_and_reports_states(tmp_path):
     store.close()
 
 
+def test_change_set_unique_index_conflict_maps_to_resource_conflict(tmp_path, monkeypatch):
+    store, project, document = _store_with_document(tmp_path)
+    kwargs = dict(
+        task_id="same-task", start=0, end=4,
+        original_text="开头段。", replacement_text="新开头。",
+        base_version=document.version, source="selection",
+    )
+    store.create_selection_change_set(
+        "writer-a", project.project_id, document.document_id, **kwargs
+    )
+    monkeypatch.setattr(
+        "memory.projects._require_unique_task_document", lambda *_args: None
+    )
+
+    with pytest.raises(ResourceConflictError, match="已提交过"):
+        store.create_selection_change_set(
+            "writer-a", project.project_id, document.document_id, **kwargs
+        )
+
+    store.close()
+
+
+def test_delete_document_removes_terminal_change_set_history(tmp_path):
+    store, project, document = _store_with_document(tmp_path)
+    record = store.create_selection_change_set(
+        "writer-a", project.project_id, document.document_id,
+        task_id="delete-history", start=0, end=4,
+        original_text="开头段。", replacement_text="新开头。",
+        base_version=document.version, source="selection",
+    )
+    store.reject_change_hunk(
+        "writer-a", project.project_id, record.change_set_id, record.hunks[0].hunk_id
+    )
+
+    store.delete_document("writer-a", project.project_id, document.document_id)
+
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM change_sets WHERE document_id = ?", (document.document_id,)
+    ).fetchone() == (0,)
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM change_set_hunks WHERE change_set_id = ?",
+        (record.change_set_id,),
+    ).fetchone() == (0,)
+    store.close()
+
+
 def test_reject_blocked_while_write_intent_active(tmp_path):
     store, project, document = _store_with_document(tmp_path)
     record = _two_hunk_set(store, project, document)

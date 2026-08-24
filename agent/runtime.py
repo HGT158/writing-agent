@@ -35,7 +35,10 @@ class AgentRuntime:
     def __init__(self, settings: Settings, bus: EventBus | None = None) -> None:
         self.settings = settings
         self.bus = bus or EventBus()
-        self.store = MemoryStore(settings.data_dir)
+        self.store = MemoryStore(
+            settings.data_dir,
+            run_lock_ttl_hours=settings.run_lock_ttl_hours,
+        )
         self.assistants = AssistantRegistry(settings.data_dir, self.store)
         for warning in self.assistants.warnings:
             self.bus.emit("warning", text=warning)
@@ -93,7 +96,7 @@ class AgentRuntime:
         task_id = uuid.uuid4().hex[:12]
 
         # 跨进程运行锁（架构 §4.6）：冲突抛 AssistantBusyError
-        self.store.acquire_lock(assistant_id, task_id, self.settings.run_lock_ttl_hours)
+        self.store.acquire_lock(assistant_id, task_id)
         try:
             self.store.create_session(assistant_id, session_id, task)
             memory_context = self.store.recall(assistant_id, task)
@@ -157,7 +160,7 @@ class AgentRuntime:
         assistant = self.assistants.get(assistant_id)
         task_id = uuid.uuid4().hex[:12]
         session_id = uuid.uuid4().hex[:12]
-        self.store.acquire_lock(assistant_id, task_id, self.settings.run_lock_ttl_hours)
+        self.store.acquire_lock(assistant_id, task_id)
         try:
             document = self.store.get_document(assistant_id, project_id, document_id)
             if document.version != document_version:
@@ -265,7 +268,7 @@ class AgentRuntime:
             raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
         assistant = self.assistants.get(assistant_id)
         lock_task_id = uuid.uuid4().hex[:12]
-        self.store.acquire_lock(assistant_id, lock_task_id, self.settings.run_lock_ttl_hours)
+        self.store.acquire_lock(assistant_id, lock_task_id)
         recorder: WorkLogRecorder | None = None
         try:
             if not message.strip():

@@ -25,6 +25,7 @@ from .project_chat import (
     ProjectChatSummaryRecord,
 )
 from .projects import ChangeSetRecord, DocumentRecord, ProjectRecord
+from .validation import validate_id
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +94,11 @@ def _like_patterns(query: str, cap: int = 16) -> list[str]:
 
 
 class MemoryStore:
-    def __init__(self, data_dir: Path | str) -> None:
+    def __init__(self, data_dir: Path | str, *, run_lock_ttl_hours: float = 2.0) -> None:
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self.run_lock_ttl_hours = run_lock_ttl_hours
         self._conn = sqlite3.connect(
             str(self.data_dir / "app.db"),
             check_same_thread=False,
@@ -575,7 +577,7 @@ class MemoryStore:
 
     # ---------- 运行锁（架构 §4.6：跨进程，TTL + PID 存活校验） ----------
 
-    def acquire_lock(self, assistant_id: str, task_id: str, ttl_hours: float = 2.0) -> None:
+    def acquire_lock(self, assistant_id: str, task_id: str) -> None:
         """原子占位（INSERT OR IGNORE），杜绝 check-then-insert 竞态（审查 P0-2）。"""
         with self._lock:
             cur = self._conn.execute(
@@ -615,7 +617,7 @@ class MemoryStore:
                     return
                 raise AssistantBusyError(assistant_id, "锁竞争失败，请重试")
             old_task, old_pid, old_at, old_started_at = row
-            expired = datetime.now(timezone.utc) - datetime.fromisoformat(old_at) > timedelta(hours=ttl_hours)
+            expired = self._lock_timestamp_expired(old_at)
             owner_reused = False
             if old_started_at:
                 current_started_at = _process_started_at(old_pid)
@@ -675,7 +677,7 @@ class MemoryStore:
         if row is None:
             return None
         task_id, pid, acquired_at, pid_started_at = row
-        expired = datetime.now(timezone.utc) - datetime.fromisoformat(acquired_at) > timedelta(hours=2)
+        expired = self._lock_timestamp_expired(acquired_at)
         owner_reused = False
         if pid_started_at:
             current_started_at = _process_started_at(pid)
@@ -692,9 +694,21 @@ class MemoryStore:
             return None
         return row
 
+    def _lock_timestamp_expired(self, value: str) -> bool:
+        try:
+            acquired_at = datetime.fromisoformat(value)
+            if acquired_at.tzinfo is None:
+                acquired_at = acquired_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return True
+        return datetime.now(timezone.utc) - acquired_at > timedelta(
+            hours=self.run_lock_ttl_hours
+        )
+
     # ---------- 助手删除（--purge 级联） ----------
 
     def purge_assistant(self, assistant_id: str, *, owner_task_id: str | None = None) -> None:
+        validate_id(assistant_id, "assistant_id")
         with self._lock:
             running = self._live_lock_locked(assistant_id)
             if running is not None and running[0] != owner_task_id:

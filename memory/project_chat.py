@@ -501,6 +501,9 @@ def add_work_event(
             "WHERE assistant_id = ? AND project_id = ? AND task_id = ? AND kind = 'task'",
             (assistant_id, project_id, task_id),
         ).fetchone()
+        if row is None:
+            conn.rollback()
+            raise ResourceConflictError("工作记录序号冲突，任务终态未写入")
     else:
         cursor = conn.execute(
             "INSERT INTO project_chat_work_events "
@@ -586,8 +589,8 @@ def interrupt_work_task(
         ).fetchone()[0]
         next_seq = conn.execute(
             "SELECT COALESCE(MAX(event_seq), 0) + 1 FROM project_chat_work_events "
-            "WHERE assistant_id = ? AND project_id = ? AND chat_session_id = ? AND task_id = ?",
-            (assistant_id, project_id, chat_session_id, task_id),
+            "WHERE task_id = ?",
+            (task_id,),
         ).fetchone()[0]
         now = _now()
         conn.execute(
@@ -601,6 +604,13 @@ def interrupt_work_task(
                 "进程退出或连接中断，记录由对账补写", now, now,
             ),
         )
+        inserted = conn.execute(
+            "SELECT 1 FROM project_chat_work_events "
+            "WHERE assistant_id = ? AND project_id = ? AND task_id = ? AND kind = 'task'",
+            (assistant_id, project_id, task_id),
+        ).fetchone()
+        if inserted is None:
+            raise ResourceConflictError("工作记录序号冲突，任务中断终态未写入")
         conn.commit()
     except Exception:
         conn.rollback()

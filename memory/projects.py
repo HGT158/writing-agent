@@ -28,6 +28,7 @@ from .errors import (
     ResourceConflictError,
     StorageRecoveryPendingError,
 )
+from .validation import is_valid_id, validate_id
 
 
 PROJECT_DDL = """
@@ -90,6 +91,7 @@ CREATE TABLE IF NOT EXISTS document_write_intents (
     project_id TEXT NOT NULL,
     document_id TEXT NOT NULL,
     change_set_id TEXT,
+    hunk_id TEXT NOT NULL DEFAULT '',
     expected_version INTEGER NOT NULL,
     target_version INTEGER NOT NULL,
     relative_path TEXT NOT NULL,
@@ -105,7 +107,6 @@ CREATE INDEX IF NOT EXISTS idx_document_write_intents_owner
     ON document_write_intents(assistant_id, project_id, document_id);
 """
 
-_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _EDITABLE_EXTENSIONS = {".md", ".markdown", ".txt"}
 _WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -203,12 +204,6 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def _validate_id(value: str, label: str) -> str:
-    if not _ID_RE.fullmatch(value):
-        raise ValueError(f"{label} 非法：{value!r}")
-    return value
-
-
 def _safe_relative_path(value: str) -> str:
     normalized = unicodedata.normalize("NFC", value.replace("\\", "/"))
     if not normalized or "\x00" in normalized or normalized.startswith("/"):
@@ -232,8 +227,8 @@ def _is_editable(relative_path: str) -> bool:
 
 
 def _project_root(data_dir: Path, assistant_id: str, project_id: str) -> Path:
-    _validate_id(assistant_id, "assistant_id")
-    _validate_id(project_id, "project_id")
+    validate_id(assistant_id, "assistant_id")
+    validate_id(project_id, "project_id")
     root = (data_dir / "assistants" / assistant_id / "projects" / project_id).resolve()
     expected_parent = (data_dir / "assistants" / assistant_id / "projects").resolve()
     if root.parent != expected_parent:
@@ -330,7 +325,7 @@ def recover_project_artifacts(conn: sqlite3.Connection, data_dir: Path) -> None:
         suffix = staging.name.removeprefix(".purge-")
         project_id = suffix.split("-", 1)[0]
         if (
-            not _ID_RE.fullmatch(project_id)
+            not is_valid_id(project_id)
             or _artifact_is_recent(staging)
             or not _has_valid_project_marker(staging, assistant_id, project_id)
         ):
@@ -361,14 +356,14 @@ def recover_project_artifacts(conn: sqlite3.Connection, data_dir: Path) -> None:
                     project_id = child.name.removeprefix(".import-")
                     if (
                         child.is_dir()
-                        and _ID_RE.fullmatch(project_id)
+                        and is_valid_id(project_id)
                         and not _artifact_is_recent(child)
                         and _has_valid_project_marker(child, assistant_id, project_id)
                     ):
                         shutil.rmtree(child, ignore_errors=True)
                 elif child.name.startswith(".purge-"):
                     reconcile_purge(child, assistant_id)
-                elif child.is_dir() and _ID_RE.fullmatch(child.name):
+                elif child.is_dir() and is_valid_id(child.name):
                     if (
                         (assistant_id, child.name) not in projects_by_id
                         and not _artifact_is_recent(child)
@@ -421,10 +416,17 @@ def create_tables(conn: sqlite3.Connection) -> None:
     if "task_id" not in change_columns:
         _migrate_change_sets_to_hunks(conn)
     else:
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_change_sets_task_document "
-            "ON change_sets(task_id, document_id)"
-        )
+        index_columns = [
+            row[2] for row in conn.execute(
+                "PRAGMA index_info(idx_change_sets_task_document)"
+            )
+        ]
+        if index_columns != ["assistant_id", "task_id", "document_id"]:
+            conn.execute("DROP INDEX IF EXISTS idx_change_sets_task_document")
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_change_sets_task_document "
+                "ON change_sets(assistant_id, task_id, document_id)"
+            )
     conn.commit()
 
 
@@ -471,7 +473,7 @@ def _migrate_change_sets_to_hunks(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE change_sets_legacy")
         conn.execute(
             "CREATE UNIQUE INDEX idx_change_sets_task_document "
-            "ON change_sets(task_id, document_id)"
+            "ON change_sets(assistant_id, task_id, document_id)"
         )
         conn.execute(
             "CREATE INDEX idx_change_sets_owner "
@@ -494,15 +496,6 @@ def _row_to_document(row: tuple, content: str | None = None) -> DocumentRecord:
     return DocumentRecord(
         document_id=row[0], assistant_id=row[1], project_id=row[2],
         relative_path=row[3], version=row[4], editable=bool(row[5]), content=content,
-    )
-
-
-def _row_to_change_set(row: tuple) -> ChangeSetRecord:
-    return ChangeSetRecord(
-        change_set_id=row[0], assistant_id=row[1], project_id=row[2],
-        document_id=row[3], session_id=row[4], source=row[5],
-        start=row[6], end=row[7], original_text=row[8], replacement_text=row[9],
-        base_version=row[10], status=row[11],
     )
 
 
@@ -858,7 +851,7 @@ def _recover_write_intents(
 
 
 def create_project(conn: sqlite3.Connection, data_dir: Path, assistant_id: str, name: str) -> ProjectRecord:
-    _validate_id(assistant_id, "assistant_id")
+    validate_id(assistant_id, "assistant_id")
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("项目名称不能为空")
@@ -1010,6 +1003,18 @@ def delete_document(
     if target.exists():
         target.unlink()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "DELETE FROM change_set_hunks WHERE change_set_id IN ("
+            "SELECT change_set_id FROM change_sets "
+            "WHERE assistant_id = ? AND project_id = ? AND document_id = ?)",
+            (assistant_id, project_id, document_id),
+        )
+        conn.execute(
+            "DELETE FROM change_sets "
+            "WHERE assistant_id = ? AND project_id = ? AND document_id = ?",
+            (assistant_id, project_id, document_id),
+        )
         conn.execute(
             "DELETE FROM project_documents "
             "WHERE assistant_id = ? AND project_id = ? AND document_id = ?",
@@ -1199,7 +1204,7 @@ def _import_project(
     max_total_bytes: int = 512 * 1024 * 1024,
     max_file_bytes: int = 100 * 1024 * 1024,
 ) -> ProjectRecord:
-    _validate_id(assistant_id, "assistant_id")
+    validate_id(assistant_id, "assistant_id")
     clean_name = name.strip()
     if not clean_name:
         raise ValueError("项目名称不能为空")
@@ -1208,6 +1213,7 @@ def _import_project(
     staging = root.parent / f".import-{project_id}"
     staging.mkdir(parents=True, exist_ok=False)
     entries: list[tuple[str, bool]] = []
+    path_identities: set[str] = set()
     total = 0
     try:
         _write_project_marker(staging, assistant_id, project_id)
@@ -1215,8 +1221,10 @@ def _import_project(
             if index > max_files:
                 raise ValueError("导入文件数量超过限制")
             relative = _safe_relative_path(raw_path)
-            if any(existing == relative for existing, _ in entries):
+            identity = unicodedata.normalize("NFC", relative).casefold()
+            if identity in path_identities:
                 raise ValueError(f"导入路径重复：{relative}")
+            path_identities.add(identity)
             data = _read_stream(stream, max_file_bytes)
             if _is_editable(relative):
                 try:
@@ -1416,11 +1424,12 @@ def _stale_outdated_hunks(
 
 
 def _require_unique_task_document(
-    conn: sqlite3.Connection, task_id: str, document_id: str
+    conn: sqlite3.Connection, assistant_id: str, task_id: str, document_id: str
 ) -> None:
     if conn.execute(
-        "SELECT 1 FROM change_sets WHERE task_id = ? AND document_id = ?",
-        (task_id, document_id),
+        "SELECT 1 FROM change_sets "
+        "WHERE assistant_id = ? AND task_id = ? AND document_id = ?",
+        (assistant_id, task_id, document_id),
     ).fetchone() is not None:
         raise ResourceConflictError("该任务已提交过此文档的修改建议")
 
@@ -1488,7 +1497,7 @@ def create_change_set_hunks(
             )
             if total_bytes > _MAX_SET_UTF8_BYTES:
                 raise ValueError("change set 总量超过 1 MiB 上限")
-            _require_unique_task_document(conn, task_id, document_id)
+            _require_unique_task_document(conn, assistant_id, task_id, document_id)
             located: list[dict] = []
             for item in raw_hunks:
                 old_text = str(item.get("old_text", ""))
@@ -1532,6 +1541,9 @@ def create_change_set_hunks(
                     ),
                 )
         conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ResourceConflictError("该任务已提交过此文档的修改建议") from exc
     except Exception:
         conn.rollback()
         raise
@@ -1568,7 +1580,7 @@ def create_selection_change_set(
             raise ResourceConflictError("版本冲突")
         if document.content[start:end] != original_text:
             raise ResourceConflictError("原文快照不匹配")
-        _require_unique_task_document(conn, task_id, document_id)
+        _require_unique_task_document(conn, assistant_id, task_id, document_id)
         now = _now()
         conn.execute(
             "INSERT INTO change_sets (change_set_id, assistant_id, project_id, document_id, "
@@ -1589,6 +1601,9 @@ def create_selection_change_set(
             ),
         )
         conn.commit()
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ResourceConflictError("该任务已提交过此文档的修改建议") from exc
     except Exception:
         conn.rollback()
         raise

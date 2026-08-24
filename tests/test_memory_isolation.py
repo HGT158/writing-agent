@@ -38,21 +38,21 @@ def test_profile_files_physically_separated(tmp_path):
 
 def test_run_lock_conflict_and_release(tmp_path):
     store = MemoryStore(tmp_path)
-    store.acquire_lock("tech-writer", "task-1", ttl_hours=2)
+    store.acquire_lock("tech-writer", "task-1")
     with pytest.raises(AssistantBusyError):
-        store.acquire_lock("tech-writer", "task-2", ttl_hours=2)
-    store.acquire_lock("marketing", "task-3", ttl_hours=2)  # 不同助手互不影响
+        store.acquire_lock("tech-writer", "task-2")
+    store.acquire_lock("marketing", "task-3")  # 不同助手互不影响
     store.release_lock("tech-writer", "task-1")
-    store.acquire_lock("tech-writer", "task-4", ttl_hours=2)  # 释放后可再获锁
+    store.acquire_lock("tech-writer", "task-4")  # 释放后可再获锁
     store.close()
 
 
 def test_run_lock_race_between_two_connections(tmp_path):
     """P0-2 回归：两个独立连接（模拟两个进程）抢同一把锁，败者得到 AssistantBusyError 而非 IntegrityError。"""
     s1, s2 = MemoryStore(tmp_path), MemoryStore(tmp_path)
-    s1.acquire_lock("tech-writer", "task-A", ttl_hours=2)
+    s1.acquire_lock("tech-writer", "task-A")
     with pytest.raises(AssistantBusyError):
-        s2.acquire_lock("tech-writer", "task-B", ttl_hours=2)
+        s2.acquire_lock("tech-writer", "task-B")
     s1.close()
     s2.close()
 
@@ -60,7 +60,7 @@ def test_run_lock_race_between_two_connections(tmp_path):
 def test_release_lock_only_releases_own_task(tmp_path):
     """P1-3 回归：release 带 task_id 条件，不得误删回收后新持有者的锁。"""
     store = MemoryStore(tmp_path)
-    store.acquire_lock("tech-writer", "task-old", ttl_hours=2)
+    store.acquire_lock("tech-writer", "task-old")
     conn = sqlite3.connect(str(tmp_path / "app.db"))  # 模拟锁易主：换成新持有者
     conn.execute("UPDATE run_locks SET task_id = 'task-new' WHERE assistant_id = 'tech-writer'")
     conn.commit()
@@ -84,7 +84,7 @@ def test_run_lock_reclaims_crashed_process(tmp_path):
     )
     conn.commit()
     conn.close()
-    store.acquire_lock("tech-writer", "new-task", ttl_hours=2)  # 回收残留后获锁成功
+    store.acquire_lock("tech-writer", "new-task")  # 回收残留后获锁成功
 
     conn = sqlite3.connect(str(tmp_path / "app.db"))
     conn.execute(
@@ -94,7 +94,7 @@ def test_run_lock_reclaims_crashed_process(tmp_path):
     conn.commit()
     conn.close()
     with pytest.raises(AssistantBusyError, match="仍存活"):
-        store.acquire_lock("tech-writer", "another-task", ttl_hours=2)
+        store.acquire_lock("tech-writer", "another-task")
     store.close()
 
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from .validation import validate_id
+
 _KIND_TITLES = {
     "preference": "偏好",
     "style": "风格",
@@ -12,6 +14,7 @@ _KIND_TITLES = {
 
 
 def profile_path(data_dir: Path, assistant_id: str) -> Path:
+    validate_id(assistant_id, "assistant_id")
     return data_dir / "assistants" / assistant_id / "memory" / "profile.md"
 
 
