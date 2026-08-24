@@ -39,3 +39,18 @@ def test_var_interpolation_treats_empty_as_unset_without_warning(tmp_path, monke
     assert server["env"]["A"] == "secret-1"
     assert server["env"]["B"] == ""
     assert warnings == []
+
+
+def test_subprocess_env_does_not_inherit_unlisted_secrets(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-leak")
+    monkeypatch.setenv("PATH", "safe-path")
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text(json.dumps({"mcpServers": {"s": {
+        "command": "tool", "env": {"SERVER_TOKEN": "declared"},
+    }}}), encoding="utf-8")
+
+    env = load_server_configs(cfg, tmp_path)["s"]["env"]
+
+    assert env["PATH"] == "safe-path"
+    assert env["SERVER_TOKEN"] == "declared"
+    assert "OPENAI_API_KEY" not in env

@@ -17,6 +17,11 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 _VAR_RE = re.compile(r"\$\{([^}]+)\}")
+_INHERITED_ENV_ALLOWLIST = {
+    "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC",
+    "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "LOCALAPPDATA",
+    "LANG", "LC_ALL", "PYTHONIOENCODING",
+}
 
 
 def _expand(value: str, project_root: Path, warn: Callable[[str], None]) -> str:
@@ -49,7 +54,7 @@ def load_server_configs(
     project_root: Path,
     warn: Callable[[str], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """返回 {server_name: {command, args, env}}；env 与当前进程环境合并（子进程需要 PATH 等）。
+    """返回 {server_name: {command, args, env}}；只继承启动所需基础环境。
 
     坏 JSON / 结构错误 / 缺 command：warning + 跳过，不抛异常（审查 P1-9）。
     """
@@ -73,9 +78,13 @@ def load_server_configs(
             continue
         expanded = _expand_any(cfg, project_root, warn)
         declared_env = expanded.get("env") or {}
+        inherited_env = {
+            key: value for key, value in os.environ.items()
+            if key.upper() in _INHERITED_ENV_ALLOWLIST
+        }
         configs[name] = {
             "command": expanded["command"],
             "args": expanded.get("args", []),
-            "env": {**os.environ, **declared_env},
+            "env": {**inherited_env, **declared_env},
         }
     return configs

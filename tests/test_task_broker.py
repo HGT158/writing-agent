@@ -289,3 +289,21 @@ def test_task_broker_delivers_terminal_for_future_cursor():
     events = [_payload(frame) for frame in frames]
     assert [event["seq"] for event in events] == [2]
     assert events[0]["type"] == "task_done"
+
+
+def test_stream_ends_cleanly_if_record_is_trimmed_before_first_frame():
+    async def scenario():
+        bus = EventBus()
+        broker = TaskBroker(bus)
+
+        async def operation():
+            return {"ok": True}
+
+        task_id = broker.start("writer-a", operation)
+        stream = broker.stream(task_id, "writer-a")
+        broker.records.pop(task_id)
+        frames = [frame async for frame in stream]
+        await broker.shutdown()
+        return frames
+
+    assert asyncio.run(scenario()) == []

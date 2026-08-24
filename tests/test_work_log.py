@@ -775,6 +775,12 @@ def test_session_detail_returns_work_events_and_reconciles(tmp_path):
                    task_id="active-task", seq=1, user_message_id=user.message_id,
                    assistant="default")
 
+        reconciled = client.post(
+            f"/api/projects/{project.project_id}/agent/sessions/"
+            f"{session.chat_session_id}/reconcile",
+            params={"assistant_id": "default"},
+        )
+        assert reconciled.status_code == 200
         detail = client.get(
             f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
             params={"assistant_id": "default"},
@@ -793,6 +799,11 @@ def test_session_detail_returns_work_events_and_reconciles(tmp_path):
         assert len(active_rows) == 1  # 运行中的任务不得提前终结
 
         active_record.status = "done"
+        client.post(
+            f"/api/projects/{project.project_id}/agent/sessions/"
+            f"{session.chat_session_id}/reconcile",
+            params={"assistant_id": "default"},
+        )
         detail = client.get(
             f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
             params={"assistant_id": "default"},
@@ -833,6 +844,11 @@ def test_session_detail_respects_run_lock_for_direct_tasks(tmp_path):
         ]
 
         runtime.store.release_lock("default", "direct-task-1")
+        client.post(
+            f"/api/projects/{project.project_id}/agent/sessions/"
+            f"{session.chat_session_id}/reconcile",
+            params={"assistant_id": "default"},
+        )
         detail = client.get(
             f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
             params={"assistant_id": "default"},

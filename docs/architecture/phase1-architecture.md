@@ -48,6 +48,7 @@
 > v1.27 补充变更：处理 phase9 第二梯队加固项。**（1）项目残骸安全对账（P1-2）**：项目与导入 staging 写入包含 assistant/project 身份的内部管理标记；启动对账只有在标记存在、格式合法且身份与受管路径一致时才允许删除目录，并对新近目录保留五分钟宽限期。purge 在移动前刷新目录时间，提交后的 staging 清理由幂等 `rmtree(..., ignore_errors=True)` 收口，避免与并发创建/导入/purge 互相误删或报假失败（§4.7/§5.7/§9）。**（2）项目归档/清除写边界（P2-17）**：archive/purge 移动目录前检查项目内活跃 `document_write_intents`，与文档 mutation 入口一致返回写入冲突；真实在途写者仍被拒绝（§4.7/§5.7/§9）。**（3）前端回写竞态保护（P1-5）**：保存、接受单 hunk、接受整组及项目级批量接受统一捕获请求发起时的标签版本与正文指纹；响应到达时只有当前标签版本和指纹均未变化才以服务端快照回写，否则保留本地内容与 dirty 状态并提示并发编辑冲突（§5.10）。**（4）网络停滞边界（P1-6）**：所有 fetch 统一施加 60 秒超时；SSE 从 `onopen` 起以任意数据事件或服务端命名 heartbeat 刷新 60 秒空闲看门狗，超时主动关闭当前连接并进入既有游标续传与退避重连（§5.9/§5.10/§6.2/§9）。**（5）MCP 启动生命周期（P1-8）**：stdio 建连、session initialize、list_tools 三步各有显式超时；每个 server 先进入独立临时 `AsyncExitStack`，只有三步全部成功后才把其清理回调转移进 manager 长命栈，失败或超时立即关闭临时栈与子进程（§5.6/§9）。**（6）工作记录终结稳定性（P2-1）**：`interrupt_running` 对工作项快照迭代，持久化失败补 warning 即使向记录表插入新项也不会中断其余工作项的 interrupted 终结（§5.7/§9）。
 > v1.27 补充变更（phase9 审查遗留清扫·memory 组）：项目存储新库 DDL 直接包含完整写意图字段，并迁移 change set 唯一约束为 `(assistant_id, task_id, document_id)`；工作终态幂等插入遇到序号冲突时显式报资源冲突，对账补写在冲突下重新计算序号；运行锁 TTL 固定为 MemoryStore 实例配置且非法时间视为残留；memory 公共 id 校验覆盖长期记忆与助手 purge；导入路径用 NFC+casefold 防止大小写/规范等价覆盖，change set 并发唯一冲突稳定映射为资源冲突，删除文档同步清理其已终结建议记录（§4.6/§4.7/§5.7/§9）。
 > v1.27 补充变更（phase9 审查遗留清扫·agent 组）：LLM 请求使用显式 SDK 超时且每条流设总时长上限；MCP 工具按非幂等、非素材捕获的保守默认注册，工具执行超时由 Settings 统一配置；任务 API 在返回 202 前原子占用运行锁并把所有权交给后台任务，消除预检竞态；同进程文档写意图只在短 `claimed_at` 宽限内视为活跃；Reflect 无法解析质检 JSON 时按未通过处理；定稿文件写入成功后记忆登记失败只告警；同步文件操作移入工作线程，工作记录二次补偿失败必须留日志；业务 Runtime 不再发重复 failed 信号，项目聊天失败/取消轮次持久化 interrupted 助手占位；CLI resume 校验 session 的助手归属（§3.4/§4.6/§5.2/§5.4/§5.6/§5.7/§5.9/§9）。
+> v1.27 补充变更（phase9 审查遗留清扫·api/基础设施组）：导入、归档/清除及文档文件变更等重 IO 经 AnyIO 工作线程执行；SSE 在路由校验后记录被裁剪的首帧竞态以干净空流终止；项目路径拒绝全部 C0 控制字符；会话详情 GET 只读，对账补写改为显式 POST 后再读取；Web lifespan 明确记录 Scheduler 未启用；MCP 子进程仅继承运行所需基础环境白名单与该 server 显式声明变量；全局 ASGI 请求体上限在解析前按流式字节计数，超限返回 413（§5.6/§5.8/§5.9/§9）。
 
 ---
 
@@ -562,7 +563,8 @@ JOBS = [
 | `GET /api/projects/{project_id}/change-sets?assistant_id=X&document_id=Y` | 按文档分页查询 change set（含全部 hunk 与状态），供页面加载、SSE 重连后做 hunk 级状态对账 |
 | `POST /api/projects/{project_id}/agent/messages` | 向项目 Agent 面板发送消息；body 必含 `assistant_id`，消息最长 100,000 字符，可带当前 `document_id`、选区及显式附件；返回任务 id，文本通过 SSE 流式发送，修改类结果由 `propose_project_edits` 生成 change set |
 | `GET /api/projects/{project_id}/agent/sessions?assistant_id=X` | 按更新时间倒序返回该助手项目的聊天会话 |
-| `GET /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 返回完整可见消息、该会话 pending chat diff 与按任务分组的工作记录；返回前先对无终态且已不活动的工作事件组幂等补写 `interrupted` 终态——"活动"指 TaskBroker 中仍在运行，或该助手当前运行锁的 `task_id` 即该任务（无 broker 作用域的直连运行） |
+| `GET /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 只读返回完整可见消息、该会话 pending chat diff 与按任务分组的工作记录 |
+| `POST /api/projects/{project_id}/agent/sessions/{chat_session_id}/reconcile?assistant_id=X` | 显式对账：对无终态且已不活动的工作事件组幂等补写 `interrupted` 终态——“活动”指 TaskBroker 中仍在运行，或该助手当前运行锁的 `task_id` 即该任务（无 broker 作用域的直连运行） |
 | `DELETE /api/projects/{project_id}/agent/sessions/{chat_session_id}?assistant_id=X` | 删除无 pending diff 的会话；存在 pending 返回 409 |
 | `GET /api/articles?assistant_id=X` | 既有完成态文章归档列表；`assistant_id` 必填。它不是项目编辑入口 |
 | `GET /api/articles/{id}?assistant_id=X` | 只读获取完成态文章；要继续编辑须复制/导入为项目，所有保存统一走项目文档 API |

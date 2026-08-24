@@ -840,6 +840,18 @@ def test_import_folder_enforces_file_count_and_total_size_limits(tmp_path):
     store.close()
 
 
+@pytest.mark.parametrize("path", ["bad\nname.md", "bad\x01name.md"])
+def test_project_paths_reject_control_characters(tmp_path, path):
+    store = MemoryStore(tmp_path)
+
+    with pytest.raises(ValueError, match="路径非法"):
+        store.import_folder_project(
+            "writer-a", "控制字符", [(path, BytesIO(b"text"))]
+        )
+
+    store.close()
+
+
 @pytest.mark.parametrize(
     "paths",
     [

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -49,6 +50,33 @@ def test_task_submission_reserves_lock_before_returning_202(tmp_path):
         assert first.status_code == 202
         assert second.status_code == 409
         _wait_task(client, first.json()["task_id"])
+
+
+def test_request_body_limit_rejects_before_pydantic_parsing(tmp_path):
+    settings = _settings(tmp_path)
+    settings.api_max_request_body_mb = 0
+    from api.main import create_app
+
+    with TestClient(create_app(settings=settings, start_runtime=False)) as client:
+        response = client.post(
+            "/api/tasks", json={"assistant_id": "default", "task": "x"}
+        )
+
+    assert response.status_code == 413
+
+
+def test_web_lifespan_logs_that_scheduler_is_disabled(tmp_path, caplog):
+    runtime = AgentRuntime(_settings(tmp_path))
+    runtime.start = AsyncMock()
+    runtime.close = AsyncMock()
+    from api.main import create_app
+    app = create_app(settings=_settings(tmp_path), runtime=runtime, start_runtime=True)
+    caplog.set_level(logging.INFO, logger="api.main")
+
+    with TestClient(app):
+        pass
+
+    assert "未启用 Scheduler" in caplog.text
 
 
 def _wait_task(client: TestClient, task_id: str, assistant_id: str = "default") -> dict:

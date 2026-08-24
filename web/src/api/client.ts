@@ -143,7 +143,11 @@ export const apiClient = {
     page_size: number
   }>(`/api/projects/${projectId}/change-sets?assistant_id=${encodeURIComponent(assistantId)}&document_id=${encodeURIComponent(documentId)}&page=${page}&page_size=${pageSize}`),
   listProjectChatSessions: (assistantId: string, projectId: string) => request<ProjectChatSession[]>(`/api/projects/${projectId}/agent/sessions?assistant_id=${encodeURIComponent(assistantId)}`),
-  getProjectChatSession: (assistantId: string, projectId: string, chatSessionId: string) => request<ProjectChatSessionDetail>(`/api/projects/${projectId}/agent/sessions/${chatSessionId}?assistant_id=${encodeURIComponent(assistantId)}`),
+  getProjectChatSession: async (assistantId: string, projectId: string, chatSessionId: string) => {
+    const scope = `/api/projects/${projectId}/agent/sessions/${chatSessionId}`
+    await request<{ reconciled_task_ids: string[] }>(`${scope}/reconcile?assistant_id=${encodeURIComponent(assistantId)}`, { method: 'POST' })
+    return request<ProjectChatSessionDetail>(`${scope}?assistant_id=${encodeURIComponent(assistantId)}`)
+  },
   deleteProjectChatSession: (assistantId: string, projectId: string, chatSessionId: string) => request<{ deleted: boolean }>(`/api/projects/${projectId}/agent/sessions/${chatSessionId}?assistant_id=${encodeURIComponent(assistantId)}`, {
     method: 'DELETE',
   }),

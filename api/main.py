@@ -12,6 +12,7 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFil
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+import anyio
 
 from agent.runtime import AgentRuntime
 from config.settings import Settings, load_settings
@@ -29,6 +30,7 @@ from .models import (
     ProjectRename,
     SelectionRewriteRequest,
 )
+from .middleware import RequestBodyLimitMiddleware
 from .tasks import TaskBroker
 
 logger = logging.getLogger(__name__)
@@ -82,6 +84,7 @@ def create_app(
     async def lifespan(_app: FastAPI):
         if start_runtime:
             await runtime.start()
+            logger.info("Web 服务模式未启用 Scheduler；定时任务请使用 python -m agent schedule")
         try:
             yield
         finally:
@@ -95,6 +98,10 @@ def create_app(
     app.add_middleware(
         TrustedHostMiddleware,
         allowed_hosts=trusted_hosts,
+    )
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=settings.api_max_request_body_mb * 1024 * 1024,
     )
     app.state.runtime = runtime
     app.state.tasks = broker
@@ -186,14 +193,20 @@ def create_app(
     async def create_project(body: ProjectCreate):
         try:
             runtime.assistants.get(body.assistant_id)
-            return asdict(runtime.store.create_project(body.assistant_id, body.name))
+            project = await anyio.to_thread.run_sync(
+                runtime.store.create_project, body.assistant_id, body.name
+            )
+            return asdict(project)
         except Exception as exc:
             _raise_http(exc)
 
     @app.patch("/api/projects/{project_id}")
     async def rename_project(project_id: str, body: ProjectRename):
         try:
-            return asdict(runtime.store.rename_project(body.assistant_id, project_id, body.name))
+            project = await anyio.to_thread.run_sync(
+                runtime.store.rename_project, body.assistant_id, project_id, body.name
+            )
+            return asdict(project)
         except Exception as exc:
             _raise_http(exc)
 
@@ -205,9 +218,13 @@ def create_app(
     ):
         try:
             if purge:
-                runtime.store.purge_project(assistant_id, project_id)
+                await anyio.to_thread.run_sync(
+                    runtime.store.purge_project, assistant_id, project_id
+                )
                 return {"purged": True}
-            archived = runtime.store.archive_project(assistant_id, project_id)
+            archived = await anyio.to_thread.run_sync(
+                runtime.store.archive_project, assistant_id, project_id
+            )
             return {"archived_path": str(archived)}
         except Exception as exc:
             _raise_http(exc)
@@ -216,14 +233,12 @@ def create_app(
     async def import_file(assistant_id: str = Form(...), file: UploadFile = File(...)):
         try:
             runtime.assistants.get(assistant_id)
-            project = runtime.store.import_text_project(
-                assistant_id,
-                file.filename or "",
-                file.file,
+            project = await anyio.to_thread.run_sync(lambda: runtime.store.import_text_project(
+                assistant_id, file.filename or "", file.file,
                 max_files=settings.project_import_max_files,
                 max_total_bytes=settings.project_import_max_total_mb * 1024 * 1024,
                 max_file_bytes=settings.project_import_max_file_mb * 1024 * 1024,
-            )
+            ))
             return asdict(project)
         except Exception as exc:
             _raise_http(exc)
@@ -239,14 +254,14 @@ def create_app(
             raise HTTPException(status_code=400, detail="paths 与 files 数量不一致")
         try:
             runtime.assistants.get(assistant_id)
-            project = runtime.store.import_folder_project(
+            project = await anyio.to_thread.run_sync(lambda: runtime.store.import_folder_project(
                 assistant_id,
                 name,
                 [(relative, upload.file) for relative, upload in zip(paths, files, strict=True)],
                 max_files=settings.project_import_max_files,
                 max_total_bytes=settings.project_import_max_total_mb * 1024 * 1024,
                 max_file_bytes=settings.project_import_max_file_mb * 1024 * 1024,
-            )
+            ))
             return asdict(project)
         except Exception as exc:
             _raise_http(exc)
@@ -268,10 +283,10 @@ def create_app(
     @app.put("/api/projects/{project_id}/documents/{document_id}")
     async def save_document(project_id: str, document_id: str, body: DocumentSave):
         try:
-            document, staled = runtime.store.save_document(
+            document, staled = await anyio.to_thread.run_sync(lambda: runtime.store.save_document(
                 body.assistant_id, project_id, document_id, body.content,
                 expected_version=body.document_version,
-            )
+            ))
             return {**asdict(document), "staled_change_set_ids": staled}
         except Exception as exc:
             _raise_http(exc)
@@ -279,9 +294,9 @@ def create_app(
     @app.patch("/api/projects/{project_id}/documents/{document_id}")
     async def rename_document(project_id: str, document_id: str, body: DocumentRename):
         try:
-            return asdict(runtime.store.rename_document(
+            return asdict(await anyio.to_thread.run_sync(lambda: runtime.store.rename_document(
                 body.assistant_id, project_id, document_id, body.relative_path
-            ))
+            )))
         except Exception as exc:
             _raise_http(exc)
 
@@ -292,7 +307,9 @@ def create_app(
         assistant_id: str = Query(...),
     ):
         try:
-            return runtime.store.delete_document(assistant_id, project_id, document_id)
+            return await anyio.to_thread.run_sync(
+                runtime.store.delete_document, assistant_id, project_id, document_id
+            )
         except Exception as exc:
             _raise_http(exc)
 
@@ -325,8 +342,9 @@ def create_app(
     )
     async def accept_hunk(project_id: str, change_set_id: str, hunk_id: str, body: ChangeSetHunkAction):
         try:
-            document, change, hunk, staled = runtime.store.accept_change_hunk(
-                body.assistant_id, project_id, change_set_id, hunk_id
+            document, change, hunk, staled = await anyio.to_thread.run_sync(
+                runtime.store.accept_change_hunk,
+                body.assistant_id, project_id, change_set_id, hunk_id,
             )
             return {
                 "document": asdict(document),
@@ -342,17 +360,20 @@ def create_app(
     )
     async def reject_hunk(project_id: str, change_set_id: str, hunk_id: str, body: ChangeSetHunkAction):
         try:
-            return {"change_set": asdict(runtime.store.reject_change_hunk(
-                body.assistant_id, project_id, change_set_id, hunk_id
-            ))}
+            change = await anyio.to_thread.run_sync(
+                runtime.store.reject_change_hunk,
+                body.assistant_id, project_id, change_set_id, hunk_id,
+            )
+            return {"change_set": asdict(change)}
         except Exception as exc:
             _raise_http(exc)
 
     @app.post("/api/projects/{project_id}/change-sets/{change_set_id}/accept-all")
     async def accept_all_hunks(project_id: str, change_set_id: str, body: ChangeSetHunkAction):
         try:
-            result = runtime.store.accept_all_change_hunks(
-                body.assistant_id, project_id, change_set_id
+            result = await anyio.to_thread.run_sync(
+                runtime.store.accept_all_change_hunks,
+                body.assistant_id, project_id, change_set_id,
             )
             return {
                 "document": asdict(result["document"]),
@@ -481,18 +502,6 @@ def create_app(
             session = runtime.store.get_project_chat_session(
                 assistant_id, project_id, chat_session_id
             )
-            # 无 broker 作用域的直连任务以运行锁的 task_id 标识；锁未释放视为仍在运行。
-            live_lock_task_id = runtime.store.current_lock_task_id(assistant_id)
-            for work_task_id in runtime.store.list_unfinished_project_chat_work_task_ids(
-                assistant_id, project_id, chat_session_id
-            ):
-                if broker.is_active(work_task_id, assistant_id):
-                    continue
-                if work_task_id == live_lock_task_id:
-                    continue
-                runtime.store.interrupt_project_chat_work_task(
-                    assistant_id, project_id, chat_session_id, work_task_id
-                )
             messages = runtime.store.list_project_chat_messages(
                 assistant_id, project_id, chat_session_id
             )
@@ -508,6 +517,36 @@ def create_app(
                 "pending_changes": [_change_preview(item) for item in pending],
                 "work_events": [asdict(item) for item in work_events],
             }
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.post(
+        "/api/projects/{project_id}/agent/sessions/{chat_session_id}/reconcile"
+    )
+    async def reconcile_project_chat_session(
+        project_id: str,
+        chat_session_id: str,
+        assistant_id: str = Query(...),
+    ):
+        try:
+            runtime.store.get_project_chat_session(
+                assistant_id, project_id, chat_session_id
+            )
+            live_lock_task_id = runtime.store.current_lock_task_id(assistant_id)
+            reconciled: list[str] = []
+            for work_task_id in runtime.store.list_unfinished_project_chat_work_task_ids(
+                assistant_id, project_id, chat_session_id
+            ):
+                if broker.is_active(work_task_id, assistant_id):
+                    continue
+                if work_task_id == live_lock_task_id:
+                    continue
+                await anyio.to_thread.run_sync(
+                    runtime.store.interrupt_project_chat_work_task,
+                    assistant_id, project_id, chat_session_id, work_task_id,
+                )
+                reconciled.append(work_task_id)
+            return {"reconciled_task_ids": reconciled}
         except Exception as exc:
             _raise_http(exc)
 

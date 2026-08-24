@@ -215,7 +215,11 @@ def _safe_relative_path(value: str) -> str:
     if len(parts) > 64 or not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError(f"路径非法：{value!r}")
     for part in parts:
-        if len(part) > 255 or any(char in part for char in '<>:"|?*'):
+        if (
+            len(part) > 255
+            or any(ord(char) < 0x20 for char in part)
+            or any(char in part for char in '<>:"|?*')
+        ):
             raise ValueError(f"路径非法：{value!r}")
         stem = part.split(".", 1)[0].rstrip(" .").upper()
         if not part or part.endswith((" ", ".")) or stem in _WINDOWS_RESERVED:

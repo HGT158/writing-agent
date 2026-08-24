@@ -206,3 +206,23 @@ describe('apiClient request timeout', () => {
     expect(fetchMock.mock.calls[0][1]?.signal?.aborted).toBe(true)
   })
 })
+
+describe('apiClient project chat reconciliation', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('reconciles explicitly with POST before reading session detail', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ reconciled_task_ids: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        session: {}, messages: [], pending_changes: [], work_events: [],
+      }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiClient.getProjectChatSession('writer-a', 'project-1', 'session-1')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][0]).toContain('/reconcile?assistant_id=writer-a')
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+    expect(fetchMock.mock.calls[1][0]).not.toContain('/reconcile')
+  })
+})

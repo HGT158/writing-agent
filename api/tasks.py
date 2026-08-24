@@ -122,7 +122,10 @@ class TaskBroker:
         return record is not None and record.assistant_id == assistant_id and record.status == "running"
 
     async def stream(self, task_id: str, assistant_id: str, after_seq: int | None = None):
-        record = self.get(task_id, assistant_id)
+        try:
+            record = self.get(task_id, assistant_id)
+        except KeyError:
+            return
         queue: asyncio.Queue[Event] = asyncio.Queue()
         record.subscribers.add(queue)
         cursor = record.dropped  # 已裁剪的历史无法重放，从窗口最早事件开始

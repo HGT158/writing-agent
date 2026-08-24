@@ -33,6 +33,7 @@ class Settings:
     llm_timeout_seconds: float = 120.0
     llm_stream_timeout_seconds: float = 300.0
     tool_timeout_seconds: float = 30.0
+    api_max_request_body_mb: int = 520
     project_import_max_files: int = 5000
     project_import_max_total_mb: int = 512
     project_import_max_file_mb: int = 100
@@ -61,6 +62,7 @@ def load_settings() -> Settings:
         llm_timeout_seconds=float(os.environ.get("LLM_TIMEOUT_SECONDS", "120")),
         llm_stream_timeout_seconds=float(os.environ.get("LLM_STREAM_TIMEOUT_SECONDS", "300")),
         tool_timeout_seconds=float(os.environ.get("TOOL_TIMEOUT_SECONDS", "30")),
+        api_max_request_body_mb=int(os.environ.get("API_MAX_REQUEST_BODY_MB", "520")),
         project_import_max_files=int(os.environ.get("PROJECT_IMPORT_MAX_FILES", "5000")),
         project_import_max_total_mb=int(os.environ.get("PROJECT_IMPORT_MAX_TOTAL_MB", "512")),
         project_import_max_file_mb=int(os.environ.get("PROJECT_IMPORT_MAX_FILE_MB", "100")),
