@@ -261,3 +261,14 @@ TCP 黑洞（休眠恢复、VPN 掉线、NAT 超时）时 EventSource 不触发 
 - **P2-1 已闭环**：`interrupt_running()` 改为遍历工作项快照；用例模拟首个 interrupted 明细落库失败并插入 warning，验证后续运行项仍全部终结。
 
 处理过程先完成当前主干基线门槛（Python `234/234`、前端 `118/118`、`vue-tsc` 通过），再实施并完成针对性验证（Python 相关模块 `77 passed`、App/API 客户端 `34 passed`）。最终全量回归为 Python `244/244`、前端 `125/125`，`npm run typecheck` 通过；本批继续归入架构 v1.27，backlog 已将本批 6 项移入已完成区。
+
+## 审查遗留小项清扫批处理结果记录（2026-08-24，归入 v1.27）
+
+本批按模块拆为四个独立提交；明确排除的 P2-18、P3-38/39、条件触发、永久搁置与随功能绑定事项均未实施。
+
+- **memory 组已闭环**（`d02927c`）：删除 phase7 P3-2 死代码；新库 DDL 补完整 hunk 写意图字段；work event 幂等冲突显式处理；非法锁时间按过期回收；运行锁 TTL 实例化共用；change set 唯一约束补 assistant 作用域；公共 id 校验供长期记忆/purge 复用；导入重名按 NFC+casefold 判断；唯一冲突稳定映射 409；删除文档清理已终结建议记录。全量回归 Python `255/255`、前端 `125/125`、`vue-tsc` 通过。
+- **agent 组已闭环**（`fe9a935`）：LLM 显式请求超时与流总时长上限；MCP 工具保守元数据默认；Reflect 坏 JSON 按未通过；任务 202 前原子占位；同进程写意图使用 `claimed_at` 宽限；定稿记忆失败降级 warning；同步 IO 移入线程；持久化二次失败留日志；失败终态统一交 broker 并持久化 interrupted 助手占位；resume 校验助手归属；工具超时下沉 Settings。全量回归 Python `264/264`、前端 `125/125`、`vue-tsc` 通过。
+- **api/基础设施组已闭环**（`6fc66ce`）：重 IO 入口 AnyIO 线程化；SSE 首帧裁剪竞态干净终止；路径拒绝 C0 控制字符；会话对账拆显式 POST；启动日志明示 Scheduler 未启用；MCP 子进程环境白名单透传；ASGI 解析前施加请求体字节上限。全量回归 Python `270/270`、前端 `126/126`、`vue-tsc` 通过。
+- **web 组已闭环**（`e7bcedd`）：外部正文同步隔离撤销历史；对账按实际拉取数结束分页；system 超预算告警并按 token 裁剪正文/历史；待审卡按聊天会话隔离；Unicode offset 映射缓存；hunk 回退只接受唯一匹配；dirty 文档禁用选区改写；Markdown 链接补 target/rel；文档打开采用请求序号；工作记录有界且摘要截断；空 change preview 静默处理。全量回归 Python `272/272`、前端 `137/137`、`vue-tsc` 通过。
+
+本批继续使用架构 v1.27，未升版本；backlog 已完成销账。上文审查时点及第一、第二梯队的历史测试数字保持不变。

@@ -27,10 +27,7 @@
 - SSE 反复开连即断防护（phase7 P3-10）：`watchTask` 收到首个事件后才重置退避，或增加重连总次数/总时长边界，避免服务端持续开连即断时以 500ms 无限重连。
 - 写意图 finalize 返回契约（phase7 P3-5）：`_finalize_write_intent` 统一返回 `list[str]`、意图缺失分支返回空列表，消除注解与实际返回不一致。
 - 任务终态后的防御性调用（phase7 P3-7）：`finish_task` 后再次 `start` 显式拒绝，防止未来调用顺序变化复用已落库序号。
-- 删除死代码 `_row_to_change_set`（phase7 P3-2）：无调用且字段为旧结构，防止误导后续维护。
 - 截断标注口径（phase8 P3-2）与 import 分组（phase8 P3-6）：同文件顺手改——"原始 N 字符"改为"脱敏后 N 字符"，`import logging` 与标准库导入归组。
-- 上下文预算最终截断分支（phase7 P3-1）：截断标注计入 allowance、截断后复核一次，兑现 v1.21"prompt 估算恒不超预算"承诺。
-- phase9 全库审查剩余项（2026-08-23，见 `docs/reviews/phase9-code-review.md`，定稿修订后 P0×1 / P1×8 / P2×18）：第一、第二梯队及 P3-34 均归入 v1.27 并已关闭（见「已完成并移出待办」）；第三梯队继续按报告排期。文档口径项 P2-2 与 P3-35/36/37 已由 v1.26 关闭。
 
 ## 随功能绑定实施（不单独排期）
 
@@ -54,6 +51,7 @@
 
 ## 已完成并移出待办
 
+- phase9 审查遗留清扫批已归入 v1.27 完成，按模块分四组闭环：memory 组完成 phase7 P3-2、phase9 P2-8/P2-10/P2-11/P3-2/P3-3/P3-4/P3-8/P3-9/P3-10；agent 组完成 P2-3/P2-5/P2-7/P2-9/P2-16/P3-11/P3-12/P3-13/P3-16/P3-17/P3-18；api/基础设施组完成 P2-4/P3-19/P3-20/P3-21/P3-22/P3-23/P3-25；web 组完成 P2-13/P2-14/P2-15/P3-26/P3-27/P3-28/P3-29/P3-30/P3-31/P3-32/P3-33，并一并关闭与 P2-15 重叠的 phase7 P3-1 上下文预算最终截断项。P2-18、P3-38/39 及条件触发/永久搁置/随功能绑定事项按既定处置保持不做；现行契约见架构文档 v1.27。
 - phase9 第二梯队加固批次已归入 v1.27 完成：P1-2（项目与 import staging 内部身份标记、仅删除旧且标记校验通过的残骸、新近目录五分钟宽限、purge staging 幂等收尾）、P2-17（archive/purge 前拒绝活跃 `document_write_intents`）、P1-5（saveActive/applyAgentHunk/applyAgentChangeSet/applyAllChanges 共用版本+正文精确快照回写守卫）、P1-6（fetch 60 秒超时、SSE 60 秒空闲看门狗及命名 heartbeat）、P1-8（MCP stdio/initialize/list_tools 逐步超时，独立临时 exit stack 失败即清、成功才晋升）及 P2-1（`interrupt_running()` 快照迭代）均有对应回归测试；现行契约见架构文档 v1.27 §4.7/§5.6/§5.7/§5.9/§5.10/§9。
 - phase9 第一梯队加固批次已在 v1.27 完成：P0-1（项目级「全部接受」对全部受影响 dirty 文档一次性列单确认）、P1-3（共享 SQLite 连接改 `isolation_level=None`，多语句写继续显式事务）、P1-1（MCP 同名工具拒绝覆盖内置工具，实际注册计数与 warning 对齐）、P1-4（工作记录 JSON 载荷的字符串叶子追加值级脱敏）、P1-7（FastAPI Host 白名单，Vite 默认 `changeOrigin=false` 已核查相容）及 P3-34（`save_summary` 写后回读由 assert 改显式 `RuntimeError`）均有对应回归测试；现行契约见架构文档 v1.27 §5.2/§5.4/§5.7/§5.9/§5.10/§9。
 - 压缩 `info`/`warning` 前端可见性（phase6 P3-1）已由 v1.19 工作记录解决：压缩提示进入工作记录的进度/警告条目，无需单独事件分支。
