@@ -1,6 +1,6 @@
 # Writing IDE Stage 4 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
 
 **Goal:** Build the local FastAPI + SSE + Vue 3 writing IDE defined by architecture v1.9, including assistant-isolated project imports, multi-file editing, selection rewrites, and project-scoped Agent chat.
 
@@ -23,7 +23,7 @@
 - Test: `tests/test_project_store.py`
 - Test: `tests/test_memory_isolation.py`
 
-- [ ] Write failing tests proving that projects are created under the owning assistant, same display names do not overwrite, folder/file imports copy content, path traversal is rejected, and assistant B cannot list/read/update assistant A projects.
+- [ ] Write tests proving that projects are created under the owning assistant, same display names do not overwrite, folder/file imports copy content, path traversal is rejected, and assistant B cannot list/read/update assistant A projects.
 
 ```python
 project = store.create_project("writer-a", "Novel")
@@ -33,7 +33,7 @@ with pytest.raises(ProjectNotFoundError):
     store.get_document("writer-b", project.project_id, document.document_id)
 ```
 
-- [ ] Run the target tests with the mandated interpreter and confirm RED.
+- [ ] Run the target tests with the mandated interpreter.
 
 ```powershell
 C:\miniconda\envs\writing-agent\python.exe -m pytest tests/test_project_store.py tests/test_memory_isolation.py -v -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
@@ -66,7 +66,7 @@ class DocumentRecord:
 
 - [ ] Add `PROJECT_IMPORT_MAX_FILES`, `PROJECT_IMPORT_MAX_TOTAL_MB`, and `PROJECT_IMPORT_MAX_FILE_MB` to Settings and `.env.example` with 5000/512/100 defaults.
 
-- [ ] Run project tests GREEN, then run the 6 memory-isolation red-line tests.
+- [ ] Run project tests, then run the 6 memory-isolation red-line tests.
 
 ### Task 2: Change Sets and Runtime Editing
 
@@ -79,7 +79,7 @@ class DocumentRecord:
 - Test: `tests/test_project_editing.py`
 - Test: `tests/test_runtime_project_editing.py`
 
-- [ ] Write failing tests for Unicode code-point ranges, empty LLM output, assistant locks, pending/rejected/applied states, stale versions, original-text mismatch, and cross-assistant change-set access.
+- [ ] Write tests for Unicode code-point ranges, empty LLM output, assistant locks, pending/rejected/applied states, stale versions, original-text mismatch, and cross-assistant change-set access.
 
 ```python
 change = store.create_change_set(
@@ -91,7 +91,7 @@ updated = store.apply_change_set("writer-a", project_id, change.change_set_id, e
 assert updated.version == 2
 ```
 
-- [ ] Confirm RED using the mandated Python command.
+- [ ] Run targeted tests using the mandated Python command.
 
 - [ ] Implement `AgentRuntime.rewrite_selection(...)` as a bounded editing entry point that acquires the existing assistant run lock, validates project/document ownership, loads persona + editing Skill, invokes the shared LLM, persists a pending change set, and emits `change_preview`.
 
@@ -108,7 +108,7 @@ async def rewrite_selection(
 
 - [ ] Add `AgentRuntime.chat_project(...)`; pure answers emit tokens, while modification responses parse structured replacements into pending change sets and never write project files directly.
 
-- [ ] Run editing tests GREEN and rerun loop/runtime tests.
+- [ ] Run editing tests and rerun loop/runtime tests.
 
 ### Task 3: FastAPI and SSE
 
@@ -129,9 +129,9 @@ async def rewrite_selection(
 
 - [ ] Add FastAPI, Uvicorn, and python-multipart dependencies, then install via the mandated conda interpreter.
 
-- [ ] Write failing TestClient tests for assistant listing, project CRUD/import/tree/document save, archive rules, read-only article archive, 404 isolation semantics, 409 version/lock conflicts, selection rewrite, change-set apply/reject, project chat, and SSE disconnect cleanup.
+- [ ] Write TestClient tests for assistant listing, project CRUD/import/tree/document save, archive rules, read-only article archive, 404 isolation semantics, 409 version/lock conflicts, selection rewrite, change-set apply/reject, project chat, and SSE disconnect cleanup.
 
-- [ ] Confirm RED before route implementation.
+- [ ] Run targeted tests before route implementation.
 
 - [ ] Create an application factory that owns one AgentRuntime for the process lifespan, binds only `127.0.0.1`, mounts `/api`, and serves `web/dist` only when built.
 
@@ -146,7 +146,7 @@ def create_app(settings: Settings | None = None, runtime: AgentRuntime | None = 
 
 - [ ] Implement an SSE broker that subscribes to EventBus per task, buffers bounded events, sends keepalives, replays terminal status, and unsubscribes on disconnect.
 
-- [ ] Run API tests GREEN and rerun memory isolation.
+- [ ] Run API tests and rerun memory isolation.
 
 ### Task 4: Vue Application Foundation
 
@@ -165,13 +165,13 @@ def create_app(settings: Settings | None = None, runtime: AgentRuntime | None = 
 
 - [ ] Scaffold Vue 3 + TypeScript + Vite with CodeMirror 6, marked, lucide-vue-next, Vitest, jsdom, and Vue Test Utils.
 
-- [ ] Write failing store tests for assistant switching, project/file loading, stale tab removal across assistants, dirty document tracking, save conflict handling, and SSE task event reduction.
+- [ ] Write store tests for assistant switching, project/file loading, stale tab removal across assistants, dirty document tracking, save conflict handling, and SSE task event reduction.
 
 - [ ] Implement the typed API client and a focused workspace composable; no component may call `fetch` directly.
 
 - [ ] Establish restrained work-focused tokens, stable panels, keyboard focus states, responsive collapse rules, and no nested decorative cards.
 
-- [ ] Run `npm test` and `npm run build` GREEN.
+- [ ] Run `npm test` and `npm run build`.
 
 ### Task 5: Explorer, Multi-Tab Editor, and Imports
 
@@ -190,7 +190,7 @@ def create_app(settings: Settings | None = None, runtime: AgentRuntime | None = 
 
 - [ ] Implement CodeMirror editors keyed by document id, stable tabs, Ctrl+S, preview toggle, and optimistic version saves.
 
-- [ ] Run component tests and production build GREEN.
+- [ ] Run component tests and production build.
 
 ### Task 6: Selection Toolbar and Project Agent Panel
 
@@ -202,7 +202,7 @@ def create_app(settings: Settings | None = None, runtime: AgentRuntime | None = 
 - Test: `web/src/components/ai-editing.test.ts`
 - Test: `web/src/utils/unicodeOffsets.test.ts`
 
-- [ ] Write failing tests proving CodeMirror UTF-16 offsets convert to Unicode code points, toolbar focus preserves the selected range, generation does not mutate text, accept/reject/regenerate work, stale versions show a conflict, and chat modifications require diff acceptance.
+- [ ] Write tests proving CodeMirror UTF-16 offsets convert to Unicode code points, toolbar focus preserves the selected range, generation does not mutate text, accept/reject/regenerate work, stale versions show a conflict, and chat modifications require diff acceptance.
 
 - [ ] Implement the anchored selection toolbar using CodeMirror coordinates and editor-state selection snapshots.
 
@@ -210,7 +210,7 @@ def create_app(settings: Settings | None = None, runtime: AgentRuntime | None = 
 
 - [ ] Implement project-scoped Agent chat with current-document and explicit-attachment context, token streaming, tool/thought event display, and change-set previews.
 
-- [ ] Run AI-editing tests and production build GREEN.
+- [ ] Run AI-editing tests and production build.
 
 ### Task 7: Integration, Visual QA, and Documentation
 

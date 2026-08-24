@@ -1,6 +1,6 @@
 # README 与 AGENTS 精简实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
 
 **Goal:** 将 README 改为快速上手入口，并压缩 AGENTS 的重复交接信息，同时保留运行说明和全部硬性规则。
 
@@ -36,7 +36,7 @@
 - Modify: `AGENTS.md`
 
 - [ ] 合并当前状态、能力基线和阶段验收的重复信息。
-- [ ] 保留必读顺序、指定 conda Python、MemoryStore/SQL 边界、assistant_id 隔离、密钥、TDD、阶段门、工作区保护和中文 Conventional Commits。
+- [ ] 保留必读顺序、指定 conda Python、MemoryStore/SQL 边界、assistant_id 隔离、密钥、阶段门、工作区保护和中文 Conventional Commits。
 - [ ] 修正 Git 状态为已有提交、`main` 跟踪 `origin/main`。
 - [ ] 使用 `Get-Content AGENTS.md | Measure-Object -Line` 验证长度约 70 至 85 行。
 

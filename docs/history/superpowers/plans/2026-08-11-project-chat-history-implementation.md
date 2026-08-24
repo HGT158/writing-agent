@@ -2,7 +2,7 @@
 
 > 状态：已完成（Python 156/156、记忆隔离 10/10、前端 41/41，类型检查与生产构建通过；最终复核无 Critical/Important）
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
 
 **Goal:** 为每个助手的每个项目提供可持久化、可切换、可删除的多会话聊天历史，把完整历史传给模型并可靠恢复 pending diff，同时修复接受后重复卡片不消失。
 
@@ -28,9 +28,9 @@
 
 在任何生产代码前，将已确认设计中的表、MemoryStore 方法、API、完整上下文、pending 删除冲突和 diff 单一来源写入 `phase1-architecture.md`，状态标为实施中。
 
-- [ ] **Step 2: 写持久化成功路径与隔离 RED**
+- [ ] **Step 2: 写持久化成功路径与隔离**
 
-创建 `tests/test_project_chat_history.py`，先覆盖：
+创建 `tests/test_project_chat_history.py`，覆盖：
 
 ```python
 session = store.create_project_chat_session("writer-a", project.project_id)
@@ -48,13 +48,12 @@ assert store.list_project_chat_sessions("writer-a", project.project_id)[0].title
 
 再断言相同 `chat_session_id` 不能由其他助手或项目读取。`tests/test_memory_isolation.py` 增加项目聊天消息跨助手不可见的红线。
 
-- [ ] **Step 3: 运行并确认 RED**
+- [ ] **Step 3: 运行并确认**
 
 ```powershell
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_project_chat_history.py tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent-chat-memory-red
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_project_chat_history.py tests\test_memory_isolation.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent-chat-memory-check
 ```
 
-预期因 `create_project_chat_session` 等接口不存在而失败。
 
 - [ ] **Step 4: 实现专用 memory 模块与 Store 包装**
 
@@ -86,7 +85,7 @@ class ProjectChatMessageRecord:
 
 `MemoryStore` 暴露设计文档列出的七个入口，并在初始化时建表。`projects.purge_project` 与 `MemoryStore.purge_assistant` 级联清理项目聊天表。
 
-- [ ] **Step 5: 补 pending 恢复与删除冲突 RED/GREEN**
+- [ ] **Step 5: 补 pending 恢复与删除冲突 测试与实现**
 
 创建 chat change set 后断言：
 
@@ -103,7 +102,7 @@ with pytest.raises(ResourceConflictError, match="待处理修改"):
 
 apply/reject 后删除会话应成功，文档已应用内容保持不变；项目 purge 与助手 purge 后新表无残留。
 
-- [ ] **Step 6: 验证 Task 1 GREEN**
+- [ ] **Step 6: 验证 Task 1**
 
 运行 Task 1 两个测试文件，预期全部通过。
 
@@ -116,7 +115,7 @@ apply/reject 后删除会话应成功，文档已应用内容保持不变；项�
 - Modify: `agent/project_editing.py`
 - Test: `tests/test_runtime_project_editing.py`
 
-- [ ] **Step 1: 写完整历史进入模型的 RED**
+- [ ] **Step 1: 写完整历史进入模型的**
 
 预建同会话历史，再发当前消息，断言首轮请求的可见角色/内容顺序：
 
@@ -130,10 +129,10 @@ assert [(item["role"], item["content"]) for item in runtime.llm.calls[0]["messag
 
 同时断言当前消息只出现一次、当前文档快照只在 system 指令中出现。
 
-- [ ] **Step 2: 运行单测确认 RED**
+- [ ] **Step 2: 运行单测确认**
 
 ```powershell
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_runtime_project_editing.py -k "history or persists" -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent-chat-runtime-red
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_runtime_project_editing.py -k "history or persists" -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent-chat-runtime-check
 ```
 
 - [ ] **Step 3: 修改 Runtime 会话参数与消息流**
@@ -158,7 +157,7 @@ async def chat_project(
 
 覆盖：首轮失败只保留 user；成功保存 assistant；第二轮失败不保存 assistant 但 pending change set 的 `session_id` 正确且可恢复；空白文档首稿仍可用。
 
-- [ ] **Step 5: 验证 Task 2 GREEN**
+- [ ] **Step 5: 验证 Task 2**
 
 运行 `tests/test_runtime_project_editing.py` 全文件，预期全部通过。
 
@@ -171,7 +170,7 @@ async def chat_project(
 - Modify: `api/main.py`
 - Test: `tests/test_api_projects.py`
 
-- [ ] **Step 1: 写会话 API RED**
+- [ ] **Step 1: 写会话 API**
 
 覆盖：列表按更新时间倒序、详情返回 messages/pending_changes、删除成功、pending 删除返回 409、跨助手/跨项目返回 404。
 
@@ -184,14 +183,14 @@ assert response.json()["messages"][0]["content"] == "第一条需求"
 assert response.json()["pending_changes"][0]["change_set_id"] == change_id
 ```
 
-- [ ] **Step 2: 写发送接口返回会话 id 的 RED**
+- [ ] **Step 2: 写发送接口返回会话 id 的**
 
 请求不带 `chat_session_id` 时断言 202 响应同时含 `task_id/chat_session_id`；带已有 id 时复用。不存在会话、跨项目会话和无效 `current_document_id` 必须在入队前返回 404，TaskBroker 不产生记录。
 
-- [ ] **Step 3: 运行 API 测试确认 RED**
+- [ ] **Step 3: 运行 API 测试确认**
 
 ```powershell
-C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_api_projects.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent-chat-api-red
+C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_api_projects.py -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent-chat-api-check
 ```
 
 - [ ] **Step 4: 实现 API 与响应映射**
@@ -208,7 +207,7 @@ chat_session_id: str | None = None
 {"task_id": broker.start(body.assistant_id, operation), "chat_session_id": chat_session_id}
 ```
 
-- [ ] **Step 5: 验证 Task 3 GREEN**
+- [ ] **Step 5: 验证 Task 3**
 
 运行 API 项目测试，预期全部通过。
 
@@ -222,7 +221,7 @@ chat_session_id: str | None = None
 - Modify: `web/src/components/AgentPanel.vue`
 - Modify: `web/src/components/AgentPanel.test.ts`
 
-- [ ] **Step 1: 写最近会话恢复与文档切换保留 RED**
+- [ ] **Step 1: 写最近会话恢复与文档切换保留**
 
 Mock `listProjectChatSessions/getProjectChatSession`，挂载后断言自动加载第一项。随后只改变 `documentId`：
 
@@ -232,11 +231,11 @@ expect(wrapper.get('.message.user').text()).toContain('历史问题')
 expect(apiMocks.getProjectChatSession).toHaveBeenCalledTimes(1)
 ```
 
-- [ ] **Step 2: 写新建、切换、删除与 pending 恢复 RED**
+- [ ] **Step 2: 写新建、切换、删除与 pending 恢复**
 
 覆盖新建后进入空白状态、首次发送接纳响应 session id、选择器切换加载详情、pending diff 恢复、pending 时删除按钮禁用、删除成功后回到最近会话。
 
-- [ ] **Step 3: 写 SSE 会话作用域 RED**
+- [ ] **Step 3: 写 SSE 会话作用域**
 
 文档变化后原会话 token 仍追加；会话或项目变化后旧 token 被丢弃。运行中选择器和按钮禁用。
 
@@ -252,7 +251,7 @@ export interface ProjectChatSessionDetail { session: ProjectChatSession; message
 
 客户端增加 list/get/delete，会话发送方法接收可空 session id 并返回两种 id。AgentPanel 的项目 watch 负责加载会话；document watch 不清空。顶部使用原生 select、Plus 与 Trash2 图标按钮。
 
-- [ ] **Step 5: 验证 AgentPanel GREEN**
+- [ ] **Step 5: 验证 AgentPanel**
 
 ```powershell
 Set-Location D:\test_agent\writing-agent\web
@@ -269,7 +268,7 @@ npm test -- src/components/AgentPanel.test.ts
 - Modify: `web/src/App.test.ts`
 - Test: `web/src/components/AgentPanel.test.ts`
 
-- [ ] **Step 1: 写未打开目标文档也可接受的 RED**
+- [ ] **Step 1: 写未打开目标文档也可接受的**
 
 直接调用 App 的 `applyAgentChange`，workspace 中没有目标 tab，断言仍调用：
 
@@ -280,7 +279,7 @@ expect(apiMocks.applyChange).toHaveBeenCalledWith(
 expect(complete).toHaveBeenCalledWith(true)
 ```
 
-- [ ] **Step 2: 写 chat preview 不复制到编辑器的 RED**
+- [ ] **Step 2: 写 chat preview 不复制到编辑器的**
 
 AgentPanel 收到 `change_preview` 后只出现一个 `.change-diff`；App 的 `externalChange` 不被 chat preview 设置。selection rewrite 的 `DocumentEditor @preview` 行为保持。
 
@@ -288,7 +287,7 @@ AgentPanel 收到 `change_preview` 后只出现一个 `.change-diff`；App 的 `
 
 移除 AgentPanel 的 `preview` emit 和 App 上对应监听。`applyAgentChange` 使用 `change.document_version` 请求；目标 tab 存在时处理 dirty 确认并用响应刷新，目标 tab 不存在时仍 apply。成功调用 `complete(true)`，失败调用 `complete(false)`。
 
-- [ ] **Step 4: 验证卡片行为 GREEN**
+- [ ] **Step 4: 验证卡片行为**
 
 运行 `App.test.ts` 与 `AgentPanel.test.ts`，断言 apply/reject 成功移除、失败保留、重新加载已处理会话不返回卡片。
 

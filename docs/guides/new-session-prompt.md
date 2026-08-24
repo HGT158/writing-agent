@@ -24,7 +24,7 @@
 
 - 所有 Python 操作只能使用 `C:\miniconda\envs\writing-agent\python.exe`；不要使用系统 Python，不建 venv。
 - 架构或跨模块契约变化必须先更新 `docs/architecture/phase1-architecture.md` 并升版。
-- 行为变更使用 TDD：先写失败测试并确认 RED，再实现 GREEN，最后跑完整测试。
+- 行为变更按风险分级：文档、样式和低风险调整可直接实现后验证；明确 bug 补回归测试；涉及数据库、文件写入、权限隔离、并发、迁移、流式状态或大范围跨模块改动时，关键路径测试建议先行（可采用 TDD）。最后跑完整测试。
 - `tests/test_memory_isolation.py` 必须始终常绿；Memory/锁改动必须先跑红线再跑全量。
 - `agent/`、`scheduler/` 和未来 `api/` 禁止直接写 SQL，只能通过 `MemoryStore`；SQL 仅留在 `memory/` 层，助手数据查询必须按 `assistant_id` 隔离。
 - 密钥只允许来自 `.env`，禁止硬编码；代码必须完整可运行，禁止伪代码和占位。

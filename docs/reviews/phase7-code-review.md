@@ -45,7 +45,7 @@ test_chat_context.py（+3 例）、前端 ThemePicker/theme/App/AgentPanel/Docum
 
 **失败形态**：当前唯一工具 `propose_project_edits` 的参数是文档 hunk、结果是 change_set_ids，暂无凭据泄漏的实际通道，损害有限；但脱敏是架构承诺的唯一防线，一旦接入任何携带凭据参数的 MCP 工具，`api_key`/`token` 字段将明文落库并走 SSE。更隐蔽的是 `tests/test_work_log.py:236` 的脱敏用例只传 dict，恰好绕开该缺陷，测试全绿反而提供了错误信心。
 
-**修复建议**：`summarize_args`/`summarize_result` 对字符串先尝试 `json.loads` 再 `redact`，解析失败回退原文；或让 runtime 传解析后的 dict。补字符串形态的脱敏用例（RED → GREEN）。
+**修复建议**：`summarize_args`/`summarize_result` 对字符串先尝试 `json.loads` 再 `redact`，解析失败回退原文；或让 runtime 传解析后的 dict。补字符串形态的脱敏用例。
 
 ### 2. CodeMirror 语法高亮未真正主题化：五套主题的 `--cm-*` 语法色变量全部是死选择器
 
@@ -141,9 +141,9 @@ accept/save/create/读文档路径前都调用 `_recover_write_intents` 清理�
 
 按用户惯例，本次审查不改动任何代码。建议顺序：
 
-1. **P1-1（脱敏绕过）最优先**：改动极小（先 `json.loads` 再 redact），但必须先补字符串形态的 RED 用例再修；在接入任何新工具（尤其带凭据的 MCP server）之前必须完成。
+1. **P1-1（脱敏绕过）最优先**：改动极小（先 `json.loads` 再 redact），补字符串形态的用例；在接入任何新工具（尤其带凭据的 MCP server）之前必须完成。
 2. **P1-2（语法高亮主题化）**：属 v1.22 契约补齐，需要一次自定义 HighlightStyle 的小重构，顺带验证五套主题的实际呈现。
-3. P2-1 至 P2-3 为后端健壮性项，改动都很小，可合并一次提交按 RED → GREEN 处理；P2-4、P2-5 是用户可见项，可与前端改动一并安排。
+3. P2-1 至 P2-3 为后端健壮性项，改动都很小，可合并一次提交处理；P2-4、P2-5 是用户可见项，可与前端改动一并安排。
 4. P3 按精力择机：P3-3（文案）、P3-12（backlog 登记）是顺手项；P3-11 的测试缺口建议随对应修复逐项补。
 
 ---
@@ -157,6 +157,6 @@ accept/save/create/读文档路径前都调用 `_recover_write_intents` 清理�
 - **随修复完成的 P3/复核项**：accept-all 中断文案已修正；phase6 的 `tool_choice` 与温度配置观察项已登记 backlog；明细落库失败产生的 warning 复用失败明细序号，不占用 `event_seq=200`；主题高亮导出的每个语义 class 均有显式 CSS 规则。
 - **继续暂缓**：未改变行为的低风险 P3 已统一登记到 `docs/guides/backlog.md`，由后续独立阶段按需处理。
 
-处理过程遵循 RED → GREEN：Python 针对性测试 `19 passed`，记忆隔离红线 `10 passed`；最终完整基线为 Python `225/225`、前端 `102/102`，`npm run typecheck` 与 `npm run build` 均通过，`git diff --check` 无格式错误。
+处理过程完成针对性测试与全量回归：Python 针对性测试 `19 passed`，记忆隔离红线 `10 passed`；最终完整基线为 Python `225/225`、前端 `102/102`，`npm run typecheck` 与 `npm run build` 均通过，`git diff --check` 无格式错误。
 
 本报告已登记到 `docs/README.md`；架构单一事实来源已更新为 v1.23，README、AGENTS.md 与新会话提示词的当前基线已同步。

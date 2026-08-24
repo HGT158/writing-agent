@@ -240,7 +240,7 @@ README 与架构文档版本一致（均 v1.5），无需改动。
 ## 第二轮复审处理结果（2026-08-07）
 
 - **R1 确认存在并已修复**：`_like_patterns` 增加与 FTS 一致的 16 项上限；去重和字面量转义后若超限，在全部模式中均匀采样并保留首尾，避免极端短词任务生成无上限 OR LIKE 子句。
-- **TDD 证据**：新增 `test_like_fallback_caps_patterns_and_keeps_tail_terms`。修复前 50 个短词元产生 50 个模式，断言 `50 == 16` 失败；修复后模式数为 16，且首尾词元均保留。
+- **回归证据**：新增 `test_like_fallback_caps_patterns_and_keeps_tail_terms`，覆盖模式上限为 16 且保留首尾词元。
 - **备忘不纳入本轮**：`run` 模式 Ctrl+C 的 KeyboardInterrupt 展示属于阶段 2 遗留且原复审明确标为“不构成问题”，本次不扩展阶段 3 范围。
 - **架构同步**：`docs/phase1-architecture.md` 升至 v1.7，明确 FTS 与 LIKE 两条检索路径均采用最多 16 项的全序列均匀采样。
 

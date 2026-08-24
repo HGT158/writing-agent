@@ -67,7 +67,7 @@
 
 v1.24 修复后值级敏感串扫描只覆盖失败 detail 一条路。args/result 两条主路径上，dict/list 载荷仅当*键名*含 `token/api_key/...` 才打码，非敏感键下的*字符串值内容*不做任何值级扫描——模型把用户粘贴的真实凭据原样回传进 `propose_project_edits` 的 `new_text`/`old_text` 等自由文本字段时，`sk-xxxx` 明文完整保留，写入 `project_chat_work_events.args_summary` 并经 `work_item_start` SSE 实时广播（`runtime.py:408-413`）。这正是 v1.23/v1.24 连续修复的泄漏类别的新绕过面。注：「无法解析的非 JSON 纯文本保持原文」为 phase8 P3-3 既定取舍（见 backlog 条件触发项），本条针对的是 JSON 载荷内部的值缺口，属新发现。
 
-**修复建议**：(a) `redact()` 对 str 叶子追加 `_redact_secrets_in_text(value)`；(b) 补一条「值内嵌凭据不得出现在 args_summary/result_summary」的 RED 用例。
+**修复建议**：(a) `redact()` 对 str 叶子追加 `_redact_secrets_in_text(value)`；(b) 补一条「值内嵌凭据不得出现在 args_summary/result_summary」的用例。
 
 ### P1-5 前端保存/AI 应用 in-flight 期间的并发键入被服务端快照无声回滚
 
@@ -218,11 +218,11 @@ TCP 黑洞（休眠恢复、VPN 掉线、NAT 超时）时 EventSource 不触发 
 
 按项目惯例本次不改动任何代码。建议分三个梯队：
 
-1. **第一梯队**（改动极小、收益最大，建议作为一个加固批次尽快落地）：P0-1 applyAllChanges 补 dirty 确认；P1-3 连接 isolation_level=None（一处配置）；P1-1 register 冲突检测（一两行 + 测试）；P1-4 redact str 叶子值级扫描 + RED 用例；P1-7 Host 白名单中间件（十几行）。
+1. **第一梯队**（改动极小、收益最大，建议作为一个加固批次尽快落地）：P0-1 applyAllChanges 补 dirty 确认；P1-3 连接 isolation_level=None（一处配置）；P1-1 register 冲突检测（一两行 + 测试）；P1-4 redact str 叶子值级扫描 + 对应用例；P1-7 Host 白名单中间件（十几行）。
 2. **第二梯队**：P1-2 对账标记；P2-17 archive/purge 意图检查；P1-5 回写版本/指纹校验；P1-6 空闲看门狗；P1-8 MCP 启动超时与 exit stack 修复；P2-1 迭代 list 化（一行）。
 3. **第三梯队**：其余 P2 按模块顺手处理（P2-18 取消端点为增强项）；P3 归入既有「加固批次」排期。文档口径四项（P2-2 与 P3-35/36/37）已由 v1.26 架构口径对齐关闭（纯文档升版，无代码变更）；P3-34（`save_summary` 残留 assert 改显式 raise）属代码修复，并入加固批次。
 
-实施任一项请遵循 RED → GREEN 与全量回归，涉及契约变化的先升版架构文档。
+实施任一项请完成针对性测试与全量回归，涉及契约变化的先升版架构文档。
 
 ---
 

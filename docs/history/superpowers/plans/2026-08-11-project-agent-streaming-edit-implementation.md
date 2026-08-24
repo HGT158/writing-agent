@@ -2,7 +2,7 @@
 
 > 状态：已完成（Python 143/143、记忆隔离 9/9、前端 32/32，类型检查与生产构建通过；最终复核无 Critical/Important）
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+
 
 **Goal:** 让网页侧边栏项目 Agent 通过真实 SSE 文本增量回答，并以项目作用域工具生成可接受/拒绝的 change set，而不直接写正文。
 
@@ -21,7 +21,7 @@
 - Modify: `agent/tools.py`
 - Test: `tests/test_tool_registry.py`
 
-- [x] **Step 1: 写工具成功路径的失败测试**
+- [x] **Step 1: 写工具成功路径的针对性测试**
 
 在 `tests/test_tool_registry.py` 创建项目与正文，调用尚不存在的 `make_project_edit_tool`，断言返回一个 pending change set 且正文未变化：
 
@@ -41,7 +41,7 @@ assert change.replacement_text == "首段精简。"
 assert store.get_document("default", project.project_id, document.document_id).content == original
 ```
 
-- [x] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试**
 
 ```powershell
 C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_tool_registry.py::test_project_edit_tool_creates_pending_change_without_writing_document -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
@@ -109,13 +109,13 @@ def make_project_edit_tool(store: MemoryStore, project_id: str) -> ToolSpec:
     )
 ```
 
-- [x] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证实现**
 
 运行 Task 1 的单测，预期 PASS。
 
-- [x] **Step 5: 为失败边界逐个补 RED/GREEN**
+- [x] **Step 5: 补充失败边界测试并完成实现**
 
-新增并逐个运行四个测试：`test_project_edit_tool_rejects_missing_old_text_atomically` 传入正文不存在的 `old_text`；`test_project_edit_tool_rejects_ambiguous_old_text_atomically` 使用包含两次“重复句。”的正文；`test_project_edit_tool_rejects_duplicate_document_changes` 在同一 `changes` 数组重复同一 `document_id`；`test_project_edit_tool_rejects_stale_document_version` 传入 `document.version - 1`。每个测试都用 `pytest.raises` 断言对应错误，并断言 `store.get_document("default", project.project_id, document.document_id).content` 等于调用前正文、该项目 pending change set 数量为零。每写一个测试先确认失败，再补最小实现并确认通过。
+新增并逐个运行四个测试：`test_project_edit_tool_rejects_missing_old_text_atomically` 传入正文不存在的 `old_text`；`test_project_edit_tool_rejects_ambiguous_old_text_atomically` 使用包含两次“重复句。”的正文；`test_project_edit_tool_rejects_duplicate_document_changes` 在同一 `changes` 数组重复同一 `document_id`；`test_project_edit_tool_rejects_stale_document_version` 传入 `document.version - 1`。每个测试都用 `pytest.raises` 断言对应错误，并断言 `store.get_document("default", project.project_id, document.document_id).content` 等于调用前正文、该项目 pending change set 数量为零。完成实现后运行测试并确认通过。
 
 ---
 
@@ -125,7 +125,7 @@ def make_project_edit_tool(store: MemoryStore, project_id: str) -> ToolSpec:
 - Modify: `agent/llm.py`
 - Test: `tests/test_runtime_project_editing.py`
 
-- [x] **Step 1: 写多文本 delta 的失败测试**
+- [x] **Step 1: 写多文本 delta 的针对性测试**
 
 构造异步 fake stream，依次产生 `你`、`好` 两个 `delta.content`，调用期望的新接口并断言回调和最终文本：
 
@@ -139,7 +139,7 @@ assert turn.text == "你好"
 assert turn.tool_calls == []
 ```
 
-- [x] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试**
 
 ```powershell
 C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_runtime_project_editing.py::test_stream_chat_turn_forwards_text_deltas -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
@@ -207,13 +207,13 @@ async def stream_chat_turn(
 
 Provider 在首轮拒绝 `tools` 或流式参数时，将 `BadRequestError` 转为明确的 `RuntimeError("当前模型服务不支持项目 Agent 流式编辑工具")`；网络、鉴权、限流错误保持原异常。
 
-- [x] **Step 4: 验证文本流 GREEN**
+- [x] **Step 4: 验证文本流**
 
 运行 Task 2 单测，预期 PASS。
 
-- [x] **Step 5: 为 tool-call 分片与上限逐个补 RED/GREEN**
+- [x] **Step 5: 为 tool-call 分片与上限逐个补 测试与实现**
 
-新增三个测试并逐个观察 RED：`test_stream_chat_turn_accumulates_tool_argument_deltas` 让 index 0 的参数分成 `{"changes":[` 与 `]}`，断言得到一个 id/name 完整且 arguments 为两段拼接结果的 `StreamedToolCall`；`test_stream_chat_turn_rejects_tool_arguments_over_limit` 把测试上限设为 8 并输入 9 个参数字符，断言错误为“工具参数超过”；`test_stream_chat_turn_rejects_incomplete_tool_call` 只发送 name 不发送 id，断言错误为“工具调用流不完整”。逐个补最小实现并确认 GREEN。
+新增三个测试并逐个观察测试结果：`test_stream_chat_turn_accumulates_tool_argument_deltas` 让 index 0 的参数分成 `{"changes":[` 与 `]}`，断言得到一个 id/name 完整且 arguments 为两段拼接结果的 `StreamedToolCall`；`test_stream_chat_turn_rejects_tool_arguments_over_limit` 把测试上限设为 8 并输入 9 个参数字符，断言错误为“工具参数超过”；`test_stream_chat_turn_rejects_incomplete_tool_call` 只发送 name 不发送 id，断言错误为“工具调用流不完整”。逐个补最小实现并确认实现。
 
 ---
 
@@ -224,7 +224,7 @@ Provider 在首轮拒绝 `tools` 或流式参数时，将 `BadRequestError` 转�
 - Modify: `agent/project_editing.py`
 - Test: `tests/test_runtime_project_editing.py`
 
-- [x] **Step 1: 写普通聊天真实流式的失败测试**
+- [x] **Step 1: 写普通聊天真实流式的针对性测试**
 
 FakeLLM 返回 `我建议`、`先精简。` 两个 chunk：
 
@@ -239,13 +239,12 @@ assert [event["data"]["text"] for event in events if event["type"] == "token"] =
 ]
 ```
 
-- [x] **Step 2: 运行并确认 RED**
+- [x] **Step 2: 运行测试**
 
 ```powershell
 C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_runtime_project_editing.py::test_project_chat_streams_plain_reply_deltas -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
 ```
 
-预期：当前 `chat_project` 仍等待一次性 JSON，测试失败。
 
 - [x] **Step 3: 将普通回答切到 `stream_chat_turn`**
 
@@ -266,11 +265,11 @@ first = await stream_chat_turn(
 
 第一轮没有工具调用时返回 `ProjectChatResult(reply="".join(visible), changes=[])`。
 
-- [x] **Step 4: 验证普通聊天 GREEN**
+- [x] **Step 4: 验证普通聊天**
 
 运行单测，预期 PASS。
 
-- [x] **Step 5: 写编辑工具两轮链路的失败测试**
+- [x] **Step 5: 写编辑工具两轮链路的针对性测试**
 
 首轮 fake stream 返回一个 `propose_project_edits` tool call 的分片参数，第二轮返回 `已生成`、`修改建议。`。断言：
 
@@ -306,13 +305,13 @@ changes = [self.store.get_change_set(assistant_id, project_id, item) for item in
 
 逐条发 `change_preview`，随后把标准 assistant tool-call 和 tool result 消息加入上下文，第二轮不传 `tools`。若第一轮已有文本，在第二轮首 token 前发 `\n\n`。
 
-- [x] **Step 7: 验证编辑链路 GREEN**
+- [x] **Step 7: 验证编辑链路**
 
 运行工具链路测试，预期 PASS。
 
 - [x] **Step 8: 补协议和失败恢复测试**
 
-逐个 RED/GREEN 增加四个测试：`test_project_chat_rejects_multiple_tool_calls_without_changes` 输入两个不同 call id，断言抛协议错误且 pending 数量为零；`test_project_chat_emits_failed_tool_result_for_invalid_edit` 输入不存在的旧文本，断言最后一个 `tool_result.ok` 为 false 且没有预览；`test_project_chat_keeps_pending_change_when_followup_stream_fails` 让首轮工具成功、第二轮抛 `RuntimeError("followup down")`，断言 pending change set 与 `change_preview` 均保留；`test_project_chat_releases_lock_when_stream_fails` 让首轮直接抛流异常，断言 `store.is_locked("default")` 为 false。
+逐个 测试与实现 增加四个测试：`test_project_chat_rejects_multiple_tool_calls_without_changes` 输入两个不同 call id，断言抛协议错误且 pending 数量为零；`test_project_chat_emits_failed_tool_result_for_invalid_edit` 输入不存在的旧文本，断言最后一个 `tool_result.ok` 为 false 且没有预览；`test_project_chat_keeps_pending_change_when_followup_stream_fails` 让首轮工具成功、第二轮抛 `RuntimeError("followup down")`，断言 pending change set 与 `change_preview` 均保留；`test_project_chat_releases_lock_when_stream_fails` 让首轮直接抛流异常，断言 `store.is_locked("default")` 为 false。
 
 ---
 
@@ -323,7 +322,7 @@ changes = [self.store.get_change_set(assistant_id, project_id, item) for item in
 - Modify: `web/src/components/AgentPanel.test.ts`
 - Modify: `web/src/styles.css`
 
-- [x] **Step 1: 写多个 token 只形成一个气泡的失败测试**
+- [x] **Step 1: 写多个 token 只形成一个气泡的针对性测试**
 
 ```typescript
 await callback(taskEvent('token', { text: '正在' }))
@@ -333,7 +332,7 @@ expect(wrapper.findAll('.message.assistant')).toHaveLength(1)
 expect(wrapper.get('.message.assistant p').text()).toBe('正在处理。')
 ```
 
-- [x] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试**
 
 ```powershell
 Set-Location D:\test_agent\writing-agent\web
@@ -362,11 +361,11 @@ function appendAssistantDelta(text: string) {
 
 `token` 分支调用 `appendAssistantDelta`；发送新指令和作用域切换时把索引置空。
 
-- [x] **Step 4: 验证 token 合并 GREEN**
+- [x] **Step 4: 验证 token 合并**
 
 运行指定 Vitest，预期 PASS。
 
-- [x] **Step 5: 写工具状态的失败测试**
+- [x] **Step 5: 写工具状态的针对性测试**
 
 ```typescript
 await callback(taskEvent('tool_call', { tool: 'propose_project_edits' }))
@@ -390,7 +389,7 @@ if (event.type === 'tool_result' && event.data.tool === 'propose_project_edits')
 
 模板在消息区渲染 `<p v-if="toolStatus" class="tool-status">{{ toolStatus }}</p>`；样式使用现有中性色与 `--accent`，不新增卡片嵌套。
 
-- [x] **Step 7: 验证工具状态 GREEN 并回归组件测试**
+- [x] **Step 7: 验证工具状态并回归组件测试**
 
 ```powershell
 Set-Location D:\test_agent\writing-agent\web
@@ -423,13 +422,13 @@ assert '"type": "change_preview"' in stream.text
 assert '"type": "task_done"' in stream.text
 ```
 
-- [x] **Step 2: 运行并确认 RED，再完成 FakeLLM/接口适配至 GREEN**
+- [x] **Step 2: 运行测试并完成 FakeLLM/接口适配**
 
 ```powershell
 C:\miniconda\envs\writing-agent\python.exe -m pytest tests\test_api_projects.py::test_project_agent_chat_returns_streamed_reply_and_change_preview -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-writing-agent
 ```
 
-预期先因旧 fake/事件数量失败；随后只调整测试夹具和必要实现，不改变 API 路径或响应 schema，最终该测试应 PASS。
+更新 fake/事件数量所需的测试夹具和实现，不改变 API 路径或响应 schema，并确认测试通过。
 
 - [x] **Step 3: 先跑记忆隔离红线**
 

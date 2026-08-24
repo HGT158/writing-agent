@@ -69,7 +69,7 @@ npm run build
 ## 硬性规则
 
 1. 架构或跨模块契约变化必须先更新 `docs/architecture/phase1-architecture.md` 并升版。
-2. 行为变更严格遵循 RED → GREEN → 全量回归；`tests/test_memory_isolation.py` 必须始终常绿。
+2. 行为变更按风险分级：文档、样式和低风险调整可直接实现后做针对性验证；明确 bug 应补回归测试；涉及数据库、文件写入、权限隔离、并发、迁移、流式状态或大范围跨模块改动时，关键路径测试建议先行（可采用 TDD）。所有行为变更完成针对性验证并跑全量回归；`tests/test_memory_isolation.py` 必须始终常绿。
 3. 所有助手数据接口和查询必须以 `assistant_id` 隔离，不能只用 project/document/task id 授权。
 4. 密钥只能来自 `.env`；禁止硬编码和提交。`.env.example` 只放占位配置。
 5. 新增内置工具须在 `agent/tools.py` 注册，声明 `idempotent`/`captures_source`，写入受 `data/` 沙箱约束。
