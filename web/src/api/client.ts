@@ -75,6 +75,16 @@ export const apiClient = {
     `/api/assistants/${encodeURIComponent(assistantId)}`,
     { method: 'DELETE' },
   ),
+  getMemoryProfile: (assistantId: string) => request<{ content: string }>(
+    `/api/assistants/${encodeURIComponent(assistantId)}/memory/profile`,
+  ),
+  replaceMemoryProfile: (assistantId: string, content: string) => request<{ content: string }>(
+    `/api/assistants/${encodeURIComponent(assistantId)}/memory/profile`,
+    {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    },
+  ),
   listProjects: (assistantId: string) => request<Project[]>(`/api/projects?assistant_id=${encodeURIComponent(assistantId)}`),
   createProject: (assistantId: string, name: string) => request<Project>('/api/projects', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -46,6 +46,18 @@ class ArticleRecord:
     created_at: str
 
 
+@dataclass(frozen=True)
+class RecallTrace:
+    """recall 的结构化命中结果（架构 §5.7 v1.30）：文本组装 + 可观测命中。"""
+
+    profile_text: str
+    profile_entries: int
+    article_hits: list[tuple[str, str, str]]  # (title, path, created_at)
+    message_hits: list[tuple[str, str]]       # (content, created_at)
+    degraded: list[str]                       # 分路降级标记（只观测，不二次查询）
+    text: str                                 # 与 recall 返回一致的组装文本
+
+
 class AssistantBusyError(RuntimeError):
     """同一助手已有运行中任务（run_locks 主键冲突且锁未过期/持有进程仍存活）。"""
 
@@ -307,12 +319,18 @@ class MemoryStore:
 
     def recall(self, assistant_id: str, query: str, *, limit: int = 10) -> str:
         """检索范围 = 本助手 profile.md + 本助手历史文章/消息（跨助手物理不可见）。"""
+        return self.recall_trace(assistant_id, query, limit=limit).text
+
+    def recall_trace(self, assistant_id: str, query: str, *, limit: int = 10) -> RecallTrace:
+        """结构化命中（v1.30）：与 recall 相同的检索与降级语义，另暴露命中明细。"""
         parts: list[str] = []
+        degraded: list[str] = []
         try:
             profile = long_term.read_profile(self.data_dir, assistant_id)
         except (OSError, UnicodeError):
             logger.warning("recall profile 读取失败（assistant=%s）", assistant_id, exc_info=True)
             profile = ""
+            degraded.append("profile")
         if profile:
             parts.append("## 长期画像（风格/偏好/常用主题）\n" + profile)
 
@@ -327,10 +345,12 @@ class MemoryStore:
                     articles = short_term.search_articles_fts(self._conn, assistant_id, match_query, limit)
                 except sqlite3.Error:
                     logger.warning("FTS 文章 recall 失败（assistant=%s）", assistant_id, exc_info=True)
+                    degraded.append("articles_fts")
                 try:
                     messages = short_term.search_messages_fts(self._conn, assistant_id, match_query, limit)
                 except sqlite3.Error:
                     logger.warning("FTS 消息 recall 失败（assistant=%s）", assistant_id, exc_info=True)
+                    degraded.append("messages_fts")
             elif normalized_query:
                 logger.debug("recall 使用 LIKE 降级（assistant=%s, query=%r）", assistant_id, normalized_query)
                 like = _like_patterns(normalized_query)
@@ -338,14 +358,17 @@ class MemoryStore:
                     articles = short_term.search_articles(self._conn, assistant_id, like, limit)
                 except sqlite3.Error:
                     logger.warning("LIKE 文章 recall 失败（assistant=%s）", assistant_id, exc_info=True)
+                    degraded.append("articles_like")
                 try:
                     messages = short_term.search_messages(self._conn, assistant_id, like, limit)
                 except sqlite3.Error:
                     logger.warning("LIKE 消息 recall 失败（assistant=%s）", assistant_id, exc_info=True)
+                    degraded.append("messages_like")
             try:
                 recent = short_term.recent_articles(self._conn, assistant_id, 3)
             except sqlite3.Error:
                 logger.warning("最近文章 recall 失败（assistant=%s）", assistant_id, exc_info=True)
+                degraded.append("recent_articles")
 
         seen = {a[1] for a in articles}
         merged = articles + [a for a in recent if a[1] not in seen]
@@ -355,7 +378,17 @@ class MemoryStore:
         if messages:
             snippets = [f"- {c[:150]}" for c, _ in messages[:5]]
             parts.append("## 相关历史对话片段\n" + "\n".join(snippets))
-        return "\n\n".join(parts)
+        profile_entries = sum(
+            1 for line in profile.splitlines() if line.strip().startswith("- ")
+        )
+        return RecallTrace(
+            profile_text=profile,
+            profile_entries=profile_entries,
+            article_hits=merged,
+            message_hits=messages,
+            degraded=degraded,
+            text="\n\n".join(parts),
+        )
 
     def memorize(
         self,
@@ -376,6 +409,16 @@ class MemoryStore:
     def recall_semantic(self, assistant_id: str, query: str) -> str:
         """预留向量检索接口（架构 §5.7，后期扩展）。"""
         raise NotImplementedError("向量检索为预留接口，当前使用关键词检索")
+
+    # ---------- 长期画像白盒读写（v1.30） ----------
+
+    def get_assistant_profile(self, assistant_id: str) -> str:
+        """profile.md 原文；文件不存在返回空串。"""
+        return long_term.read_profile(self.data_dir, assistant_id)
+
+    def replace_assistant_profile(self, assistant_id: str, content: str) -> None:
+        """整文替换 profile.md（白盒）：原样写入、不重排；超上限抛 ValueError。"""
+        long_term.replace_profile(self.data_dir, assistant_id, content)
 
     # ---------- 文章项目（架构 §4.7 / §5.7） ----------
 

@@ -16,7 +16,7 @@ const hasPending = computed(() => props.change.hunks.some((hunk) => hunk.status 
 
 <template>
   <section class="change-diff" aria-label="AI 修改预览">
-    <header class="diff-heading" role="button" tabindex="0" title="打开目标文档" @click="$emit('open')" @keydown.enter="$emit('open')">
+    <header class="diff-heading" role="button" tabindex="0" title="打开目标文档" @click="$emit('open')" @keydown.enter="$emit('open')" @keydown.space.prevent="$emit('open')">
       <span class="diff-target"><FileText :size="13" />{{ label || '当前文档' }}</span>
       <span class="diff-source">{{ change.source === 'chat' ? 'Agent' : '选区改写' }} · {{ change.hunks.length }} 处</span>
     </header>
@@ -30,6 +30,7 @@ const hasPending = computed(() => props.change.hunks.some((hunk) => hunk.status 
       title="在编辑器中定位该处修改"
       @click="$emit('open', hunk.hunk_id)"
       @keydown.enter="$emit('open', hunk.hunk_id)"
+      @keydown.space.prevent="$emit('open', hunk.hunk_id)"
     >
       <div v-if="hunk.original" class="diff-block removed"><span class="diff-sign">−</span>{{ hunk.original }}</div>
       <div class="diff-block added"><span class="diff-sign">+</span>{{ hunk.replacement }}</div>

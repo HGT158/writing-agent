@@ -376,3 +376,56 @@ def test_completed_articles_are_read_only_and_assistant_isolated(tmp_path):
             f"/api/articles/{article['article_id']}", params={"assistant_id": "other"}
         )
         assert hidden.status_code == 404
+
+
+def test_memory_profile_get_and_put_roundtrip(tmp_path):
+    runtime = AgentRuntime(_settings(tmp_path))
+    with TestClient(_app(tmp_path, runtime)) as client:
+        empty = client.get("/api/assistants/default/memory/profile")
+        assert empty.status_code == 200
+        assert empty.json() == {"content": ""}
+
+        saved = client.put(
+            "/api/assistants/default/memory/profile",
+            json={"content": "# 画像\n\n- 手写条目\n"},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["content"].startswith("# 画像")
+        loaded = client.get("/api/assistants/default/memory/profile")
+        assert loaded.status_code == 200
+        assert "手写条目" in loaded.json()["content"]
+
+        assert client.get("/api/assistants/no-such/memory/profile").status_code == 404
+        assert client.put(
+            "/api/assistants/no-such/memory/profile", json={"content": "x"}
+        ).status_code == 404
+
+
+def test_memory_profile_put_rejects_over_limit(tmp_path):
+    from memory.long_term import ASSISTANT_PROFILE_MAX_CHARS
+
+    runtime = AgentRuntime(_settings(tmp_path))
+    with TestClient(_app(tmp_path, runtime)) as client:
+        response = client.put(
+            "/api/assistants/default/memory/profile",
+            json={"content": "字" * (ASSISTANT_PROFILE_MAX_CHARS + 1)},
+        )
+        assert response.status_code == 400
+        assert client.get(
+            "/api/assistants/default/memory/profile"
+        ).json()["content"] == ""
+
+
+def test_memory_profile_put_rejected_while_assistant_busy(tmp_path):
+    runtime = AgentRuntime(_settings(tmp_path))
+    runtime.store.acquire_lock("default", "other-task")
+    with TestClient(_app(tmp_path, runtime)) as client:
+        response = client.put(
+            "/api/assistants/default/memory/profile",
+            json={"content": "x"},
+        )
+        assert response.status_code == 409
+        # 只读端点不受运行锁限制
+        assert client.get("/api/assistants/default/memory/profile").status_code == 200
+        # client 关闭（lifespan shutdown 会 close runtime）前释放锁
+        runtime.store.release_lock("default", "other-task")

@@ -17,6 +17,7 @@ from memory.store import MemoryStore
 from scheduler import RuntimeScheduler
 
 from .assistant_registry import AssistantRegistry
+from . import chat_memory
 from .context import (
     build_chat_context,
     clip_content_to_token_budget,
@@ -111,8 +112,10 @@ class AgentRuntime:
             self.store.acquire_lock(assistant_id, task_id)
         try:
             self.store.create_session(assistant_id, session_id, task)
-            memory_context = self.store.recall(assistant_id, task)
+            trace = self.store.recall_trace(assistant_id, task)
+            memory_context = trace.text
             self.store.add_message(assistant_id, session_id, "user", task)
+            self.bus.emit("info", text=f"已注入助手记忆：{self._recall_summary_text(trace)}")
 
             services = RuntimeServices(
                 llm=self.llm,
@@ -271,6 +274,72 @@ class AgentRuntime:
             json_mode=False,
         )
 
+    @staticmethod
+    def _recall_summary_text(trace) -> str:
+        """recall 命中摘要（v1.30）：画像条数、文章命中、对话片段与分路降级标记。"""
+        summary = (
+            f"画像 {trace.profile_entries} 条；文章命中 {len(trace.article_hits)} 篇；"
+            f"对话片段 {len(trace.message_hits)} 段"
+        )
+        if trace.degraded:
+            summary += f"（部分降级：{'、'.join(trace.degraded)}）"
+        return summary
+
+    async def _consolidate_chat_memory(
+        self,
+        recorder: WorkLogRecorder,
+        *,
+        assistant_id: str,
+        chat_session_id: str,
+        user_message: str,
+        assistant_reply: str,
+    ) -> None:
+        """轮次终态选择性沉淀（架构 §5.4 v1.30）。
+
+        确定性门槛 → 显式指令直达 / 一次启发式提取；任何失败降级 warning，
+        不得影响本轮已交付的聊天回复（对齐 §3.3 压缩失败降级语义）。
+        """
+        if not self.settings.chat_memory_consolidation:
+            return
+        try:
+            if not chat_memory.has_consolidation_signal(user_message):
+                return
+            direct = chat_memory.extract_explicit_command(user_message)
+            if direct is not None:
+                self.store.memorize(
+                    assistant_id, "preference", direct, session_id=chat_session_id
+                )
+                work = recorder.start("progress", "已沉淀助手记忆")
+                recorder.done(work, detail=f"- [偏好] {direct}")
+                return
+            items = await chat_memory.extract_preferences(
+                self.llm,
+                self.settings.model_name,
+                user_message=user_message,
+                assistant_reply=assistant_reply,
+                profile_text=self.store.get_assistant_profile(assistant_id),
+                json_mode=self.settings.json_mode,
+            )
+            if not items:
+                return
+            lines: list[str] = []
+            for kind, content in items:
+                self.store.memorize(
+                    assistant_id, kind, content, session_id=chat_session_id
+                )
+                lines.append(f"- [{chat_memory.kind_label(kind)}] {content}")
+            work = recorder.start("progress", "已沉淀助手记忆")
+            recorder.done(work, detail="\n".join(lines))
+        except Exception:
+            logger.warning(
+                "聊天记忆沉淀失败（assistant=%s session=%s）",
+                assistant_id, chat_session_id, exc_info=True,
+            )
+            try:
+                recorder.note("warning", "本轮记忆沉淀失败，已跳过（不影响回复）")
+            except Exception:
+                logger.debug("沉淀降级警告工作项写入失败", exc_info=True)
+
     async def chat_project(
         self,
         assistant_id: str,
@@ -319,8 +388,16 @@ class AgentRuntime:
                 document_clipped = clipped
             editing = self.skills.get("editing")
             skill_prompt = editing.body if editing is not None else "帮助用户审校和改写项目文本。"
+            # 聊天注入本助手记忆（v1.30，§4.7 既有声明补齐实现）：在编辑指导之前注入
+            # recall 结果；注入内容属于 system prompt，参与既有 token 预算与兜底计算。
+            memory_trace = self.store.recall_trace(assistant_id, message)
+            memory_block = (
+                f"本助手长期记忆（跨会话共享，供参考）：\n{memory_trace.text}\n\n"
+                if memory_trace.text
+                else ""
+            )
             system_prefix = (
-                f"{assistant.persona}\n\n{skill_prompt}\n\n"
+                f"{assistant.persona}\n\n{skill_prompt}\n\n{memory_block}"
                 "你正在项目 Agent 面板中回答用户。回答应简洁、具体。"
                 "用户要求改写、增删或替换正文时，必须调用 propose_project_edits，"
                 "不要声称已经修改文件，也不要在工具调用前输出解释。"
@@ -363,6 +440,9 @@ class AgentRuntime:
                 user_message_id=user_record.message_id,
             )
             context_work = recorder.start("progress", "正在读取当前文档与历史上下文")
+            if memory_trace.text or memory_trace.degraded:
+                injection_work = recorder.start("progress", "已注入助手记忆")
+                recorder.done(injection_work, detail=self._recall_summary_text(memory_trace))
             history = self.store.list_project_chat_messages(
                 assistant_id, project_id, chat_session_id
             )
@@ -448,6 +528,13 @@ class AgentRuntime:
                     reply,
                 )
                 assistant_persisted = True
+                await self._consolidate_chat_memory(
+                    recorder,
+                    assistant_id=assistant_id,
+                    chat_session_id=chat_session_id,
+                    user_message=message,
+                    assistant_reply=reply,
+                )
                 recorder.finish_task(
                     "succeeded", title=message.strip()[:80], detail="无工具调用"
                 )
@@ -572,6 +659,13 @@ class AgentRuntime:
                 reply,
             )
             assistant_persisted = True
+            await self._consolidate_chat_memory(
+                recorder,
+                assistant_id=assistant_id,
+                chat_session_id=chat_session_id,
+                user_message=message,
+                assistant_reply=reply,
+            )
             recorder.finish_task(
                 "succeeded",
                 title=message.strip()[:80],

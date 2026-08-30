@@ -1357,6 +1357,7 @@ def save_document(
 
 _MAX_HUNKS_PER_SET = 100
 _MAX_SET_UTF8_BYTES = 1024 * 1024
+_PAGE_SIZE_MAX = 100  # Memory 层分页收口（phase7 P3-4，v1.30）
 
 _CHANGE_SET_COLUMNS = (
     "change_set_id, assistant_id, project_id, document_id, session_id, source, "
@@ -1664,6 +1665,8 @@ def list_change_sets_for_document(
     _project_row(conn, assistant_id, project_id)
     if page < 1 or page_size < 1:
         raise ValueError("分页参数非法")
+    # Memory 层分页收口（phase7 P3-4）：不依赖 API 层 Query(le=100) 的前置校验。
+    page_size = min(page_size, _PAGE_SIZE_MAX)
     total = conn.execute(
         "SELECT COUNT(*) FROM change_sets "
         "WHERE assistant_id = ? AND project_id = ? AND document_id = ?",

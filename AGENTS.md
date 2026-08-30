@@ -4,8 +4,8 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.29**。
-- 阶段 2、3、4 及 v1.13–v1.29 均已完成；当前基线：Python **306/306**、记忆隔离 **11/11**、前端 **145/145**。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.30**。
+- 阶段 2、3、4 及 v1.13–v1.30 均已完成；当前基线：Python **330/330**、记忆隔离 **11/11**、前端 **154/154**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑和每项目多会话历史。
 - v1.17 补齐：活动 SSE 订阅者按 `seq` 跨越事件滑窗（修复长回复超过窗口后停流）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
 - v1.18 补齐：SSE 断线游标续传——数据帧带标准 `id: <seq>` 行，流端点接受 `after_seq` / `Last-Event-ID` 游标，游标落后于窗口时发 `reconnect_gap` 缺口信号；前端按退避自动重连、按 `seq` 去重，缺口后等待终态并重载持久化会话。
@@ -21,6 +21,7 @@
 - v1.27 补充（phase9 第二梯队加固）：项目残骸对账只删除旧的、内部标记合法且身份匹配的目录并为新近目录保留宽限期；archive/purge 拒绝活跃文档写意图，purge 清理幂等；前端保存与三条 AI 接受路径统一以版本+正文精确快照守卫响应回写；fetch 与 SSE 增加 60 秒停滞边界及可观察 heartbeat；MCP 建连/初始化/工具发现逐步超时并以临时 exit stack 失败即清；工作记录中断按快照迭代。
 - v1.28 补齐：助手 persona 可写可编辑——`POST /api/assistants` 接受可选 `persona`（空白/缺省落默认人设，上限 50,000 字符）；新增 `GET /api/assistants/{id}`（含 persona 的完整定义）与 `PATCH /api/assistants/{id}`（显示名/描述/系统提示词部分更新，`assistant.yaml` 重写保留 skills 等既有字段，运行锁边界与删除一致，写失败按原内容尽力回滚）；前端创建对话框增加系统提示词输入，助手选择器新增编辑入口（id 只读、预填当前值、服务端拒绝原样提示且不关闭对话框）；CLI `assistants create/edit` 支持 `--persona`/`--persona-file`（互斥），edit 为部分更新语义。
 - v1.29 补齐（加固批次）：写意图 finalize 返回契约统一 `list[str]`（缺失分支返回空列表）；`WorkLogRecorder` 终态后 `start` 显式拒绝；`watchTask` 退避复位以收到首个事件（数据帧或 heartbeat）为准、开连即断不再无限快速重连；补五项崩溃恢复回归测试（并发终态对账、迁移后二次启动、真实 recorder 取消分支、跨助手 change set 404、工作事件断线补发）；工作记录截断标注改「脱敏后 N 字符」与 import 分组。详见 backlog「已完成并移出待办」。
+- v1.30 补齐（助手记忆系统完善）：项目聊天 system prompt 注入本助手记忆（recall_trace 画像全文+文章命中+对话片段，补齐 §4.7 既有声明）并以「已注入助手记忆」工作条目呈现命中摘要；聊天轮次 succeeded 终态选择性沉淀——确定性信号门槛（未命中零成本）→ 显式指令剥离指令词直达 `memorize`（零模型调用）/ 其余命中一次 JSON 提取（≤3 条，kind ∈ preference/style/topic，含画像去重），failed/interrupted 不沉淀，失败降级 warning 不影响回复，`CHAT_MEMORY_CONSOLIDATION` 可整体关闭；新增 `GET/PUT /api/assistants/{id}/memory/profile`（整文白盒替换、50,000 字符上限、助手运行中 409）与前端标题栏「记忆画像」对话框；`recall_trace` 结构化命中 + 普通任务启动 `info` 播报；随行 clamp：`list_change_sets` 的 page_size 在 Memory 层收口 ≤100（phase7 P3-4）。同版无障碍小批次：ChangeDiff 卡片头部与 hunk 的 Space 键激活（phase8 P3-5）、主题菜单打开后聚焦当前项并支持方向键循环导航与 Home/End（phase7 P3-9）、工作记录 changes 条目补按钮语义与 Enter/Space 激活（phase7 P3-9 剩余部分）。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读

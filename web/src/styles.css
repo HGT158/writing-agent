@@ -446,6 +446,10 @@ input, select, textarea { border-radius: var(--radius); background: var(--surfac
 .project-dialog textarea { border: 1px solid var(--border); padding: 7px 9px; font: inherit; line-height: 1.55; resize: vertical; min-height: 96px; }
 .dialog-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.memory-dialog { width: min(560px, 100%); }
+.memory-dialog > * { padding: 0 14px; }
+.memory-dialog .dialog-heading { padding: 0 10px 0 14px; }
+.memory-textarea { width: 100%; margin-top: 8px; border: 1px solid var(--border); padding: 7px 9px; font: 12px/1.6 var(--mono, ui-monospace, monospace); resize: vertical; min-height: 220px; }
 
 @media (max-width: 980px) {
   .workspace-grid { grid-template-columns: 42px 210px minmax(0, 1fr); }

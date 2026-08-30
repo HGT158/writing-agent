@@ -14,8 +14,17 @@ class AssistantUpdate(BaseModel):
     """助手编辑（v1.28）：PATCH 部分更新语义，仅提供的字段生效。"""
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    description: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, min_length=1, max_length=500)
     persona: str | None = Field(default=None, max_length=50_000)
+
+
+class MemoryProfileUpdate(BaseModel):
+    """助手长期画像整文替换（v1.30）：白盒语义，空白属显式清空。
+
+    长度上限由 Memory 层（ASSISTANT_PROFILE_MAX_CHARS）校验，统一返回 400。
+    """
+
+    content: str
 
 
 class AgentTaskRequest(BaseModel):

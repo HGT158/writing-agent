@@ -26,6 +26,7 @@ from .models import (
     ChangeSetHunkAction,
     DocumentRename,
     DocumentSave,
+    MemoryProfileUpdate,
     ProjectChatRequest,
     ProjectCreate,
     ProjectRename,
@@ -178,6 +179,38 @@ def create_app(
                 runtime.assistants.delete, assistant_id, purge
             )
             return {"archived_path": str(archived), "purged": purge}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/assistants/{assistant_id}/memory/profile")
+    async def get_memory_profile(assistant_id: str):
+        """本助手长期画像原文（v1.30）；只读不受运行锁限制。"""
+        try:
+            runtime.assistants.get(assistant_id)
+            content = await asyncio.to_thread(
+                runtime.store.get_assistant_profile, assistant_id
+            )
+            return {"content": content}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.put("/api/assistants/{assistant_id}/memory/profile")
+    async def replace_memory_profile(assistant_id: str, body: MemoryProfileUpdate):
+        """整文替换长期画像（v1.30）：白盒原样写入；助手任务运行中 409。"""
+        try:
+            runtime.assistants.get(assistant_id)
+            mutation_task = uuid.uuid4().hex[:12]
+            runtime.store.acquire_lock(assistant_id, mutation_task)
+            try:
+                await asyncio.to_thread(
+                    runtime.store.replace_assistant_profile, assistant_id, body.content
+                )
+            finally:
+                runtime.store.release_lock(assistant_id, mutation_task)
+            content = await asyncio.to_thread(
+                runtime.store.get_assistant_profile, assistant_id
+            )
+            return {"content": content}
         except Exception as exc:
             _raise_http(exc)
 

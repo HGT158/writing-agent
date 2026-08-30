@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Bot, Pencil, Plus, Save, Trash2 } from '@lucide/vue'
+import { Bot, Brain, Pencil, Plus, Save, Trash2 } from '@lucide/vue'
 
 import { apiClient } from './api/client'
 import ActivityBar from './components/ActivityBar.vue'
@@ -9,6 +9,7 @@ import AssistantDialog from './components/AssistantDialog.vue'
 import CreateProjectDialog from './components/CreateProjectDialog.vue'
 import DocumentEditor from './components/DocumentEditor.vue'
 import EditorTabs from './components/EditorTabs.vue'
+import MemoryProfileDialog from './components/MemoryProfileDialog.vue'
 import ProjectExplorer from './components/ProjectExplorer.vue'
 import ThemePicker from './components/ThemePicker.vue'
 import { createWorkspaceStore } from './stores/workspace'
@@ -32,6 +33,7 @@ const editDialogOpen = ref(false)
 const editBusy = ref(false)
 const editError = ref('')
 const editInitial = ref<{ id: string; name: string; description: string; persona: string } | null>(null)
+const memoryDialogOpen = ref(false)
 const saving = ref(false)
 const documentEditor = ref<InstanceType<typeof DocumentEditor> | null>(null)
 let projectRequestGeneration = 0
@@ -604,6 +606,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
         </select>
         <button class="icon-action compact" title="新建助手" @click="openCreateAssistant"><Plus :size="14" /></button>
         <button class="icon-action compact" title="编辑当前助手" @click="openEditAssistant"><Pencil :size="14" /></button>
+        <button class="icon-action compact" title="记忆画像（profile.md）" @click="memoryDialogOpen = true"><Brain :size="14" /></button>
         <button
           class="icon-action compact danger"
           title="删除当前助手（归档）"
@@ -680,6 +683,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
       :initial="editInitial"
       @submit="updateAssistant"
       @cancel="editDialogOpen = false"
+    />
+    <MemoryProfileDialog
+      v-if="memoryDialogOpen"
+      :assistant-id="workspace.assistantId"
+      @close="memoryDialogOpen = false"
     />
     <div v-if="globalError || workspace.error" class="global-error">{{ globalError || workspace.error }}</div>
   </div>

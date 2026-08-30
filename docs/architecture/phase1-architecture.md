@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.29 · 2026-08-30
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐、phase9 第一、第二梯队及 P3-34 均归入 v1.27 并已完成、v1.28 助手 persona 可写可编辑、v1.29 加固批次（phase7/phase8 P3 清尾）
+> 版本：v1.30 · 2026-08-31
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐、phase9 第一、第二梯队及 P3-34 均归入 v1.27 并已完成、v1.28 助手 persona 可写可编辑、v1.29 加固批次（phase7/phase8 P3 清尾）、v1.30 助手记忆系统完善（聊天记忆注入与选择性沉淀、画像查看编辑、recall 可观测）
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -54,6 +54,8 @@
 > v1.28 变更：助手 persona 可写可编辑。**（1）创建时填写系统提示词**：`POST /api/assistants` 接受可选 `persona` 字段（上限 50,000 字符），非空白时作为该助手系统提示词写入 persona 文件；缺省或空白沿用默认 persona，不产生空系统提示词（§4.2/§5.9）。**（2）助手编辑**：新增 `GET /api/assistants/{assistant_id}`（返回含 persona 的完整定义，列表接口保持轻量不携带 persona 正文）与 `PATCH /api/assistants/{assistant_id}`（显示名、描述、系统提示词的部分更新——仅提供的字段生效）。`assistant.yaml` 重写保留 `skills`、`created_at`、`persona_file` 等既有字段；persona 写入 `persona_file` 指向的文件（缺省 `persona.md`）。更新以助手运行锁串行，语义与删除一致：该助手任一任务运行期间返回 409；磁盘写入失败时按内存中的原内容尽力回滚，不留下半程状态。`default` 助手可编辑、不可删除（§4.2/§5.9）。**（3）前端**：创建助手对话框增加可选的系统提示词多行输入；助手选择器新增编辑入口，编辑对话框 id 只读展示、显示名/描述/系统提示词预填当前值，保存成功后刷新助手列表，409/400 服务端拒绝原样提示且不关闭对话框（§5.10）。**（4）CLI**：`assistants create` 支持 `--persona`（正文）与 `--persona-file`（UTF-8 文件，互斥）；新增 `assistants edit` 子命令（部分更新语义与 API PATCH 一致，未提供的 `--description` 不清空描述，运行锁冲突报错退出码 2）（§5.4）。
 
 > v1.29 变更：加固批次（backlog「建议排期：加固批次」五项全部闭环）。**（1）写意图 finalize 返回契约（phase7 P3-5）**：`_finalize_write_intent` 注解统一为 `-> list[str]`（返回本组应用后被整组失效的其他任务 change set id），意图缺失分支由裸 `return` 改为返回空列表，消除注解与实际返回不一致；三处调用中 save 与恢复路径不消费返回值、接受 hunk 路径消费，行为不变，补契约回归测试（§4.7）。**（2）任务终态后的防御性调用（phase7 P3-7）**：`WorkLogRecorder.finish_task` 置位终态后，再次调用 `start`（含经 `note` 的间接调用）显式抛 `RuntimeError`，不吞异常——防止未来调用顺序变化复用已落库序号（§5.4）。**（3）SSE 反复开连即断防护（phase7 P3-10，契约修订）**：`watchTask` 的重连退避复位条件由「EventSource `onopen`（连接建立）」收紧为「收到首个事件（任意数据帧或命名 `heartbeat`）」——服务端持续接受连接后未送达任何事件即断开时，退避不再被清零，重连尝试照常累计，6 次耗尽后订阅关闭并按既有语义提示刷新恢复；"重连成功"的判定从 TCP/HTTP 层成功改为应用层有数据到达，与 60 秒空闲看门狗共同把无事件连接关进有界路径（§5.10）。**（4）崩溃恢复测试补齐（phase7 P3-11）**：补并发终态对账（两请求同时对账同一无终态任务组幂等收敛为单条终态）、change set 迁移成功后二次启动不重迁不报错、`CancelledError` 经真实 `WorkLogRecorder` 走 interrupted 分支、跨助手持 change set id 访问返回 404、工作事件断线按游标补发五项回归测试，均为纯测试不改行为（§5.7/§5.9）。**（5）截断标注口径与 import 分组（phase8 P3-2/P3-6）**：工作记录详情/参数/结果三处截断标注由「原始 N 字符」改为「脱敏后 N 字符」（脱敏发生在截断之前，标注对象是脱敏后文本的真实长度），`import logging` 与标准库导入归组；纯措辞与代码整理，不改行为（§5.7）。
+
+> v1.30 变更：助手记忆系统完善（backlog 2026-08-22 登记项）。**（1）项目聊天注入本助手记忆（§4.7 既有声明补齐实现）**：chat_project 的 system prompt 在编辑指导之前注入 recall 结果（画像全文 + 命中历史文章索引 + 相关对话片段），作为 system prompt 的一部分参与既有 token 预算与 v1.21 兜底计算；工作记录新增「已注入助手记忆」进度条目（含命中摘要与分路降级标记）。**（2）聊天轮次终态选择性沉淀**：succeeded 终态且回复持久化后、任务终态写入前执行——零成本确定性信号门槛（未命中不写画像、不调模型）→ 显式指令带正文的剥离指令词直接 `memorize(kind="preference")`（零模型调用）→ 其余命中用一次非流式 JSON 提取调用（输入当轮对话 + 现有画像全文，输出 ≤3 条 `{kind, content}`，kind ∈ preference/style/topic，含与画像已有等价记录去重）逐条经 `store.memorize` 写入；failed/interrupted 终态不沉淀；提取或写入失败降级 warning（日志 + 工作记录警告条目），不影响本轮已交付回复（对齐 §3.3 压缩失败降级语义）；`CHAT_MEMORY_CONSOLIDATION` 开关默认开。**（3）recall 可观测**：MemoryStore 新增 `recall_trace`（画像条数、文章命中、对话片段、分路降级标记），`recall` 改为基于 trace 组装、签名与返回文本不变；普通任务启动时以 `info` 事件播报命中摘要。**（4）画像白盒读写**：新增 `GET/PUT /api/assistants/{assistant_id}/memory/profile`（整文替换、UTF-8 原样写入、50,000 字符上限、空白=显式清空、助手运行中 409 与 PATCH assistant 同边界、写失败按原内容尽力回滚）；前端助手选择器新增「记忆画像」查看/编辑对话框。**（5）随行 clamp（phase7 P3-4）**：`list_change_sets` 的 `page_size` 在 Memory 层收口 ≤100（§5.7）。
 
 ---
 
@@ -233,7 +235,7 @@ data/assistants/
   tech-writer/
     assistant.yaml     # 助手定义
     persona.md         # 人设/系统提示词（可选，内容注入 system prompt）
-    memory/profile.md  # 长期记忆（Agent 自维护，人可手改）
+    memory/profile.md  # 长期记忆（Agent 自维护，人可手改；v1.30 起也可经 GET/PUT 助手记忆 API 查看/整文替换）
   marketing/
     ...
   default/             # 内置兜底助手，CLI 不指定 --assistant 时使用
@@ -415,6 +417,16 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 
 聊天 prompt 的组装交给独立的 `agent/context.py`，Runtime 不内联裁剪逻辑：该模块负责 token 估算、当前文档正文窗口截断、保留窗口切分与摘要合并，并把是否需要新摘要、摘要覆盖到的 `message_id` 返回给 Runtime 决定是否落库（§3.3）。压缩发生时 Runtime 发出一条 `info` 事件说明本轮压缩了多少条历史，便于用户理解上下文被折叠；压缩自身的 LLM 调用不产生 `token` 事件，不污染可见回复。
 
+**项目聊天注入本助手记忆与轮次终态选择性沉淀（v1.30）**：`chat_project` 组装 system prompt 时在编辑指导之前注入本助手记忆——`recall_trace(assistant_id, message)` 的画像全文、命中历史文章索引与相关对话片段（§4.7「聊天可读取本助手记忆」的实现补齐）；注入内容属于 system prompt 的一部分，参与既有 token 预算与 v1.21 兜底计算。注入动作在工作记录落一条 progress 条目（「已注入助手记忆」，detail 携带画像条数、文章命中数、对话片段数与分路降级标记）。
+
+每轮聊天在 **succeeded 终态且回复持久化之后、任务终态写入之前**执行选择性记忆沉淀，固定三步：
+
+1. **确定性门槛（零成本）**：对当轮 user 消息做信号扫描（显式指令类如「记住/记一下/记下来」；偏好反馈类如「我喜欢/我更喜欢/不要用/别用/以后都/每次都/一律/文风/语气/口吻/称呼/太啰嗦/太长/太短/太正式/口语化/正式一点/标点/感叹号」等）。未命中直接结束——不写画像、不调模型。
+2. **显式指令直达（零模型调用）**：消息匹配显式指令且指令之外有正文时，剥离指令词直接 `memorize(kind="preference", content=正文, session_id=chat_session_id)`，不调模型。
+3. **启发式提取（每轮至多一次模型调用）**：其余命中场景用一次非流式 JSON 提取调用（输入=当轮 user/assistant 消息与现有画像全文；输出 ≤3 条 `{kind, content}`，kind ∈ preference/style/topic，content 为 ≤120 字的一句话陈述；提示词要求与画像已有等价记录去重，一次性编辑指令、事实问答与寒暄不沉淀），对每条输出调用 `store.memorize`。无输出则静默结束，不产生工作记录条目。
+
+沉淀动作落一条 progress 条目（「已沉淀助手记忆」，detail 列出条目与 kind）；提取调用或 memorize 写入失败一律降级：记 warning 日志并在工作记录落警告条目，**不得影响本轮已交付的聊天回复**（对齐 §3.3 压缩失败的降级语义）。failed/interrupted 终态不沉淀。`CHAT_MEMORY_CONSOLIDATION`（默认开启）可整体关闭该行为。普通写作任务的 recall（`runtime.run` 启动时一次）同时以 `info` 事件播报命中摘要（画像条数、文章命中数、对话片段数、降级标记），注入内容形态不变。
+
 CLI 入口为 `agent/__main__.py`（`python -m agent` 的载体），子命令：`run`（默认）、`assistants list/create/edit/delete`、`--resume`。`assistants create/edit` 均接受 `--name`、`--description` 与系统提示词参数——`--persona` 传正文、`--persona-file` 读 UTF-8 文件，两者互斥；`edit` 为部分更新（仅提供的字段生效，与 API PATCH 同语义），未提供 `--description` 不会清空既有描述，空白 persona 同样落为默认人设，运行锁边界与 API 一致。`run` 命令从 Runtime 启动开始即进入 `try/finally` 清理边界：启动或任务执行发生未预期异常时发出 failed 事件并返回非零退出码，已分配的 Store/MCP 等资源仍由 `runtime.close()` 释放。
 
 ### 5.5 Skill 系统 — `skills/`
@@ -511,6 +523,11 @@ def recall_semantic(assistant_id: str, query: str) -> str  # 预留向量接口�
 
 `kind="article"` 写 articles 索引表；其余 kind 增量改写本助手 `profile.md`。
 
+- **画像白盒读写与结构化命中（v1.30）**：
+  - `get_assistant_profile(assistant_id) -> str` / `replace_assistant_profile(assistant_id, content) -> None`：整文读写 `profile.md`，UTF-8 原样写入、不重排既有格式、不自动补写头部；`content` 超过 `ASSISTANT_PROFILE_MAX_CHARS`（50,000 字符）抛 `ValueError`，空白内容属显式清空、原样落盘；写入失败按原内容尽力回滚，不留下半程状态（与 persona 编辑同模式）。读写仍只经 MemoryStore，前端只能经 API 访问（§5.9），禁止直接读助手目录。
+  - `recall_trace(assistant_id, query, *, limit=10) -> RecallTrace`：结构化命中结果（`profile_text`、`profile_entries` 画像条目数、`article_hits`、`message_hits`、`degraded` 分路降级标记、`text` 组装文本）。`recall` 改为基于 trace 组装，**签名与返回文本不变**；六路分路降级语义照旧，`degraded` 只做观测、不触发第二查询。
+  - **分页上限 clamp（phase7 P3-4 随行）**：`list_change_sets` 的 `page_size` 在 Memory 层收口到 ≤100（超过按 100 处理），不再只依赖 API 层 `Query(le=100)` 的前置校验。
+
 - **中文检索定案：SQLite FTS5 `trigram` 分词器**（SQLite ≥3.34 内置，Python 3.12 自带版本满足）。`messages_fts` / `articles_fts` 作为原表的**外部内容索引**，由 INSERT/UPDATE/DELETE 触发器保持同步。FTS schema 用 SQLite `PRAGMA user_version` 标记完整迁移版本：虚拟表缺失、tokenizer 非 trigram、触发器不齐或版本未完成时，均在单个事务内删除旧索引、重建并 `rebuild` 历史行，只在回填成功后写入版本号。trigram 对中文子串匹配有效且无需外分词依赖；`recall` 走 `MATCH`，再 join 原表并显式以 `assistant_id` 过滤，结果按 BM25 相关度排序。中文长任务描述会抽取三字窗口并在**全部候选词元范围内均匀采样**为最多 16 项的有界 OR 查询，兼顾查询长度与尾部主题词。放弃默认 unicode61（对中文无效）；jieba 等外分词作为后期可替换项（检索接口不变）。**短词元回退**：`query.strip()` 不足 3 个字符，或按空白拆分后没有任何长度至少 3 的可用词元时，对各非空词元执行参数化 OR LIKE；查询中的 `\\`、`%`、`_` 均按字面量转义。LIKE 模式同样最多 16 项，超限时在全部去重词元中均匀采样并保留首尾（空查询不检索），保证 recall 不静默漏检、不扩大匹配范围，也不生成无上限 OR 子句。
 - **检索故障降级**：profile、文章 FTS、消息 FTS、文章 LIKE、消息 LIKE、最近文章六路读取分别隔离异常并记 warning；任一路损坏时继续组合其余可用结果。FTS 查询失败时最近文章仍可兜底，任何 recall 存储故障都不得阻断 Agent 写作主链路。
 - **同助手跨会话共享**：`recall` 的检索范围 = 本助手全部历史会话 + 本助手 profile.md；**跨助手隔离**：SQL 强制 `WHERE assistant_id = ?`，profile 按目录物理隔离。
@@ -549,6 +566,8 @@ JOBS = [
 | `GET /api/assistants` | 助手列表（不携带 persona 正文，保持列表轻量）；`POST /api/assistants` 创建新助手（写 `assistants/<id>/` 目录），可选 `persona` 字段非空白时作为系统提示词写入 persona 文件；`DELETE /api/assistants/{id}` 归档删除（`?purge=true` 级联清理） |
 | `GET /api/assistants/{assistant_id}` | 返回助手完整定义（含 persona，v1.28）；未知助手 404 |
 | `PATCH /api/assistants/{assistant_id}` | 编辑助手（v1.28）：显示名、描述与系统提示词的部分更新，仅提供的字段生效，全部缺省返回 400；空白 `persona` 落为默认 persona；以助手运行锁串行，该助手任一任务运行期间返回 409，边界与删除一致；未知助手 404 |
+| `GET /api/assistants/{assistant_id}/memory/profile` | 返回本助手长期画像 `{content}`（v1.30）；未知助手 404；profile 文件不存在返回空串 |
+| `PUT /api/assistants/{assistant_id}/memory/profile` | 整文替换长期画像（v1.30）：body `{content}` 上限 50,000 字符，UTF-8 原样写入、空白即显式清空；先取助手运行锁，该助手任一任务运行期间返回 409（与 PATCH assistant 同边界）；超上限 400，未知助手 404 |
 | `POST /api/tasks` | 提交任务（body 必含 `assistant_id`），入队前同步校验助手存在且未被运行锁占用；未知助手返回 404，正忙返回 409，成功返回 `task_id` |
 | `GET /api/tasks/{id}?assistant_id=X` | 查询任务终态；任务记录绑定创建时的 `assistant_id`，跨助手查询按 404 处理 |
 | `GET /api/tasks/{id}/stream?assistant_id=X` | SSE：按订阅者独立队列广播 `thought` / `tool_call` / `token` / `done` / `failed` 事件；跨助手按 404 处理；支持 `after_seq` 参数或 `Last-Event-ID` 头断线续传，游标落后于窗口时先发 `reconnect_gap` |
@@ -596,6 +615,8 @@ Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部
 **资源管理器提供行内重命名与删除入口（v1.25）**：项目行与可编辑文件行悬停显示重命名/删除按钮（只读文件不提供；触屏等无悬停设备常显）。重命名是行内编辑——行内标签本身替换为输入框，默认值为原名称，挂载后自动聚焦并选中名称主体（文件名不含扩展名部分）；Enter 提交、Esc 取消，文件重命名只编辑文件名并在提交时拼回所在文件夹后调用文档重命名 API；项目重命名复用既有 `PATCH /api/projects/{id}`。删除前必须确认：文件删除说明不可恢复并调用文档删除 API；项目删除复用既有归档语义并在确认文案中说明归档而非抹除。操作成功后刷新项目列表与资源树并同步打开的标签页——文档重命名更新标签显示名，文档删除关闭对应标签；服务端 409（待处理建议、路径冲突、写入占用）原样提示，前端不猜测原因。
 
 标题栏提供**主题选择器**（v1.22）：五套内置主题以 CSS 变量驱动，切换经 `dataset.theme` 生效并持久化到 `localStorage`（仅显式选择时写入），首次访问跟随系统深浅偏好且未选择时运行期实时联动（选择后以选择为准），存储不可用时降级默认主题不阻断启动，挂载前初始化避免闪烁；深色主题同步覆盖 CodeMirror 行号、光标与语法高亮。助手选择器旁提供**创建助手**与**删除助手**入口，直接复用 `POST /api/assistants` 与 `DELETE /api/assistants/{id}`（默认归档语义）；v1.28 起新增**编辑助手**入口：编辑对话框 id 只读展示，显示名、描述与系统提示词预填当前值（经 `GET /api/assistants/{id}` 获取），保存调用 `PATCH /api/assistants/{id}`，成功后刷新助手列表并同步选择器显示名。创建对话框校验 id 与后端同一规则（`^[a-z0-9][a-z0-9_-]{0,49}$`，含下划线），并提供可选的系统提示词多行输入（上限与后端一致 50,000 字符）；编辑对话框系统提示词清空保存即恢复默认 persona，两处输入均不强制。删除必须二次确认并说明这是归档而非抹除，成功后重新拉取助手列表并切换到剩余助手；只剩一个助手时禁用删除。助手正忙（409）等服务端拒绝必须原样提示，前端不猜测原因；编辑提交失败时对话框保持打开并保留已填内容。
+
+助手选择器同时提供**记忆画像**入口（v1.30）：对话框经 `GET /api/assistants/{id}/memory/profile` 加载 profile.md 全文展示，多行文本可编辑并经 `PUT` 整文保存——白盒原则，人与 Agent 共用同一文件，前端不解析、不重排内容，仅做长度上限（50,000 字符）与保存状态提示；保存成功后刷新内容，409（助手任务运行中）/400（超上限）服务端拒绝原样提示且不关闭对话框。项目聊天工作记录新增两类进度条目（复用既有 progress/warning 呈现，不新增事件类型）：「已注入助手记忆」（含命中摘要与降级标记）与「已沉淀助手记忆」（含沉淀条目），沉淀失败以警告条目呈现。
 
 选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。**工具栏必须可输入**：浮层只能对非输入控件区域调用 `preventDefault` 来保持编辑器选区，绝不能拦截输入框自身的 `mousedown`，否则浏览器不会给输入框聚焦；组件挂载后显式聚焦输入框，`Esc` 关闭。CodeMirror 原生选区在编辑器失焦后不可见，因此工具栏打开期间必须用装饰保持选区高亮，用户在输入提示词时仍能看到改写目标。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡；气泡内容按 Markdown 渲染，流式期间也保持渲染一致，渲染同样要经过 HTML 消毒。工具调用与修改建议生成状态自 v1.19 起由工作记录条目呈现（见下文），不再单独显示紧凑状态行；若产生文件修改，同样进入 change set 预览，不直接覆盖。消息区默认跟随最新内容滚动，但用户主动上滚查看历史时必须停止自动跟随，直到用户回到底部。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
 
@@ -807,6 +828,8 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 | SSE 多次重连耗尽或流解析错误 | 订阅关闭并上报错误，前端退出 loading 状态并提示任务仍可能在后台完成、可刷新恢复 |
 | fetch 超过 60 秒或 SSE 连续 60 秒无数据/心跳 | fetch abort 并返回可读超时错误；SSE 主动断开后沿用既有游标与退避重连，重连耗尽才退出 loading |
 | 项目聊天上下文压缩调用失败 | 记 warning 并降级为丢弃最早的窗口外消息，本轮聊天继续；不得因压缩失败让用户消息失败（§3.3） |
+| 聊天记忆提取调用失败或 memorize 写入失败 | 降级 warning：记日志并在工作记录落警告条目；本轮聊天回复不受影响，画像保持原状（§5.4） |
+| profile 整文替换超上限 / 助手任务运行中 | 400 / 409；写入失败按原内容尽力回滚，不留下半程状态（§5.7/§5.9） |
 | 项目聊天摘要写后回读为空 | 显式抛 `RuntimeError`，不得依赖 `assert`（在 `python -O` 下也必须保留兜底） |
 | 保留窗口自身超过上下文预算（超长粘贴） | 先按单条上限首尾截断、再从最旧收缩窗口，最新一条单独超预算时同样截断；prompt 恒不超预算，兜底动作记 warning（§3.3） |
 | 项目聊天任务失败或取消时仍有运行中的工作项 | 统一以 `interrupted` 终结后落库再进入终态；已 `done` 的工作项状态不变（§5.4） |
@@ -832,4 +855,4 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 
 ---
 
-当前完成边界：阶段 2、3、4 及 v1.13–v1.28 均已完成；后续阶段须由用户确认目标后另行启动。
+当前完成边界：阶段 2、3、4 及 v1.13–v1.30 均已完成；后续阶段须由用户确认目标后另行启动。

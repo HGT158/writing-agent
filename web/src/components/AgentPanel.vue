@@ -304,6 +304,17 @@ function openWorkDocument(item: WorkItemView) {
   emit('openDocument', props.projectId, item.documentId)
 }
 
+/** 只有 changes 条目可点击（phase7 P3-9）：键盘语义与点击行为保持同一判定。 */
+function workItemClickable(item: WorkItemView) {
+  return item.kind === 'changes' && !!item.documentId && !!props.projectId
+}
+
+function workItemActivate(item: WorkItemView, event: KeyboardEvent) {
+  if (!workItemClickable(item)) return
+  event.preventDefault()
+  openWorkDocument(item)
+}
+
 function openChangeDocument(change: ChangeSetPreview, hunkId?: string) {
   if (!change.document_id || !props.projectId) return
   if (hunkId) {
@@ -641,7 +652,12 @@ onBeforeUnmount(() => {
               :key="item.workId"
               class="work-item"
               :class="[item.status, item.kind]"
+              :role="workItemClickable(item) ? 'button' : undefined"
+              :tabindex="workItemClickable(item) ? 0 : undefined"
+              :title="workItemClickable(item) ? '打开目标文档' : undefined"
               @click="openWorkDocument(item)"
+              @keydown.enter="workItemActivate(item, $event)"
+              @keydown.space.prevent="workItemActivate(item, $event)"
             >
               <span class="work-item-title">{{ workItemTitle(item) }}</span>
               <span v-if="item.delta" class="work-item-detail">{{ item.delta }}</span>

@@ -899,3 +899,68 @@ describe('AgentPanel', () => {
     expect(detail).not.toContain('头部')
   })
 })
+
+describe('AgentPanel keyboard semantics', () => {
+  beforeEach(() => {
+    HTMLElement.prototype.scrollTo = vi.fn()
+    apiMocks.chatProject.mockReset()
+    apiMocks.watchTask.mockReset().mockImplementation(() => ({ close: vi.fn() }))
+    apiMocks.listProjectChatSessions.mockReset().mockResolvedValue([])
+    apiMocks.getProjectChatSession.mockReset()
+    apiMocks.deleteProjectChatSession.mockReset().mockResolvedValue({ deleted: true })
+    apiMocks.chatProject.mockResolvedValue({ task_id: 'task-1', chat_session_id: 'session-1' })
+  })
+
+  it('activates change card navigation with Enter and Space (phase8 P3-5)', async () => {
+    const wrapper = mountPanel({ changes: [change] })
+    await flushPromises()
+
+    const card = wrapper.get('.change-diff')
+    await card.get('.diff-heading').trigger('keydown', { key: 'Enter' })
+    await card.get('.diff-heading').trigger('keydown', { key: ' ' })
+    await card.get('.diff-hunk').trigger('keydown', { key: 'Enter' })
+    await card.get('.diff-hunk').trigger('keydown', { key: ' ' })
+
+    const opened = wrapper.emitted('openDocument') ?? []
+    expect(opened).toHaveLength(4)
+    expect(opened[0]).toEqual(['project-1', 'document-1'])
+    expect(opened[1]).toEqual(['project-1', 'document-1'])
+    expect(opened[2]).toEqual(['project-1', 'document-1', 'hunk-1'])
+    expect(opened[3]).toEqual(['project-1', 'document-1', 'hunk-1'])
+  })
+
+  it('gives changes work items button semantics with keyboard activation (phase7 P3-9)', async () => {
+    let callback: (event: TaskEvent) => void | Promise<void> = () => undefined
+    apiMocks.watchTask.mockImplementation((_assistantId, _taskId, handler) => {
+      callback = handler
+      return { close: vi.fn() }
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('帮我修改')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await callback(taskEvent('work_item_start', {
+      work_id: 'w1', kind: 'progress', title: '正在读取当前文档与历史上下文',
+    }))
+    await callback(taskEvent('work_item_start', {
+      work_id: 'w2', kind: 'changes', title: '生成修改建议',
+      change_set_id: 'change-1', document_id: 'document-1',
+    }))
+    await nextTick()
+
+    const items = wrapper.findAll('.work-item')
+    expect(items).toHaveLength(2)
+    expect(items[0].attributes('role')).toBeUndefined()
+    expect(items[1].attributes('role')).toBe('button')
+
+    await items[1].trigger('keydown', { key: 'Enter' })
+    await items[1].trigger('keydown', { key: ' ' })
+    const opened = wrapper.emitted('openDocument') ?? []
+    expect(opened).toEqual([
+      ['project-1', 'document-1'],
+      ['project-1', 'document-1'],
+    ])
+  })
+})

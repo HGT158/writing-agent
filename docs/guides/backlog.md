@@ -4,10 +4,6 @@
 
 ## 后续功能待办（2026-08-22 用户登记）
 
-- **助手记忆系统完善**：
-  - 现状：普通写作任务链路会自动沉淀记忆——`finalize_article` 完成文章时登记 articles 索引，Reflect 质检时自动提取 `new_preferences` 写入本助手 `profile.md`，任务启动时 `recall` 注入上下文；
-  - 缺口：项目聊天（`chat_project`）不经过 Agent Loop 的 Reflect，长对话中暴露的偏好/风格反馈不会自动进入画像；
-  - 方向：聊天轮次终态的选择性记忆沉淀（控制成本、避免每轮写画像）、`profile.md` 的查看/编辑界面（白盒原则：人可手改）、recall 命中与注入内容的可观测性。
 - **模型与提供商切换（TRAE 式选择器）**：
   - Agent 面板输入区新增模型选择按钮：菜单内切换当前模型与提供商，并提供"添加提供商"二级入口（填写 base_url、API Key、可用模型）；
   - 现状：模型与提供商由 `.env` 单一配置（`OPENAI_API_KEY`/`OPENAI_BASE_URL`/`MODEL_NAME`），Runtime 启动时初始化唯一 LLM client，无运行期切换能力；
@@ -21,8 +17,6 @@
 
 ## 随功能绑定实施（不单独排期）
 
-- Memory 层分页上限（phase7 P3-4）：随"助手记忆系统完善"待办实施——该功能会新增 Memory 层直接调用方，届时同步 clamp `page_size`，避免无界查询口子。
-- ChangeDiff Space 键激活（phase8 P3-5）：并入无障碍批次（phase7 P3-9 剩余部分：主题菜单方向键导航与打开后聚焦、工作记录可点击项键盘语义）一起实施。
 - 温度配置化（phase6 遗留）：随"模型与提供商切换"待办实施——多提供商配置落地时温度进入模型配置项。
 
 ## 条件触发，保持暂缓
@@ -41,6 +35,7 @@
 
 ## 已完成并移出待办
 
+- 助手记忆系统完善（2026-08-22 登记项）已在 v1.30 完成：**聊天注入**——`chat_project` 的 system prompt 注入本助手记忆（`recall_trace` 画像全文+文章命中+对话片段，参与既有 token 预算），工作记录新增「已注入助手记忆」条目；**选择性沉淀**——succeeded 终态经确定性信号门槛（未命中零成本），显式指令剥离指令词直达 `memorize`（零模型调用），其余命中用一次 JSON 提取（≤3 条，preference/style/topic，含画像去重），failed/interrupted 不沉淀，失败降级 warning 不影响回复，`CHAT_MEMORY_CONSOLIDATION` 可关；**画像白盒读写**——`GET/PUT /api/assistants/{assistant_id}/memory/profile`（整文替换、50,000 字符上限、助手运行中 409、写失败尽力回滚）与前端「记忆画像」对话框；**recall 可观测**——`recall_trace` 结构化命中（`recall` 签名与返回文本不变）+ 普通任务启动 `info` 播报命中摘要；**随行 clamp（phase7 P3-4）**——`list_change_sets` 的 `page_size` 在 Memory 层收口 ≤100。同版并入无障碍小批次：ChangeDiff Space 键激活（phase8 P3-5）、主题菜单打开后聚焦当前项与方向键/Home/End 导航（phase7 P3-9）、工作记录 changes 条目按钮语义与 Enter/Space 激活（phase7 P3-9 剩余）。现行契约见架构文档 v1.30 §4.2/§5.4/§5.7/§5.9/§5.10/§9。
 - 加固批次五项已在 v1.29 完成并移出「建议排期」（2026-08-22 复议）：**P3-5**（`_finalize_write_intent` 注解统一 `-> list[str]`、意图缺失分支返回空列表，补契约回归测试）；**P3-7**（`WorkLogRecorder.finish_task` 置位终态后 `start` 显式抛 `RuntimeError`，不吞异常）；**P3-10**（`watchTask` 退避复位以收到首个事件——数据帧或 heartbeat——为准，服务端开连即断不再触发 500ms 无限重连，重试预算 6 次照常耗尽后报错；取舍：放弃总次数/总时长边界，避免惩罚长任务偶发网络抖动）；**P3-11**（补五项崩溃恢复回归测试：并发终态对账幂等收敛为单条终态、change set 迁移成功后二次启动不重迁不报错、CancelledError 经真实 recorder 走 interrupted 分支、跨助手持 change set id 访问返回 404、工作事件断线按游标补发——纯补测试，未暴露行为缺陷）；**P3-2/P3-6**（工作记录三处截断标注改「脱敏后 N 字符」、`import logging` 与标准库导入归组，纯措辞与代码整理）。现行契约见架构文档 v1.29 §4.7/§5.4/§5.7/§5.10/§9。
 - 助手 persona 可写可编辑已在 v1.28 实现：`POST /api/assistants` 接受可选 `persona`（空白/缺省落默认人设，上限 50,000 字符）；新增 `GET/PATCH /api/assistants/{assistant_id}`（部分更新、运行锁边界与删除一致、写失败尽力回滚）；前端创建对话框增加系统提示词输入，助手选择器新增编辑入口（id 只读、预填当前值、409/400 原样提示且不关闭对话框）。现行契约见架构文档 §4.2/§5.9/§5.10（v1.28）。
 - phase9 审查遗留清扫批已归入 v1.27 完成，按模块分四组闭环：memory 组完成 phase7 P3-2、phase9 P2-8/P2-10/P2-11/P3-2/P3-3/P3-4/P3-8/P3-9/P3-10；agent 组完成 P2-3/P2-5/P2-7/P2-9/P2-16/P3-11/P3-12/P3-13/P3-16/P3-17/P3-18；api/基础设施组完成 P2-4/P3-19/P3-20/P3-21/P3-22/P3-23/P3-25；web 组完成 P2-13/P2-14/P2-15/P3-26/P3-27/P3-28/P3-29/P3-30/P3-31/P3-32/P3-33，并一并关闭与 P2-15 重叠的 phase7 P3-1 上下文预算最终截断项。P2-18、P3-38/39 及条件触发/永久搁置/随功能绑定事项按既定处置保持不做；现行契约见架构文档 v1.27。

@@ -60,3 +60,50 @@ describe('ThemePicker', () => {
     wrapper.unmount()
   })
 })
+
+describe('ThemePicker keyboard navigation (phase7 P3-9)', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    delete document.documentElement.dataset.theme
+    vi.unstubAllGlobals()
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false }))
+  })
+
+  it('focuses the active theme when the menu opens', async () => {
+    const wrapper = mount(ThemePicker, { attachTo: document.body })
+    await wrapper.get('button[title="切换主题"]').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const active = document.activeElement as HTMLButtonElement
+    expect(active?.className).toContain('theme-option')
+    expect(active?.getAttribute('aria-checked')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('moves focus with arrow keys and wraps around', async () => {
+    const wrapper = mount(ThemePicker, { attachTo: document.body })
+    await wrapper.get('button[title="切换主题"]').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const menu = wrapper.get('.theme-options')
+    await menu.trigger('keydown', { key: 'ArrowDown' })
+    expect((document.activeElement as HTMLButtonElement).getAttribute('aria-checked')).toBe('false')
+
+    await menu.trigger('keydown', { key: 'ArrowUp' })
+    await menu.trigger('keydown', { key: 'ArrowUp' })
+    const options = wrapper.findAll('.theme-option')
+    expect(document.activeElement).toBe(options[options.length - 1].element)
+    wrapper.unmount()
+  })
+
+  it('returns focus to the trigger after choosing a theme', async () => {
+    const wrapper = mount(ThemePicker, { attachTo: document.body })
+    await wrapper.get('button[title="切换主题"]').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    await wrapper.findAll('.theme-option')[1].trigger('click')
+    expect(wrapper.find('.theme-options').exists()).toBe(false)
+    expect((document.activeElement as HTMLButtonElement).getAttribute('title')).toBe('切换主题')
+    wrapper.unmount()
+  })
+})
