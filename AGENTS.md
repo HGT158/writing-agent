@@ -4,8 +4,8 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.27**。
-- 阶段 2、3、4 及 v1.13–v1.27 均已完成；当前基线：Python **272/272**、记忆隔离 **10/10**、前端 **137/137**。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.28**。
+- 阶段 2、3、4 及 v1.13–v1.28 均已完成；当前基线：Python **299/299**、记忆隔离 **11/11**、前端 **142/142**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑和每项目多会话历史。
 - v1.17 补齐：活动 SSE 订阅者按 `seq` 跨越事件滑窗（修复长回复超过窗口后停流）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
 - v1.18 补齐：SSE 断线游标续传——数据帧带标准 `id: <seq>` 行，流端点接受 `after_seq` / `Last-Event-ID` 游标，游标落后于窗口时发 `reconnect_gap` 缺口信号；前端按退避自动重连、按 `seq` 去重，缺口后等待终态并重载持久化会话。
@@ -19,6 +19,7 @@
 - v1.26 补齐（phase9 文档口径）：纯文档修正四处与实现的偏差，不改任何代码行为——任务终态记录按容量（128 条）有界保留（原误写「TTL/容量」）、fetch 结果口径修正（全文 ≤20,000 字符落 sources、≤500 字符摘要进 Observation，原误写「截断至 2000 字符进 Observation」）、文档重命名/删除的 mutation lock 明确以助手运行锁实现（助手任一任务运行期间 409）、项目聊天始终注入 editing 指导不受技能子集裁剪（选区改写仍校验）。phase9 审查报告见 `docs/reviews/phase9-code-review.md`。
 - v1.27 补齐（phase9 第一梯队加固）：项目级「全部接受」先汇总全部受影响 dirty 文档一次确认；共享 SQLite 连接改 autocommit、显式事务路径不变；MCP 同名工具不得覆盖先注册的内置工具且计数按实际注册；工作记录 JSON 载荷字符串叶子追加值级脱敏；FastAPI 增加本机 Host 白名单并确认 Vite 默认代理相容；`save_summary` 写后回读 assert 改显式异常。
 - v1.27 补充（phase9 第二梯队加固）：项目残骸对账只删除旧的、内部标记合法且身份匹配的目录并为新近目录保留宽限期；archive/purge 拒绝活跃文档写意图，purge 清理幂等；前端保存与三条 AI 接受路径统一以版本+正文精确快照守卫响应回写；fetch 与 SSE 增加 60 秒停滞边界及可观察 heartbeat；MCP 建连/初始化/工具发现逐步超时并以临时 exit stack 失败即清；工作记录中断按快照迭代。
+- v1.28 补齐：助手 persona 可写可编辑——`POST /api/assistants` 接受可选 `persona`（空白/缺省落默认人设，上限 50,000 字符）；新增 `GET /api/assistants/{id}`（含 persona 的完整定义）与 `PATCH /api/assistants/{id}`（显示名/描述/系统提示词部分更新，`assistant.yaml` 重写保留 skills 等既有字段，运行锁边界与删除一致，写失败按原内容尽力回滚）；前端创建对话框增加系统提示词输入，助手选择器新增编辑入口（id 只读、预填当前值、服务端拒绝原样提示且不关闭对话框）；CLI `assistants create/edit` 支持 `--persona`/`--persona-file`（互斥），edit 为部分更新语义。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读

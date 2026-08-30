@@ -7,6 +7,15 @@ class AssistantCreate(BaseModel):
     id: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=500)
+    persona: str | None = Field(default=None, max_length=50_000)
+
+
+class AssistantUpdate(BaseModel):
+    """助手编辑（v1.28）：PATCH 部分更新语义，仅提供的字段生效。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    persona: str | None = Field(default=None, max_length=50_000)
 
 
 class AgentTaskRequest(BaseModel):

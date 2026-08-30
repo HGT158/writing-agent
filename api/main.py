@@ -22,6 +22,7 @@ from memory.store import AssistantBusyError
 from .models import (
     AgentTaskRequest,
     AssistantCreate,
+    AssistantUpdate,
     ChangeSetHunkAction,
     DocumentRename,
     DocumentSave,
@@ -131,9 +132,42 @@ def create_app(
     async def create_assistant(body: AssistantCreate):
         try:
             item = await asyncio.to_thread(
-                runtime.assistants.create, body.id, body.name, body.description
+                runtime.assistants.create, body.id, body.name, body.description, body.persona
             )
             return {"id": item.id, "name": item.name, "description": item.description}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/assistants/{assistant_id}")
+    async def get_assistant(assistant_id: str):
+        try:
+            item = runtime.assistants.get(assistant_id)
+            return {
+                "id": item.id,
+                "name": item.name,
+                "description": item.description,
+                "persona": item.persona,
+            }
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.patch("/api/assistants/{assistant_id}")
+    async def update_assistant(assistant_id: str, body: AssistantUpdate):
+        fields = body.model_dump(exclude_unset=True)
+        try:
+            item = await asyncio.to_thread(
+                runtime.assistants.update,
+                assistant_id,
+                name=fields.get("name"),
+                description=fields.get("description"),
+                persona=fields.get("persona"),
+            )
+            return {
+                "id": item.id,
+                "name": item.name,
+                "description": item.description,
+                "persona": item.persona,
+            }
         except Exception as exc:
             _raise_http(exc)
 

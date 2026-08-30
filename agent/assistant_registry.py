@@ -75,7 +75,13 @@ class AssistantRegistry:
 
     _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,49}$")
 
-    def create(self, assistant_id: str, name: str, description: str = "") -> Assistant:
+    def create(
+        self,
+        assistant_id: str,
+        name: str,
+        description: str = "",
+        persona: str | None = None,
+    ) -> Assistant:
         # id 格式校验：防路径穿越写出 data/ 之外（审查 P1-7）
         if not self._ID_RE.match(assistant_id):
             raise ValueError(f"助手 id 非法：{assistant_id!r}（须匹配 ^[a-z0-9][a-z0-9_-]{{0,49}}$）")
@@ -98,9 +104,78 @@ class AssistantRegistry:
             ),
             encoding="utf-8",
         )
-        (directory / "persona.md").write_text(_DEFAULT_PERSONA + "\n", encoding="utf-8")
+        (directory / "persona.md").write_text(self._normalize_persona(persona), encoding="utf-8")
         self.reload()
         return self.get(assistant_id)
+
+    def update(
+        self,
+        assistant_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        persona: str | None = None,
+    ) -> Assistant:
+        """部分更新助手定义（v1.28）：仅提供的字段生效，运行锁边界与删除一致。"""
+        assistant = self.get(assistant_id)
+        if name is None and description is None and persona is None:
+            raise ValueError("没有提供任何需要更新的字段")
+        mutation_task = f"assistant-update-{uuid.uuid4().hex[:12]}"
+        self.store.acquire_lock(assistant_id, mutation_task)
+        try:
+            cfg_path = assistant.directory / "assistant.yaml"
+            original_yaml = cfg_path.read_text(encoding="utf-8")
+            raw = yaml.safe_load(original_yaml)
+            if not isinstance(raw, dict):
+                raw = {}
+            persona_path = assistant.directory / raw.get("persona_file", "persona.md")
+            original_persona = (
+                persona_path.read_text(encoding="utf-8")
+                if persona_path.is_file()
+                else None
+            )
+            rollback_failed = False
+            failure: Exception | None = None
+            try:
+                if persona is not None:
+                    persona_path.write_text(self._normalize_persona(persona), encoding="utf-8")
+                if name is not None or description is not None:
+                    if name is not None:
+                        raw["name"] = name
+                    if description is not None:
+                        raw["description"] = description
+                    cfg_path.write_text(
+                        yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                        encoding="utf-8",
+                    )
+            except Exception as exc:
+                # 磁盘写入失败：按原内容尽力回滚，不留半程状态；原始异常照常抛出。
+                failure = exc
+                try:
+                    if persona is not None:
+                        if original_persona is None:
+                            persona_path.unlink(missing_ok=True)
+                        else:
+                            persona_path.write_text(original_persona, encoding="utf-8")
+                    cfg_path.write_text(original_yaml, encoding="utf-8")
+                except Exception:
+                    rollback_failed = True
+            self.reload()
+            if rollback_failed:
+                self.warnings.append(f"助手 {assistant_id} 更新写入失败且回滚未完成，请人工检查 {cfg_path}")
+            if failure is not None:
+                raise failure
+            return self.get(assistant_id)
+        finally:
+            self.store.release_lock(assistant_id, mutation_task)
+
+    @staticmethod
+    def _normalize_persona(persona: str | None) -> str:
+        """空白 persona 一律落为默认人设，不产生空系统提示词（架构 §4.2 v1.28）。"""
+        text = (persona or "").strip()
+        if not text:
+            text = _DEFAULT_PERSONA
+        return text + "\n"
 
     def delete(self, assistant_id: str, purge: bool = False) -> Path:
         """默认归档（目录移到 data/archive/，SQL 行保留不可见）；purge=True 级联清理。"""

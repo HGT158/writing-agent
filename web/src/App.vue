@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Bot, Plus, Save, Trash2 } from '@lucide/vue'
+import { Bot, Pencil, Plus, Save, Trash2 } from '@lucide/vue'
 
 import { apiClient } from './api/client'
 import ActivityBar from './components/ActivityBar.vue'
@@ -28,6 +28,10 @@ const createError = ref('')
 const assistantDialogOpen = ref(false)
 const assistantBusy = ref(false)
 const assistantError = ref('')
+const editDialogOpen = ref(false)
+const editBusy = ref(false)
+const editError = ref('')
+const editInitial = ref<{ id: string; name: string; description: string; persona: string } | null>(null)
 const saving = ref(false)
 const documentEditor = ref<InstanceType<typeof DocumentEditor> | null>(null)
 let projectRequestGeneration = 0
@@ -137,11 +141,13 @@ async function switchAssistant(assistantId: string) {
   }
 }
 
-async function createAssistant(payload: { id: string; name: string; description: string }) {
+async function createAssistant(payload: { id: string; name: string; description: string; persona: string }) {
   assistantBusy.value = true
   assistantError.value = ''
   try {
-    const created = await apiClient.createAssistant(payload.id, payload.name, payload.description)
+    const created = await apiClient.createAssistant(
+      payload.id, payload.name, payload.description, payload.persona,
+    )
     assistants.value = await apiClient.listAssistants()
     assistantDialogOpen.value = false
     await switchAssistant(created.id)
@@ -149,6 +155,44 @@ async function createAssistant(payload: { id: string; name: string; description:
     assistantError.value = error instanceof Error ? error.message : String(error)
   } finally {
     assistantBusy.value = false
+  }
+}
+
+/** 编辑当前助手：先取完整定义（含 persona）再打开对话框；服务端拒绝原样提示。 */
+async function openEditAssistant() {
+  const current = assistants.value.find((item) => item.id === workspace.assistantId)
+  if (!current) return
+  editError.value = ''
+  try {
+    const detail = await apiClient.getAssistant(current.id)
+    editInitial.value = {
+      id: detail.id,
+      name: detail.name,
+      description: detail.description,
+      persona: detail.persona,
+    }
+    editDialogOpen.value = true
+  } catch (error) {
+    globalError.value = error instanceof Error ? error.message : String(error)
+  }
+}
+
+async function updateAssistant(payload: { id: string; name: string; description: string; persona: string }) {
+  editBusy.value = true
+  editError.value = ''
+  try {
+    await apiClient.updateAssistant(payload.id, {
+      name: payload.name,
+      description: payload.description,
+      persona: payload.persona,
+    })
+    assistants.value = await apiClient.listAssistants()
+    editDialogOpen.value = false
+    statusText.value = '助手已更新'
+  } catch (error) {
+    editError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    editBusy.value = false
   }
 }
 
@@ -559,6 +603,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
           <option v-for="assistant in assistants" :key="assistant.id" :value="assistant.id">{{ assistant.name }}</option>
         </select>
         <button class="icon-action compact" title="新建助手" @click="openCreateAssistant"><Plus :size="14" /></button>
+        <button class="icon-action compact" title="编辑当前助手" @click="openEditAssistant"><Pencil :size="14" /></button>
         <button
           class="icon-action compact danger"
           title="删除当前助手（归档）"
@@ -627,6 +672,15 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', protectUnload))
     </div>
     <CreateProjectDialog v-if="createDialogOpen" :busy="createBusy" :error="createError" @submit="createProject" @cancel="createDialogOpen = false" />
     <AssistantDialog v-if="assistantDialogOpen" :busy="assistantBusy" :error="assistantError" @submit="createAssistant" @cancel="assistantDialogOpen = false" />
+    <AssistantDialog
+      v-if="editDialogOpen && editInitial"
+      mode="edit"
+      :busy="editBusy"
+      :error="editError"
+      :initial="editInitial"
+      @submit="updateAssistant"
+      @cancel="editDialogOpen = false"
+    />
     <div v-if="globalError || workspace.error" class="global-error">{{ globalError || workspace.error }}</div>
   </div>
 </template>

@@ -34,6 +34,7 @@ const appliedRecord = {
 
 const apiMocks = vi.hoisted(() => ({
   listAssistants: vi.fn(), createAssistant: vi.fn(), deleteAssistant: vi.fn(),
+  getAssistant: vi.fn(), updateAssistant: vi.fn(),
   listProjects: vi.fn(), createProject: vi.fn(),
   renameProject: vi.fn(), deleteProject: vi.fn(),
   renameDocument: vi.fn(), deleteDocument: vi.fn(),
@@ -56,6 +57,8 @@ describe('App project creation', () => {
     ])
     apiMocks.createAssistant.mockReset()
     apiMocks.deleteAssistant.mockReset()
+    apiMocks.getAssistant.mockReset()
+    apiMocks.updateAssistant.mockReset()
     apiMocks.listProjects.mockReset().mockResolvedValueOnce([]).mockResolvedValue([project])
     apiMocks.createProject.mockReset().mockResolvedValue(project)
     apiMocks.renameProject.mockReset().mockResolvedValue(project)
@@ -572,7 +575,7 @@ describe('App project creation', () => {
     await wrapper.get('[role="dialog"] form').trigger('submit')
     await flushPromises()
 
-    expect(apiMocks.createAssistant).toHaveBeenCalledWith('marketing', '营销文案', '')
+    expect(apiMocks.createAssistant).toHaveBeenCalledWith('marketing', '营销文案', '', '')
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
     expect(apiMocks.listProjects).toHaveBeenLastCalledWith('marketing')
   })
@@ -590,6 +593,55 @@ describe('App project creation', () => {
 
     expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
     expect(wrapper.get('[role="dialog"] .inline-error').text()).toBe('助手已存在')
+  })
+
+  it('edits the current assistant and refreshes the list', async () => {
+    apiMocks.getAssistant.mockResolvedValue({
+      id: 'default', name: '通用写作助手', description: '', persona: '默认人设',
+    })
+    apiMocks.updateAssistant.mockResolvedValue({
+      id: 'default', name: '改名后', description: '', persona: '新人设',
+    })
+    apiMocks.listAssistants
+      .mockResolvedValueOnce([{ id: 'default', name: '通用写作助手', description: '' }])
+      .mockResolvedValue([{ id: 'default', name: '改名后', description: '' }])
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[title="编辑当前助手"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('#assistant-id').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('#assistant-name').element as HTMLInputElement).toMatchObject({ value: '通用写作助手' })
+    expect(wrapper.get('#assistant-persona').element as HTMLTextAreaElement).toMatchObject({ value: '默认人设' })
+
+    await wrapper.get('#assistant-name').setValue('改名后')
+    await wrapper.get('#assistant-persona').setValue('新人设')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMocks.updateAssistant).toHaveBeenCalledWith('default', {
+      name: '改名后', description: '', persona: '新人设',
+    })
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('keeps the edit dialog open when the server rejects the update', async () => {
+    apiMocks.getAssistant.mockResolvedValue({
+      id: 'default', name: '通用写作助手', description: '', persona: '默认人设',
+    })
+    apiMocks.updateAssistant.mockRejectedValue(new Error('任务 task-1 运行中'))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    await wrapper.get('button[title="编辑当前助手"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('#assistant-name').setValue('新名字')
+    await wrapper.get('[role="dialog"] form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(true)
+    expect(wrapper.get('[role="dialog"] .inline-error').text()).toBe('任务 task-1 运行中')
   })
 
   it('refuses to delete the only assistant', async () => {

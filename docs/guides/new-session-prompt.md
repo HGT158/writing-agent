@@ -9,15 +9,15 @@
 开始前必须按顺序完整阅读以下文件：
 
 1. `AGENTS.md`：环境、命令、硬性规则、当前基线和阶段边界。
-2. `docs/architecture/phase1-architecture.md`：架构设计 v1.27，项目单一事实来源。
+2. `docs/architecture/phase1-architecture.md`：架构设计 v1.28，项目单一事实来源。
 3. `README.md`：当前安装、运行和 Scheduler 使用说明。
 
 项目当前状态：
 
 - 阶段 1 架构、阶段 2 MVP、阶段 3 Memory + Scheduler、阶段 4 写作工作台均已完成。
-- 当前完整测试基线是 **pytest 244/244 全绿**；记忆隔离红线为 10/10；前端测试为 125/125，类型检查通过；最近一次生产构建基线通过。
-- 已实现多助手隔离、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写、项目 Agent 流式编辑和每项目多会话历史）。
-- 架构文档当前版本是 v1.27；v1.26 完成 phase9 四处文档口径对齐，phase9 第一、第二梯队与 P3-34 均归入 v1.27：第二梯队包含项目目录标记/宽限期安全对账、archive/purge 写意图拒绝、前端回写版本+正文守卫、fetch/SSE 60 秒停滞边界、MCP 三步启动超时与临时 exit stack、work_log 快照迭代。其余审查遗留仍登记在 backlog。
+- 当前完整测试基线是 **pytest 299/299 全绿**；记忆隔离红线为 11/11；前端测试为 142/142，类型检查通过；最近一次生产构建基线通过。
+- 已实现多助手隔离与助手 persona 可写可编辑、LangGraph 六节点 Agent Loop、MCP/Skill、FTS5 trigram 与有界 LIKE 降级、跨任务记忆、跨进程运行锁、APScheduler、FastAPI + SSE，以及 Vue 3 写作 IDE（项目导入、多标签编辑、选区改写、项目 Agent 流式编辑和每项目多会话历史）。
+- 架构文档当前版本是 v1.28；其余审查遗留仍登记在 backlog。
 - 项目使用 Git，默认分支为 `main`，跟踪私有远程 `origin/main`。不要擅自使用 checkout、reset 等破坏性命令，也不要覆盖未提交内容。
 
 必须遵守：

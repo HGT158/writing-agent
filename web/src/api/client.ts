@@ -1,5 +1,6 @@
 import type {
   Assistant,
+  AssistantDetail,
   ChangeSetPreview,
   ChangeSetRecord,
   Project,
@@ -61,9 +62,14 @@ const SSE_IDLE_TIMEOUT_MS = 60_000
 
 export const apiClient = {
   listAssistants: () => request<Assistant[]>('/api/assistants'),
-  createAssistant: (id: string, name: string, description: string) => request<Assistant>('/api/assistants', {
+  getAssistant: (assistantId: string) => request<AssistantDetail>(`/api/assistants/${encodeURIComponent(assistantId)}`),
+  createAssistant: (id: string, name: string, description: string, persona: string) => request<Assistant>('/api/assistants', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, name, description }),
+    body: JSON.stringify({ id, name, description, persona }),
+  }),
+  updateAssistant: (assistantId: string, payload: { name: string; description: string; persona: string }) => request<AssistantDetail>(`/api/assistants/${encodeURIComponent(assistantId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
   }),
   deleteAssistant: (assistantId: string) => request<{ archived_path: string; purged: boolean }>(
     `/api/assistants/${encodeURIComponent(assistantId)}`,

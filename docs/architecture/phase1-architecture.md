@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.27 · 2026-08-24
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐、phase9 第一、第二梯队及 P3-34 均归入 v1.27 并已完成
+> 版本：v1.28 · 2026-08-30
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐、phase9 第一、第二梯队及 P3-34 均归入 v1.27 并已完成、v1.28 助手 persona 可写可编辑
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -51,9 +51,9 @@
 > v1.27 补充变更（phase9 审查遗留清扫·api/基础设施组）：导入、归档/清除及文档文件变更等重 IO 经 AnyIO 工作线程执行；SSE 在路由校验后记录被裁剪的首帧竞态以干净空流终止；项目路径拒绝全部 C0 控制字符；会话详情 GET 只读，对账补写改为显式 POST 后再读取；Web lifespan 明确记录 Scheduler 未启用；MCP 子进程仅继承运行所需基础环境白名单与该 server 显式声明变量；全局 ASGI 请求体上限在解析前按流式字节计数，超限返回 413（§5.6/§5.8/§5.9/§9）。
 > v1.27 补充变更（phase9 审查遗留清扫·web 组）：服务端快照同步不进入普通撤销历史；change set 对账按实际拉取条数结束分页；system prompt 已占满预算时显式告警，注入正文与历史消息按 token 估算首尾裁剪，固定 system 部分未单独超支时保证最终 prompt 不超预算；聊天待审卡按会话作用域替换，合法空预览静默忽略；Unicode offset 映射按正文值缓存，hunk 原文回退只接受唯一匹配；dirty 文档禁用选区改写并提示先保存；Markdown 外链统一新窗口打开并隔离 opener；文档打开只允许最新请求激活标签；会话工作记录有界保留且结果摘要统一截断（§3.3/§5.9/§5.10/§6.2/§9）。
 
----
+> v1.28 变更：助手 persona 可写可编辑。**（1）创建时填写系统提示词**：`POST /api/assistants` 接受可选 `persona` 字段（上限 50,000 字符），非空白时作为该助手系统提示词写入 persona 文件；缺省或空白沿用默认 persona，不产生空系统提示词（§4.2/§5.9）。**（2）助手编辑**：新增 `GET /api/assistants/{assistant_id}`（返回含 persona 的完整定义，列表接口保持轻量不携带 persona 正文）与 `PATCH /api/assistants/{assistant_id}`（显示名、描述、系统提示词的部分更新——仅提供的字段生效）。`assistant.yaml` 重写保留 `skills`、`created_at`、`persona_file` 等既有字段；persona 写入 `persona_file` 指向的文件（缺省 `persona.md`）。更新以助手运行锁串行，语义与删除一致：该助手任一任务运行期间返回 409；磁盘写入失败时按内存中的原内容尽力回滚，不留下半程状态。`default` 助手可编辑、不可删除（§4.2/§5.9）。**（3）前端**：创建助手对话框增加可选的系统提示词多行输入；助手选择器新增编辑入口，编辑对话框 id 只读展示、显示名/描述/系统提示词预填当前值，保存成功后刷新助手列表，409/400 服务端拒绝原样提示且不关闭对话框（§5.10）。**（4）CLI**：`assistants create` 支持 `--persona`（正文）与 `--persona-file`（UTF-8 文件，互斥）；新增 `assistants edit` 子命令（部分更新语义与 API PATCH 一致，未提供的 `--description` 不清空描述，运行锁冲突报错退出码 2）（§5.4）。
 
-## 0. 设计假设
+---
 
 | # | 假设 | 影响 |
 |---|------|------|
@@ -256,6 +256,8 @@ created_at: "2026-08-05"
 - 只有显式加 `--purge` 才级联删除 SQL 行与归档目录。
 - 恢复 = 把目录从 archive 移回 `data/assistants/`，SQL 数据自动重新可见。
 
+**编辑语义（v1.28）**：显示名、描述与系统提示词可经 API 编辑，采用 PATCH 部分更新语义——请求中未提供的字段保持不变。`assistant.yaml` 重写时保留 `skills`、`created_at`、`persona_file` 等既有字段；persona 写入 `persona_file` 指向的文件（缺省 `persona.md`，UTF-8）。更新与删除使用同一边界：先获取助手运行锁（§4.6），该助手任一任务运行期间拒绝（409）；磁盘写入失败时按内存中的原内容尽力回滚，不留下半程状态。创建或更新请求提供的 `persona` 为空白时一律落为默认 persona；`persona.md` 被人手工清空属显式选择，reload 按文件事实返回，不做静默改写。`default` 助手可编辑、不可删除。
+
 ### 4.3 隔离规则（核心）
 
 | 数据 | 载体 | 命名空间方式 | 同助手跨会话 | 跨助手 |
@@ -295,7 +297,7 @@ flowchart LR
 | Runtime | `run(assistant_id, task)`；启动时 `AssistantRegistry` 加载全部助手，运行时按 id 取人设/技能子集组装 system prompt；**按助手粒度加运行锁（§4.6）** |
 | Planner | 注入的记忆摘要 = `state.memory_context`（启动时 `recall(assistant_id, task)` 一次）；看到的 Skill 清单 = 助手技能子集 ∩ 全局 skills 目录 |
 | Scheduler | `config` 中每个 job 声明 `assistant_id`，触发时以该助手身份跑完整 Loop；若该助手正忙则跳过本次并记日志 |
-| API | `GET/POST /api/assistants`、`DELETE /api/assistants/{id}`（默认归档）；`POST /api/tasks` 必带 `assistant_id`；`/api/articles` 的 `assistant_id` **必填** |
+| API | `GET/POST /api/assistants`、`GET/PATCH/DELETE /api/assistants/{id}`（默认归档；v1.28 起支持编辑）；`POST /api/tasks` 必带 `assistant_id`；`/api/articles` 的 `assistant_id` **必填** |
 | CLI | `python -m agent --assistant tech-writer "写一篇..."`，缺省用 `default`；`--resume <session_id>` 续接会话 |
 
 ### 4.6 并发控制（同一助手任务串行）
@@ -411,7 +413,7 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 
 聊天 prompt 的组装交给独立的 `agent/context.py`，Runtime 不内联裁剪逻辑：该模块负责 token 估算、当前文档正文窗口截断、保留窗口切分与摘要合并，并把是否需要新摘要、摘要覆盖到的 `message_id` 返回给 Runtime 决定是否落库（§3.3）。压缩发生时 Runtime 发出一条 `info` 事件说明本轮压缩了多少条历史，便于用户理解上下文被折叠；压缩自身的 LLM 调用不产生 `token` 事件，不污染可见回复。
 
-CLI 入口为 `agent/__main__.py`（`python -m agent` 的载体），子命令：`run`（默认）、`assistants list/create/delete`、`--resume`。`run` 命令从 Runtime 启动开始即进入 `try/finally` 清理边界：启动或任务执行发生未预期异常时发出 failed 事件并返回非零退出码，已分配的 Store/MCP 等资源仍由 `runtime.close()` 释放。
+CLI 入口为 `agent/__main__.py`（`python -m agent` 的载体），子命令：`run`（默认）、`assistants list/create/edit/delete`、`--resume`。`assistants create/edit` 均接受 `--name`、`--description` 与系统提示词参数——`--persona` 传正文、`--persona-file` 读 UTF-8 文件，两者互斥；`edit` 为部分更新（仅提供的字段生效，与 API PATCH 同语义），未提供 `--description` 不会清空既有描述，空白 persona 同样落为默认人设，运行锁边界与 API 一致。`run` 命令从 Runtime 启动开始即进入 `try/finally` 清理边界：启动或任务执行发生未预期异常时发出 failed 事件并返回非零退出码，已分配的 Store/MCP 等资源仍由 `runtime.close()` 释放。
 
 ### 5.5 Skill 系统 — `skills/`
 
@@ -542,7 +544,9 @@ JOBS = [
 
 | 端点 | 说明 |
 |------|------|
-| `GET /api/assistants` | 助手列表；`POST /api/assistants` 创建新助手（写 `assistants/<id>/` 目录）；`DELETE /api/assistants/{id}` 归档删除（`?purge=true` 级联清理） |
+| `GET /api/assistants` | 助手列表（不携带 persona 正文，保持列表轻量）；`POST /api/assistants` 创建新助手（写 `assistants/<id>/` 目录），可选 `persona` 字段非空白时作为系统提示词写入 persona 文件；`DELETE /api/assistants/{id}` 归档删除（`?purge=true` 级联清理） |
+| `GET /api/assistants/{assistant_id}` | 返回助手完整定义（含 persona，v1.28）；未知助手 404 |
+| `PATCH /api/assistants/{assistant_id}` | 编辑助手（v1.28）：显示名、描述与系统提示词的部分更新，仅提供的字段生效，全部缺省返回 400；空白 `persona` 落为默认 persona；以助手运行锁串行，该助手任一任务运行期间返回 409，边界与删除一致；未知助手 404 |
 | `POST /api/tasks` | 提交任务（body 必含 `assistant_id`），入队前同步校验助手存在且未被运行锁占用；未知助手返回 404，正忙返回 409，成功返回 `task_id` |
 | `GET /api/tasks/{id}?assistant_id=X` | 查询任务终态；任务记录绑定创建时的 `assistant_id`，跨助手查询按 404 处理 |
 | `GET /api/tasks/{id}/stream?assistant_id=X` | SSE：按订阅者独立队列广播 `thought` / `tool_call` / `token` / `done` / `failed` 事件；跨助手按 404 处理；支持 `after_seq` 参数或 `Last-Event-ID` 头断线续传，游标落后于窗口时先发 `reconnect_gap` |
@@ -589,7 +593,7 @@ Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部
 
 **资源管理器提供行内重命名与删除入口（v1.25）**：项目行与可编辑文件行悬停显示重命名/删除按钮（只读文件不提供；触屏等无悬停设备常显）。重命名是行内编辑——行内标签本身替换为输入框，默认值为原名称，挂载后自动聚焦并选中名称主体（文件名不含扩展名部分）；Enter 提交、Esc 取消，文件重命名只编辑文件名并在提交时拼回所在文件夹后调用文档重命名 API；项目重命名复用既有 `PATCH /api/projects/{id}`。删除前必须确认：文件删除说明不可恢复并调用文档删除 API；项目删除复用既有归档语义并在确认文案中说明归档而非抹除。操作成功后刷新项目列表与资源树并同步打开的标签页——文档重命名更新标签显示名，文档删除关闭对应标签；服务端 409（待处理建议、路径冲突、写入占用）原样提示，前端不猜测原因。
 
-标题栏提供**主题选择器**（v1.22）：五套内置主题以 CSS 变量驱动，切换经 `dataset.theme` 生效并持久化到 `localStorage`（仅显式选择时写入），首次访问跟随系统深浅偏好且未选择时运行期实时联动（选择后以选择为准），存储不可用时降级默认主题不阻断启动，挂载前初始化避免闪烁；深色主题同步覆盖 CodeMirror 行号、光标与语法高亮。助手选择器旁提供**创建助手**与**删除助手**入口，直接复用 `POST /api/assistants` 与 `DELETE /api/assistants/{id}`（默认归档语义）。创建对话框校验 id 与后端同一规则（`^[a-z0-9][a-z0-9_-]{0,49}$`，含下划线）；删除必须二次确认并说明这是归档而非抹除，成功后重新拉取助手列表并切换到剩余助手；只剩一个助手时禁用删除。助手正忙（409）等服务端拒绝必须原样提示，前端不猜测原因。
+标题栏提供**主题选择器**（v1.22）：五套内置主题以 CSS 变量驱动，切换经 `dataset.theme` 生效并持久化到 `localStorage`（仅显式选择时写入），首次访问跟随系统深浅偏好且未选择时运行期实时联动（选择后以选择为准），存储不可用时降级默认主题不阻断启动，挂载前初始化避免闪烁；深色主题同步覆盖 CodeMirror 行号、光标与语法高亮。助手选择器旁提供**创建助手**与**删除助手**入口，直接复用 `POST /api/assistants` 与 `DELETE /api/assistants/{id}`（默认归档语义）；v1.28 起新增**编辑助手**入口：编辑对话框 id 只读展示，显示名、描述与系统提示词预填当前值（经 `GET /api/assistants/{id}` 获取），保存调用 `PATCH /api/assistants/{id}`，成功后刷新助手列表并同步选择器显示名。创建对话框校验 id 与后端同一规则（`^[a-z0-9][a-z0-9_-]{0,49}$`，含下划线），并提供可选的系统提示词多行输入（上限与后端一致 50,000 字符）；编辑对话框系统提示词清空保存即恢复默认 persona，两处输入均不强制。删除必须二次确认并说明这是归档而非抹除，成功后重新拉取助手列表并切换到剩余助手；只剩一个助手时禁用删除。助手正忙（409）等服务端拒绝必须原样提示，前端不猜测原因；编辑提交失败时对话框保持打开并保留已填内容。
 
 选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。**工具栏必须可输入**：浮层只能对非输入控件区域调用 `preventDefault` 来保持编辑器选区，绝不能拦截输入框自身的 `mousedown`，否则浏览器不会给输入框聚焦；组件挂载后显式聚焦输入框，`Esc` 关闭。CodeMirror 原生选区在编辑器失焦后不可见，因此工具栏打开期间必须用装饰保持选区高亮，用户在输入提示词时仍能看到改写目标。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡；气泡内容按 Markdown 渲染，流式期间也保持渲染一致，渲染同样要经过 HTML 消毒。工具调用与修改建议生成状态自 v1.19 起由工作记录条目呈现（见下文），不再单独显示紧凑状态行；若产生文件修改，同样进入 change set 预览，不直接覆盖。消息区默认跟随最新内容滚动，但用户主动上滚查看历史时必须停止自动跟随，直到用户回到底部。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
 
@@ -769,6 +773,8 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 | 指定的 assistant_id 不存在 | Runtime 拒绝启动任务并列出可用助手（CLI/API 行为一致） |
 | **同一助手并发任务** | `run_locks` 插入冲突 → 拒绝：API 409 / CLI 报错 / Scheduler 跳过（§4.6） |
 | 删除运行中的助手 | 先查 `run_locks`，该助手有任务在跑则拒绝删除（Windows 下移动被占用目录会失败），见 §4.2 |
+| 编辑运行中的助手（PATCH） | 先取助手运行锁，任一任务运行期间拒绝（409），边界与删除一致；写失败按原内容尽力回滚，不留下半程状态（§4.2/§5.9） |
+| 助手 PATCH 未提供任何字段或字段非法 | 400；未知助手 404；创建/更新提供的空白 persona 落为默认 persona，不产生空系统提示词（§4.2） |
 | 助手目录损坏（YAML 解析失败） | 该助手标记不可用并 warning，不影响其他助手与系统启动 |
 | 文章同名 | `finalize_article` 自动加时间戳后缀，不覆盖（§8 注 2） |
 | 项目或文档不属于请求助手 | API 与 MemoryStore 均返回 404，不暴露其他助手资源是否存在 |
@@ -823,4 +829,4 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 
 ---
 
-当前完成边界：阶段 2、3、4 及 v1.13–v1.27 均已完成；后续阶段须由用户确认目标后另行启动。
+当前完成边界：阶段 2、3、4 及 v1.13–v1.28 均已完成；后续阶段须由用户确认目标后另行启动。

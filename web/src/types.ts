@@ -4,6 +4,11 @@ export interface Assistant {
   description: string
 }
 
+/** 助手完整定义（含系统提示词）；列表接口轻量不携带 persona，经详情接口获取。 */
+export interface AssistantDetail extends Assistant {
+  persona: string
+}
+
 export interface Project {
   project_id: string
   assistant_id: string

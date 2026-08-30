@@ -105,6 +105,89 @@ def test_assistant_create_and_archive_api(tmp_path):
         assert all(item["id"] != "editor" for item in client.get("/api/assistants").json())
 
 
+def test_assistant_persona_roundtrip_and_lightweight_list(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        created = client.post(
+            "/api/assistants",
+            json={
+                "id": "editor", "name": "编辑助手", "description": "润色",
+                "persona": "你是一名严谨的编辑。",
+            },
+        )
+        assert created.status_code == 201
+
+        detail = client.get("/api/assistants/editor")
+        assert detail.status_code == 200
+        assert detail.json()["persona"] == "你是一名严谨的编辑。"
+
+        listing = client.get("/api/assistants").json()
+        assert all("persona" not in item for item in listing)
+
+
+def test_assistant_create_blank_persona_falls_back_to_default(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        created = client.post(
+            "/api/assistants",
+            json={"id": "editor", "name": "编辑助手", "persona": "   "},
+        )
+        assert created.status_code == 201
+        detail = client.get("/api/assistants/editor").json()
+        assert detail["persona"].strip()
+
+        unknown = client.get("/api/assistants/ghost")
+        assert unknown.status_code == 404
+
+
+def test_assistant_patch_updates_fields_and_validates(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        client.post("/api/assistants", json={"id": "editor", "name": "编辑助手"})
+
+        patched = client.patch(
+            "/api/assistants/editor", json={"name": "新名字", "persona": "新人设"}
+        )
+        assert patched.status_code == 200
+        body = patched.json()
+        assert body["name"] == "新名字"
+        assert body["persona"] == "新人设"
+        assert body["description"] == ""
+
+        partial = client.patch("/api/assistants/editor", json={"description": "只改描述"})
+        assert partial.status_code == 200
+        assert partial.json()["name"] == "新名字"  # 部分更新：未提供的字段不变
+        assert partial.json()["description"] == "只改描述"
+
+        empty = client.patch("/api/assistants/editor", json={})
+        assert empty.status_code == 400
+
+        unknown = client.patch("/api/assistants/ghost", json={"name": "x"})
+        assert unknown.status_code == 404
+
+
+def test_assistant_patch_rejected_while_task_running(tmp_path):
+    runtime = AgentRuntime(_settings(tmp_path))
+    with TestClient(_app(tmp_path, runtime)) as client:
+        client.post("/api/assistants", json={"id": "editor", "name": "编辑助手"})
+        runtime.store.acquire_lock("editor", "task-1")
+        busy = client.patch("/api/assistants/editor", json={"name": "新名字"})
+        assert busy.status_code == 409
+        runtime.store.release_lock("editor", "task-1")
+        ok = client.patch("/api/assistants/editor", json={"name": "新名字"})
+        assert ok.status_code == 200
+
+
+def test_assistant_persona_has_bounded_size(tmp_path):
+    with TestClient(_app(tmp_path)) as client:
+        response = client.post(
+            "/api/assistants",
+            json={"id": "editor", "name": "编辑助手", "persona": "x" * 50_001},
+        )
+        patch_response = client.patch(
+            "/api/assistants/default", json={"persona": "x" * 50_001}
+        )
+    assert response.status_code == 422
+    assert patch_response.status_code == 422
+
+
 def test_importing_api_main_does_not_construct_a_default_runtime():
     import api.main as api_main
 

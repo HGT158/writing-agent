@@ -3,11 +3,12 @@
 面向内容生产的本地写作 Agent：网络检索、素材归纳、大纲规划、分段成文、质量检查和 Markdown 归档。
 Planner 每轮动态选择 Skill 与工具，不是固定 Workflow。当前已完成阶段 4：FastAPI + SSE + Vue 3 写作工作台。
 
-架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.27；多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底、值级脱敏加固与树形资源管理器均已实现，phase9 加固批次持续归入 v1.27）。
+架构单一事实来源：[docs/architecture/phase1-architecture.md](docs/architecture/phase1-architecture.md)（v1.28；助手 persona 可写可编辑、多主题界面、多 hunk 逐处审查、持久化工作记录、SSE 断线续传、上下文预算兜底、值级脱敏加固与树形资源管理器均已实现，phase9 加固批次归入 v1.27）。
 
 ## 核心能力
 
-- 多助手及独立 persona、Skill、记忆和文章目录，可在界面上直接新建与归档助手。
+- 多助手及独立 persona、Skill、记忆和文章目录，可在界面上直接新建、编辑与归档助手。
+- 助手系统提示词（persona）可写可编辑：界面上创建时可填写、标题栏编辑入口随时修改显示名、描述与系统提示词（清空保存即恢复默认；助手任务运行中时编辑被拒绝）；CLI 以 `assistants create/edit` 的 `--persona`（正文）或 `--persona-file`（UTF-8 文件）同样可写可改。
 - LangGraph 六节点 Agent Loop，支持 MCP、流式事件和跨任务记忆。
 - 一助手多文章项目，支持新建或复制导入文本文件和文件夹；资源管理器为 VS Code 式树形（项目文件树紧贴项目行、子文件夹可展开收起、同级按名称交错排序），项目与文件行内重命名、删除（有确认；项目删除为归档语义、文件删除入口自动改指）。
 - CodeMirror 多标签编辑、Markdown 预览和乐观版本保存。
@@ -90,6 +91,8 @@ C:\miniconda\envs\writing-agent\python.exe -m agent run "继续补充案例" --a
 # 助手管理
 C:\miniconda\envs\writing-agent\python.exe -m agent assistants list
 C:\miniconda\envs\writing-agent\python.exe -m agent assistants create marketing --name 营销文案 --description 短平快风格
+C:\miniconda\envs\writing-agent\python.exe -m agent assistants create editor --persona-file persona.txt
+C:\miniconda\envs\writing-agent\python.exe -m agent assistants edit editor --name 编辑助手 --persona "你是一名严谨的编辑。"
 C:\miniconda\envs\writing-agent\python.exe -m agent assistants delete marketing
 
 # 长驻 Scheduler，任务定义见 config/settings.py
@@ -110,7 +113,7 @@ npm run typecheck
 npm run build
 ```
 
-当前基线：Python `272/272`、记忆隔离 `10/10`、前端 `137/137`，类型检查通过；最近一次生产构建基线通过。
+当前基线：Python `299/299`、记忆隔离 `11/11`、前端 `142/142`，类型检查通过；最近一次生产构建基线通过。
 
 ## 目录
 
@@ -129,7 +132,7 @@ npm run build
 
 - [项目约定与 Agent 交接](AGENTS.md)
 - [文档导航](docs/README.md)
-- [架构 v1.27](docs/architecture/phase1-architecture.md)
+- [架构 v1.28](docs/architecture/phase1-architecture.md)
 - [后续待办](docs/guides/backlog.md)
 - [审查记录索引](docs/README.md)
 - [Windows Task Scheduler](docs/guides/windows-task-scheduler.md)

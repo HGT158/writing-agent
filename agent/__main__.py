@@ -4,7 +4,8 @@
   python -m agent "写一篇关于 X 的文章"            # run 可省略
   python -m agent run "..." --resume <session_id>
   python -m agent schedule
-  python -m agent assistants list|create|delete
+  python -m agent assistants list|create|edit|delete
+  python -m agent assistants create editor --persona-file persona.txt
 """
 from __future__ import annotations
 
@@ -12,8 +13,9 @@ import argparse
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
-from config.settings import load_settings
+from config.settings import Settings, load_settings
 from memory.store import AssistantBusyError
 
 from .events import EventBus, console_printer
@@ -34,11 +36,20 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("schedule", help="长驻运行 config/settings.py 中的定时任务")
 
     assistants = sub.add_parser("assistants", help="助手管理")
-    assistants.add_argument("action", choices=["list", "create", "delete"])
+    assistants.add_argument("action", choices=["list", "create", "edit", "delete"])
     assistants.add_argument("id", nargs="?", default=None)
     assistants.add_argument("--name", default=None)
-    assistants.add_argument("--description", default="")
+    assistants.add_argument("--description", default=None)
     assistants.add_argument("--purge", action="store_true", help="删除时级联清理 SQL 数据与归档目录")
+    persona_args = assistants.add_mutually_exclusive_group()
+    persona_args.add_argument(
+        "--persona", default=None,
+        help="系统提示词正文（create/edit；空白落为默认人设）",
+    )
+    persona_args.add_argument(
+        "--persona-file", default=None,
+        help="从 UTF-8 文本文件读取系统提示词（create/edit；与 --persona 互斥）",
+    )
     return parser
 
 
@@ -82,8 +93,15 @@ async def _cmd_schedule() -> int:
     return 0
 
 
-def _cmd_assistants(args: argparse.Namespace) -> int:
-    settings = load_settings()
+def _read_persona(args: argparse.Namespace) -> str | None:
+    """--persona 与 --persona-file 互斥由 argparse 约束；文件按 UTF-8 读取。"""
+    if args.persona_file is not None:
+        return Path(args.persona_file).read_text(encoding="utf-8")
+    return args.persona
+
+
+def _cmd_assistants(args: argparse.Namespace, settings: Settings | None = None) -> int:
+    settings = settings or load_settings()
     runtime = AgentRuntime(settings)
     try:
         if args.action == "list":
@@ -94,15 +112,32 @@ def _cmd_assistants(args: argparse.Namespace) -> int:
             if not args.id:
                 print("create 需要助手 id", file=sys.stderr)
                 return 2
-            a = runtime.assistants.create(args.id, args.name or args.id, args.description)
+            a = runtime.assistants.create(
+                args.id, args.name or args.id, args.description or "",
+                persona=_read_persona(args),
+            )
             print(f"已创建助手：{a.id}（{a.directory}）")
+        elif args.action == "edit":
+            if not args.id:
+                print("edit 需要助手 id", file=sys.stderr)
+                return 2
+            if args.name is not None and not args.name.strip():
+                print("失败：显示名不能为空", file=sys.stderr)
+                return 2
+            a = runtime.assistants.update(
+                args.id,
+                name=args.name,
+                description=args.description,
+                persona=_read_persona(args),
+            )
+            print(f"已更新助手：{a.id}（{a.directory}）")
         elif args.action == "delete":
             if not args.id:
                 print("delete 需要助手 id", file=sys.stderr)
                 return 2
             target = runtime.assistants.delete(args.id, purge=args.purge)
             print(f"已{'级联删除' if args.purge else '归档到'}：{target}")
-    except (KeyError, ValueError, RuntimeError) as exc:
+    except (KeyError, ValueError, RuntimeError, OSError) as exc:
         print(f"失败：{exc}", file=sys.stderr)
         return 2
     finally:

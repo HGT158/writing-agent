@@ -4,10 +4,6 @@
 
 ## 后续功能待办（2026-08-22 用户登记）
 
-- **助手系统提示词（persona）可写可编辑**：
-  - 新增助手时可填写系统提示词——前端创建对话框扩展 persona 输入，`POST /api/assistants` 接收并写入 `assistants/<id>/persona.md`；
-  - 支持编辑助手（修改名称/描述/系统提示词）——需新增 `PATCH /api/assistants/{id}` 与前端编辑入口，编辑运行中助手须处理运行锁边界（参考删除助手的先查锁语义）；
-  - 实施前先更新架构 §4.2/§5.9/§5.10 并升版。
 - **助手记忆系统完善**：
   - 现状：普通写作任务链路会自动沉淀记忆——`finalize_article` 完成文章时登记 articles 索引，Reflect 质检时自动提取 `new_preferences` 写入本助手 `profile.md`，任务启动时 `recall` 注入上下文；
   - 缺口：项目聊天（`chat_project`）不经过 Agent Loop 的 Reflect，长对话中暴露的偏好/风格反馈不会自动进入画像；
@@ -51,6 +47,7 @@
 
 ## 已完成并移出待办
 
+- 助手 persona 可写可编辑已在 v1.28 实现：`POST /api/assistants` 接受可选 `persona`（空白/缺省落默认人设，上限 50,000 字符）；新增 `GET/PATCH /api/assistants/{assistant_id}`（部分更新、运行锁边界与删除一致、写失败尽力回滚）；前端创建对话框增加系统提示词输入，助手选择器新增编辑入口（id 只读、预填当前值、409/400 原样提示且不关闭对话框）。现行契约见架构文档 §4.2/§5.9/§5.10（v1.28）。
 - phase9 审查遗留清扫批已归入 v1.27 完成，按模块分四组闭环：memory 组完成 phase7 P3-2、phase9 P2-8/P2-10/P2-11/P3-2/P3-3/P3-4/P3-8/P3-9/P3-10；agent 组完成 P2-3/P2-5/P2-7/P2-9/P2-16/P3-11/P3-12/P3-13/P3-16/P3-17/P3-18；api/基础设施组完成 P2-4/P3-19/P3-20/P3-21/P3-22/P3-23/P3-25；web 组完成 P2-13/P2-14/P2-15/P3-26/P3-27/P3-28/P3-29/P3-30/P3-31/P3-32/P3-33，并一并关闭与 P2-15 重叠的 phase7 P3-1 上下文预算最终截断项。P2-18、P3-38/39 及条件触发/永久搁置/随功能绑定事项按既定处置保持不做；现行契约见架构文档 v1.27。
 - phase9 第二梯队加固批次已归入 v1.27 完成：P1-2（项目与 import staging 内部身份标记、仅删除旧且标记校验通过的残骸、新近目录五分钟宽限、purge staging 幂等收尾）、P2-17（archive/purge 前拒绝活跃 `document_write_intents`）、P1-5（saveActive/applyAgentHunk/applyAgentChangeSet/applyAllChanges 共用版本+正文精确快照回写守卫）、P1-6（fetch 60 秒超时、SSE 60 秒空闲看门狗及命名 heartbeat）、P1-8（MCP stdio/initialize/list_tools 逐步超时，独立临时 exit stack 失败即清、成功才晋升）及 P2-1（`interrupt_running()` 快照迭代）均有对应回归测试；现行契约见架构文档 v1.27 §4.7/§5.6/§5.7/§5.9/§5.10/§9。
 - phase9 第一梯队加固批次已在 v1.27 完成：P0-1（项目级「全部接受」对全部受影响 dirty 文档一次性列单确认）、P1-3（共享 SQLite 连接改 `isolation_level=None`，多语句写继续显式事务）、P1-1（MCP 同名工具拒绝覆盖内置工具，实际注册计数与 warning 对齐）、P1-4（工作记录 JSON 载荷的字符串叶子追加值级脱敏）、P1-7（FastAPI Host 白名单，Vite 默认 `changeOrigin=false` 已核查相容）及 P3-34（`save_summary` 写后回读由 assert 改显式 `RuntimeError`）均有对应回归测试；现行契约见架构文档 v1.27 §5.2/§5.4/§5.7/§5.9/§5.10/§9。
