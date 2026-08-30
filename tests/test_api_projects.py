@@ -340,6 +340,43 @@ def test_document_rename_delete_reject_conflicts(tmp_path):
         assert [item["relative_path"] for item in tree_after] == ["notes/source.txt"]
 
 
+def test_change_set_endpoints_return_404_for_cross_assistant_access(tmp_path):
+    """跨助手持 change set id 访问（phase7 P3-11）：已注册的其他助手访问
+    hunk 级端点一律 404，不泄漏资源存在性，change set 状态不受影响。"""
+    runtime = AgentRuntime(_settings(tmp_path))
+    project = runtime.store.create_project("default", "跨助手项目")
+    document, _ = runtime.store.save_document(
+        "default", project.project_id, project.entry_document_id,
+        "这是原文。后续内容。", expected_version=1,
+    )
+    change = runtime.store.create_selection_change_set(
+        "default", project.project_id, document.document_id,
+        task_id="task-isolation", start=0, end=5,
+        original_text="这是原文。", replacement_text="这是改写。",
+        base_version=document.version, source="selection",
+    )
+
+    with TestClient(_app(tmp_path, runtime)) as client:
+        client.post(
+            "/api/assistants",
+            json={"id": "writer-b", "name": "第二助手", "description": "", "persona": ""},
+        )
+        base = (
+            f"/api/projects/{project.project_id}/change-sets/{change.change_set_id}"
+            f"/hunks/{change.hunks[0].hunk_id}"
+        )
+        accept = client.post(f"{base}/accept", json={"assistant_id": "writer-b"})
+        reject = client.post(f"{base}/reject", json={"assistant_id": "writer-b"})
+        assert accept.status_code == 404
+        assert reject.status_code == 404
+
+        untouched = runtime.store.get_change_set(
+            "default", project.project_id, change.change_set_id
+        )
+        assert [hunk.status for hunk in untouched.hunks] == ["pending"]
+    asyncio.run(runtime.close())
+
+
 def test_selection_rewrite_task_sse_and_apply(tmp_path):
     settings = _settings(tmp_path)
     runtime = AgentRuntime(settings)

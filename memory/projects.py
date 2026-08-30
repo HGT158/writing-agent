@@ -680,7 +680,8 @@ def _finalize_write_intent(
     assistant_id: str,
     project_id: str,
     intent: _WriteIntent,
-) -> None:
+) -> list[str]:
+    """终结写意图并返回本次应用导致整组失效的其他任务 change set id（phase7 P3-5）。"""
     try:
         conn.execute("BEGIN IMMEDIATE")
         current_intent = _write_intent_row(
@@ -688,7 +689,7 @@ def _finalize_write_intent(
         )
         if current_intent is None:
             conn.commit()
-            return
+            return []
         if (
             current_intent.owner_pid != intent.owner_pid
             or current_intent.owner_started_at != intent.owner_started_at

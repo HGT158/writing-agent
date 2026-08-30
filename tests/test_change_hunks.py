@@ -1,6 +1,7 @@
 """多 hunk change set 与逐 hunk 审查（v1.20）：MemoryStore 契约。"""
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -26,11 +27,8 @@ def _hunk(old: str, new: str) -> dict:
 
 # ---------- 迁移 ----------
 
-def test_migration_converts_legacy_rows_to_parent_and_single_hunk(tmp_path):
-    store, project, document = _store_with_document(tmp_path)
-    db_path = tmp_path / "app.db"
-    store.close()
-
+def _install_legacy_change_sets(db_path: Path, rows: list[tuple]) -> None:
+    """把库回退成 v1.20 之前的单范围 change_sets 形态并写入 legacy 行。"""
     conn = sqlite3.connect(db_path)
     conn.execute("DROP TABLE change_set_hunks")
     conn.execute("DROP TABLE change_sets")
@@ -52,15 +50,22 @@ def test_migration_converts_legacy_rows_to_parent_and_single_hunk(tmp_path):
             applied_at TEXT
         )"""
     )
-    legacy = [
+    conn.executemany("INSERT INTO change_sets VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_migration_converts_legacy_rows_to_parent_and_single_hunk(tmp_path):
+    store, project, document = _store_with_document(tmp_path)
+    db_path = tmp_path / "app.db"
+    store.close()
+
+    _install_legacy_change_sets(db_path, [
         ("cs-old-1", "writer-a", project.project_id, document.document_id, None,
          "selection", 0, 4, "开头段。", "改开头。", 1, "pending", "2026-08-16T00:00:00", None),
         ("cs-old-2", "writer-a", project.project_id, document.document_id, None,
          "chat", 4, 7, "中间段。", "改中间。", 1, "applied", "2026-08-16T00:00:01", "2026-08-16T00:00:02"),
-    ]
-    conn.executemany("INSERT INTO change_sets VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", legacy)
-    conn.commit()
-    conn.close()
+    ])
 
     reopened = MemoryStore(tmp_path)
     first = reopened.get_change_set("writer-a", project.project_id, "cs-old-1")
@@ -72,6 +77,58 @@ def test_migration_converts_legacy_rows_to_parent_and_single_hunk(tmp_path):
     assert second.status == "applied"
     assert [h.status for h in second.hunks] == ["applied"]
     reopened.close()
+
+
+def test_second_start_after_successful_migration_is_noop(tmp_path):
+    """迁移成功后二次启动不重迁不报错（phase7 P3-11）：数据保持、无 legacy 残表。"""
+    store, project, document = _store_with_document(tmp_path)
+    db_path = tmp_path / "app.db"
+    store.close()
+
+    _install_legacy_change_sets(db_path, [
+        ("cs-old-1", "writer-a", project.project_id, document.document_id, None,
+         "selection", 0, 4, "开头段。", "改开头。", 1, "pending", "2026-08-16T00:00:00", None),
+    ])
+
+    migrated = MemoryStore(tmp_path)
+    assert migrated.get_change_set(
+        "writer-a", project.project_id, "cs-old-1"
+    ).task_id == "legacy-cs-old-1"
+    migrated.close()
+
+    reopened = MemoryStore(tmp_path)
+    record = reopened.get_change_set("writer-a", project.project_id, "cs-old-1")
+    assert record.task_id == "legacy-cs-old-1"
+    assert [(h.start, h.end, h.status) for h in record.hunks] == [(0, 4, "pending")]
+    tables = {
+        row[0] for row in reopened._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    assert "change_sets_legacy" not in tables
+    reopened.close()
+
+
+def test_finalize_write_intent_returns_empty_list_when_intent_missing(tmp_path):
+    """finalize 返回契约（phase7 P3-5）：意图缺失分支返回空列表而非 None，
+    注解与实际返回统一为 list[str]——save/恢复路径丢弃返回值、
+    accept hunk 路径消费（list[str] 返回已由 go_stale 用例断言）。"""
+    from memory.projects import _WriteIntent, _finalize_write_intent
+
+    store, project, document = _store_with_document(tmp_path)
+    intent = _WriteIntent(
+        intent_id="missing-intent", document_id=document.document_id,
+        change_set_id=None, hunk_id="", expected_version=document.version,
+        target_version=document.version + 1, relative_path=document.relative_path,
+        content="未登记的正文", utf8_bom=False, owner_pid=os.getpid(),
+        owner_started_at=0.0, claimed_at="2026-08-30T00:00:00",
+        created_at="2026-08-30T00:00:00",
+    )
+
+    assert _finalize_write_intent(
+        store._conn, "writer-a", project.project_id, intent
+    ) == []
+    store.close()
 
 
 # ---------- 创建 ----------

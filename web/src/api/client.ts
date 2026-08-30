@@ -209,6 +209,13 @@ export const apiClient = {
       }, SSE_IDLE_TIMEOUT_MS)
     }
 
+    function markStreamAlive() {
+      // 退避复位以首个事件到达为准：服务端开连即断时永远送不出事件，
+      // onopen 清零会让重连以 500ms 无限循环（phase7 P3-10）。
+      retries = 0
+      resetIdleWatchdog()
+    }
+
     function finish(error?: Error) {
       stopSource()
       if (timer !== null) {
@@ -234,12 +241,11 @@ export const apiClient = {
       const cursor = lastSeq >= 0 ? `&after_seq=${lastSeq}` : ''
       source = new EventSource(`/api/tasks/${taskId}/stream?assistant_id=${encodeURIComponent(assistantId)}${cursor}`)
       source.onopen = () => {
-        retries = 0
         resetIdleWatchdog()
       }
-      source.addEventListener('heartbeat', resetIdleWatchdog)
+      source.addEventListener('heartbeat', markStreamAlive)
       source.onmessage = (message) => {
-        resetIdleWatchdog()
+        markStreamAlive()
         try {
           const event = parseTaskEvent(JSON.parse(message.data))
           if (event.type === 'reconnect_gap') {

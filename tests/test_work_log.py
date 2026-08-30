@@ -5,7 +5,9 @@ import asyncio
 import json
 import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -264,6 +266,19 @@ def test_recorder_streams_and_persists_on_done(tmp_path):
     ]
     assert persisted[0].result_summary == '{"change_set_ids": ["c1"]}'
     assert persisted[1].user_message_id == user_message_id
+    store.close()
+
+
+def test_recorder_start_rejected_after_finish_task(tmp_path):
+    """任务终态后再次 start 显式拒绝，防止调用顺序变化复用已落库序号（phase7 P3-7）。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "终态后拒绝项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+
+    recorder.finish_task("succeeded", title="任务完成")
+    with pytest.raises(RuntimeError, match="终态"):
+        recorder.start("progress", "终态之后的新条目")
     store.close()
 
 
@@ -743,6 +758,57 @@ def test_chat_project_work_log_failure_does_not_mask_task_error(tmp_path, monkey
     asyncio.run(runtime.close())
 
 
+class _BlockingStreamLLM:
+    """首轮流式调用永久挂起：模拟长回复进行中被客户端取消。"""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.chat = SimpleNamespace(completions=self)
+
+    async def create(self, **kwargs):
+        self.started.set()
+        await asyncio.Event().wait()
+
+
+def test_chat_project_cancellation_persists_interrupted_terminal_with_real_recorder(tmp_path):
+    """CancelledError 经真实 recorder（非 mock）走 interrupted 分支（phase7 P3-11）：
+    运行项以 interrupted 终结、任务终态落库、占位消息持久化、异常照常上抛、锁释放。"""
+    runtime = AgentRuntime(_settings(tmp_path))
+    project = runtime.store.create_project("default", "取消项目")
+    session = runtime.store.create_project_chat_session("default", project.project_id)
+    llm = _BlockingStreamLLM()
+    runtime.llm = llm
+
+    async def scenario():
+        chat_task = asyncio.create_task(runtime.chat_project(
+            "default", project.project_id, "慢慢回答",
+            chat_session_id=session.chat_session_id,
+        ))
+        await asyncio.wait_for(llm.started.wait(), timeout=5)
+        chat_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await chat_task
+
+    asyncio.run(scenario())
+
+    events = runtime.store.list_project_chat_work_events(
+        "default", project.project_id, session.chat_session_id
+    )
+    assert [(item.kind, item.status) for item in events] == [
+        ("progress", "succeeded"),
+        ("task", "interrupted"),
+    ]
+    messages = runtime.store.list_project_chat_messages(
+        "default", project.project_id, session.chat_session_id
+    )
+    assert [(item.role, item.content) for item in messages] == [
+        ("user", "慢慢回答"),
+        ("assistant", "[interrupted] 本轮任务已取消。"),
+    ]
+    assert not runtime.store.is_locked("default")
+    asyncio.run(runtime.close())
+
+
 # ---------- API ----------
 
 def test_session_detail_returns_work_events_and_reconciles(tmp_path):
@@ -815,6 +881,56 @@ def test_session_detail_returns_work_events_and_reconciles(tmp_path):
         assert len(active_terminal) == 1
         assert active_terminal[0]["status"] == "interrupted"
         assert [item["role"] for item in detail["messages"]] == ["user"]
+
+
+def test_concurrent_reconcile_requests_converge_on_single_terminal(tmp_path):
+    """两请求并发对账同一无终态任务组（phase7 P3-11）：都成功、幂等收敛为单条
+    interrupted 终态、序号顺延、复查无新增。"""
+    runtime = AgentRuntime(_settings(tmp_path))
+    project = runtime.store.create_project("default", "并发对账项目")
+    session = runtime.store.create_project_chat_session("default", project.project_id)
+    user = runtime.store.add_project_chat_message(
+        "default", project.project_id, session.chat_session_id, "user", "并发指令"
+    )
+    _add_event(runtime.store, project, session.chat_session_id,
+               task_id="orphan-race", seq=1, user_message_id=user.message_id,
+               assistant="default")
+
+    from api.main import create_app
+
+    app = create_app(settings=_settings(tmp_path), runtime=runtime, start_runtime=False)
+    url = (
+        f"/api/projects/{project.project_id}/agent/sessions/"
+        f"{session.chat_session_id}/reconcile"
+    )
+    with TestClient(app) as client:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            responses = list(pool.map(
+                lambda _: client.post(url, params={"assistant_id": "default"}),
+                range(2),
+            ))
+        assert [response.status_code for response in responses] == [200, 200]
+        assert all(
+            response.json()["reconciled_task_ids"] in ([], ["orphan-race"])
+            for response in responses
+        )
+
+        detail = client.get(
+            f"/api/projects/{project.project_id}/agent/sessions/{session.chat_session_id}",
+            params={"assistant_id": "default"},
+        ).json()
+        terminals = [
+            item for item in detail["work_events"]
+            if item["task_id"] == "orphan-race" and item["kind"] == "task"
+        ]
+        assert len(terminals) == 1
+        assert terminals[0]["status"] == "interrupted"
+        assert terminals[0]["event_seq"] == 2
+
+        again = client.post(url, params={"assistant_id": "default"})
+        assert again.status_code == 200
+        assert again.json()["reconciled_task_ids"] == []
+    asyncio.run(runtime.close())
 
 
 def test_session_detail_respects_run_lock_for_direct_tasks(tmp_path):

@@ -133,16 +133,67 @@ describe('apiClient.watchTask', () => {
     handle.close()
   })
 
-  it('resets the retry backoff after a successful connection', async () => {
+  it('resets the retry backoff only after the first event arrives', async () => {
     const handle = apiClient.watchTask('writer-a', 'task-1', vi.fn())
+    FakeEventSource.instances[0].onerror?.()
+    await vi.advanceTimersByTimeAsync(500)
+    const second = FakeEventSource.instances[1]
+    second.onopen?.()
+    second.onmessage?.(message({ type: 'token', data: { text: 'a' }, seq: 0 }))
+    second.onerror?.()
+
+    await vi.advanceTimersByTimeAsync(500)
+    expect(FakeEventSource.instances).toHaveLength(3)
+    handle.close()
+  })
+
+  it('counts a heartbeat as the first event that resets the retry backoff', async () => {
+    const handle = apiClient.watchTask('writer-a', 'task-1', vi.fn())
+    FakeEventSource.instances[0].onerror?.()
+    await vi.advanceTimersByTimeAsync(500)
+    const second = FakeEventSource.instances[1]
+    second.onopen?.()
+    second.emit('heartbeat')
+    second.onerror?.()
+
+    await vi.advanceTimersByTimeAsync(500)
+    expect(FakeEventSource.instances).toHaveLength(3)
+    handle.close()
+  })
+
+  it('does not reset the retry backoff when the server closes without any event', async () => {
+    const handle = apiClient.watchTask('writer-a', 'task-1', vi.fn())
+    // 开连即断：onopen 触发但未送达任何事件，退避不得被清零（phase7 P3-10）。
+    FakeEventSource.instances[0].onopen?.()
     FakeEventSource.instances[0].onerror?.()
     await vi.advanceTimersByTimeAsync(500)
     const second = FakeEventSource.instances[1]
     second.onopen?.()
     second.onerror?.()
 
+    // 若 onopen 清零退避，第三次连接会在 500ms 后出现；收紧后应等到 1000ms。
+    await vi.advanceTimersByTimeAsync(500)
+    expect(FakeEventSource.instances).toHaveLength(2)
     await vi.advanceTimersByTimeAsync(500)
     expect(FakeEventSource.instances).toHaveLength(3)
+    handle.close()
+  })
+
+  it('exhausts bounded retries when the server keeps accepting and dropping connections', async () => {
+    const onError = vi.fn()
+    const handle = apiClient.watchTask('writer-a', 'task-1', vi.fn(), onError)
+    for (const delay of [500, 1000, 2000, 4000, 8000, 8000]) {
+      const source = FakeEventSource.instances.at(-1)!
+      source.onopen?.()
+      source.onerror?.()
+      await vi.advanceTimersByTimeAsync(delay)
+    }
+    FakeEventSource.instances.at(-1)!.onerror?.()
+
+    expect(FakeEventSource.instances).toHaveLength(7)
+    expect(onError).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(FakeEventSource.instances).toHaveLength(7)
     handle.close()
   })
 

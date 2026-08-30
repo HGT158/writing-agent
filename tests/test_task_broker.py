@@ -234,6 +234,48 @@ def test_task_broker_resumes_stream_from_cursor():
     assert events[-1]["type"] == "task_done"
 
 
+def test_task_broker_replays_work_item_events_after_reconnect():
+    """工作事件断线补发（phase7 P3-11）：work_item_start/delta/done 按游标精确补发，
+    与普通任务事件共用同一 seq 流，不重复不遗漏。"""
+
+    async def scenario():
+        bus = EventBus()
+        broker = TaskBroker(bus, max_events=8)
+        release = asyncio.Event()
+
+        async def operation():
+            await release.wait()
+            return {"ok": True}
+
+        task_id = broker.start("writer-a", operation)
+        first = broker.stream(task_id, "writer-a")
+        with bus.task_scope(task_id):
+            bus.emit("work_item_start", work_id="w1", kind="tool",
+                     title="正在准备修改", tool_name="propose_project_edits")
+            bus.emit("work_item_delta", work_id="w1", text="正在校验修改范围")
+            bus.emit("work_item_done", work_id="w1", kind="tool",
+                     status="succeeded", result_summary="已生成修改建议")
+            # 活动连接只消费到 work_item_start（seq=0）后断开
+            await anext(first)
+            await first.aclose()
+            release.set()
+        await broker.records[task_id].handle
+        resumed = broker.stream(task_id, "writer-a", after_seq=0)
+        frames = [line async for line in resumed]
+        await resumed.aclose()
+        return frames
+
+    frames = asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+    events = [_payload(frame) for frame in frames]
+    assert [event["type"] for event in events] == [
+        "work_item_delta", "work_item_done", "task_done",
+    ]
+    assert [event["data"]["work_id"] for event in events[:2]] == ["w1", "w1"]
+    assert events[0]["data"]["text"] == "正在校验修改范围"
+    assert events[1]["data"]["status"] == "succeeded"
+    assert [_frame_id(frame) for frame in frames] == [1, 2, 3]
+
+
 def test_task_broker_signals_gap_when_cursor_behind_window():
     """游标落后于重放窗口时先发可识别的缺口事件，不得静默拼接残缺回复。"""
 

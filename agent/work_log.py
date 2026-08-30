@@ -7,14 +7,13 @@ delta 与 start 只走流；明细事件仅在 done 时落库，单任务明细�
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from agent.events import EventBus
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +77,7 @@ def summarize_detail(detail: str | None) -> str | None:
         return None
     text = _redact_secrets_in_text(str(detail))
     if len(text) > DETAIL_MAX_CHARS:
-        return text[:DETAIL_MAX_CHARS] + f"…[详情已截断：原始 {len(text)} 字符]"
+        return text[:DETAIL_MAX_CHARS] + f"…[详情已截断：脱敏后 {len(text)} 字符]"
     return text
 
 
@@ -104,7 +103,7 @@ def summarize_args(args) -> str | None:
     else:
         text = str(args)
     if len(text) > ARGS_MAX_CHARS:
-        return text[:ARGS_MAX_CHARS] + f"…[参数已截断：原始 {len(text)} 字符]"
+        return text[:ARGS_MAX_CHARS] + f"…[参数已截断：脱敏后 {len(text)} 字符]"
     return text
 
 
@@ -119,7 +118,7 @@ def summarize_result(result) -> str | None:
         return text
     head = text[:RESULT_HEAD_CHARS]
     tail = text[-RESULT_TAIL_CHARS:]
-    return f"{head}\n…[结果已截断：保留前 {RESULT_HEAD_CHARS} 与后 {RESULT_TAIL_CHARS} 字符，原始 {len(text)} 字符]\n{tail}"
+    return f"{head}\n…[结果已截断：保留前 {RESULT_HEAD_CHARS} 与后 {RESULT_TAIL_CHARS} 字符，脱敏后 {len(text)} 字符]\n{tail}"
 
 
 @dataclass
@@ -177,6 +176,10 @@ class WorkLogRecorder:
         change_set_id: str | None = None,
         document_id: str | None = None,
     ) -> str:
+        if self._finished:
+            # 终态后开启新工作项会复用已落库的序号并破坏 (task_id, event_seq) 唯一性
+            # （phase7 P3-7）：显式拒绝，不吞异常。
+            raise RuntimeError("工作记录已写入任务终态，不能再开启新的工作项")
         work_id = uuid.uuid4().hex[:10]
         item = _WorkItem(
             work_id=work_id,
