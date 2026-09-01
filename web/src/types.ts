@@ -138,6 +138,29 @@ export interface TaskEvent {
   seq?: number
 }
 
+/** 模型提供商（v1.31）：api_key 原文永不下发，仅掩码尾缀。 */
+export interface LLMProviderInfo {
+  id: string
+  name: string
+  base_url: string
+  models: string[]
+  temperature: number
+  api_key_hint: string
+}
+
+export interface LLMProvidersPayload {
+  current: { provider_id: string; model: string }
+  providers: LLMProviderInfo[]
+}
+
+export interface LLMProviderCreatePayload {
+  name: string
+  base_url: string
+  api_key: string
+  models: string[]
+  temperature?: number
+}
+
 export function isChangePreview(value: unknown): value is ChangeSetPreview {
   if (!value || typeof value !== 'object') return false
   const item = value as Partial<ChangeSetPreview>

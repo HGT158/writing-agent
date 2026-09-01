@@ -3,6 +3,8 @@ import type {
   AssistantDetail,
   ChangeSetPreview,
   ChangeSetRecord,
+  LLMProviderCreatePayload,
+  LLMProvidersPayload,
   Project,
   ProjectChatSession,
   ProjectChatSessionDetail,
@@ -158,6 +160,15 @@ export const apiClient = {
     page: number
     page_size: number
   }>(`/api/projects/${projectId}/change-sets?assistant_id=${encodeURIComponent(assistantId)}&document_id=${encodeURIComponent(documentId)}&page=${page}&page_size=${pageSize}`),
+  listLlmProviders: () => request<LLMProvidersPayload>('/api/llm/providers'),
+  addLlmProvider: (payload: LLMProviderCreatePayload) => request<LLMProvidersPayload>('/api/llm/providers', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }),
+  selectLlmProvider: (providerId: string, model: string) => request<LLMProvidersPayload>('/api/llm/providers/current', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider_id: providerId, model }),
+  }),
   listProjectChatSessions: (assistantId: string, projectId: string) => request<ProjectChatSession[]>(`/api/projects/${projectId}/agent/sessions?assistant_id=${encodeURIComponent(assistantId)}`),
   getProjectChatSession: async (assistantId: string, projectId: string, chatSessionId: string) => {
     const scope = `/api/projects/${projectId}/agent/sessions/${chatSessionId}`

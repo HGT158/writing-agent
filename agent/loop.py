@@ -40,6 +40,8 @@ class RuntimeServices:
     store: MemoryStore
     bus: EventBus
     settings: Settings
+    # 当前提供商温度快照（架构 §5.4 v1.31）：任务启动时解析，全部 LLM 调用统一使用。
+    temperature: float = 0.3
 
 
 # ---------------------------------------------------------------- 节点
@@ -49,7 +51,11 @@ async def node_observe(state: AgentState) -> dict[str, Any]:
 
 
 async def node_plan(state: AgentState, services: RuntimeServices) -> dict[str, Any]:
-    planner = Planner(services.llm, services.model, json_mode=services.settings.json_mode)
+    planner = Planner(
+        services.llm, services.model,
+        json_mode=services.settings.json_mode,
+        temperature=services.temperature,
+    )
     from .skills import catalog_text
 
     plan = await planner.make_plan(
@@ -141,7 +147,7 @@ async def node_write(state: AgentState, services: RuntimeServices) -> dict[str, 
                     '只输出 JSON：{"title": "文章标题", "sections": ["第一节标题", "第二节标题", ...]}，3-6 节。'
                 )},
             ],
-            temperature=0.5,
+            temperature=services.temperature,
             json_mode=services.settings.json_mode,
         )
         try:
@@ -170,7 +176,7 @@ async def node_write(state: AgentState, services: RuntimeServices) -> dict[str, 
             ],
             on_text=lambda text: services.bus.emit("token", text=text),
             total_timeout_seconds=services.settings.llm_stream_timeout_seconds,
-            temperature=0.6,
+            temperature=services.temperature,
         )
         parts.append(f"## {section}\n\n{streamed.text.strip()}")
 
@@ -196,7 +202,7 @@ async def node_reflect(state: AgentState, services: RuntimeServices) -> dict[str
                 '"new_preferences": ["从本次任务发现的值得长期记住的用户偏好，可为空数组"]}'
             )},
         ],
-        temperature=0.2,
+        temperature=services.temperature,
         json_mode=services.settings.json_mode,
     )
     try:

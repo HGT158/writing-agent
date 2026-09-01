@@ -63,10 +63,14 @@ def observations_text(observations: list[dict[str, Any]], window: int = 8) -> st
 
 
 class Planner:
-    def __init__(self, llm: AsyncOpenAI, model: str, json_mode: bool = True) -> None:
+    def __init__(
+        self, llm: AsyncOpenAI, model: str,
+        json_mode: bool = True, temperature: float = 0.3,
+    ) -> None:
         self.llm = llm
         self.model = model
         self.json_mode = json_mode
+        self.temperature = temperature
 
     async def make_plan(
         self,
@@ -110,7 +114,8 @@ class Planner:
         ]
         last_error: str = ""
         for _attempt in range(2):  # 首次 + 回喂错误重试一次
-            text = await chat_text(self.llm, self.model, messages, temperature=0.3,
+            text = await chat_text(self.llm, self.model, messages,
+                                   temperature=self.temperature,
                                    json_mode=self.json_mode)
             try:
                 return ActionPlan.model_validate_json(extract_json(text))

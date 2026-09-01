@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Bot, CheckCheck, Loader, Plus, Send, Trash2 } from '@lucide/vue'
 
 import { apiClient } from '../api/client'
@@ -7,12 +7,16 @@ import type { TaskStream } from '../api/client'
 import {
   isChangePreview,
   type ChangeSetPreview,
+  type LLMProviderCreatePayload,
+  type LLMProvidersPayload,
   type ProjectChatSession,
   type TaskEvent,
   type WorkEventRecord,
 } from '../types'
 import ChangeDiff from './ChangeDiff.vue'
 import MarkdownPreview from './MarkdownPreview.vue'
+import ModelPicker from './ModelPicker.vue'
+import ProviderDialog from './ProviderDialog.vue'
 
 const props = defineProps<{
   assistantId: string
@@ -83,6 +87,61 @@ const liveWork = ref<WorkRecordView | null>(null)
 const lastInstruction = ref('')
 const scrollHost = ref<HTMLElement>()
 const followTail = ref(true)
+
+// 模型/提供商切换（架构 §5.10 v1.31）：配置全局共享，与助手/项目无关。
+const providers = ref<LLMProvidersPayload | null>(null)
+const showProviderDialog = ref(false)
+const providerBusy = ref(false)
+const providerError = ref('')
+
+onMounted(() => {
+  void reloadProviders()
+})
+
+async function reloadProviders() {
+  try {
+    providers.value = await apiClient.listLlmProviders()
+  } catch {
+    providers.value = null  // 列表加载失败保持按钮兜底文案，操作时再提示
+  }
+}
+
+async function selectProvider(providerId: string, model: string) {
+  providerError.value = ''
+  try {
+    providers.value = await apiClient.selectLlmProvider(providerId, model)
+  } catch (cause) {
+    providerError.value = cause instanceof Error ? cause.message : String(cause)
+  }
+}
+
+function openProviderDialog() {
+  providerError.value = ''
+  showProviderDialog.value = true
+}
+
+async function submitProvider(payload: LLMProviderCreatePayload) {
+  providerBusy.value = true
+  providerError.value = ''
+  const knownIds = new Set((providers.value?.providers ?? []).map((item) => item.id))
+  try {
+    providers.value = await apiClient.addLlmProvider(payload)
+    showProviderDialog.value = false
+    const added = providers.value.providers.find((item) => !knownIds.has(item.id))
+    if (added && added.models.length) {
+      providers.value = await apiClient.selectLlmProvider(added.id, added.models[0])
+    }
+  } catch (cause) {
+    providerError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    providerBusy.value = false
+  }
+}
+
+function closeProviderDialog() {
+  showProviderDialog.value = false
+  providerError.value = ''
+}
 let stream: TaskStream | null = null
 let scopeGeneration = 0
 let assistantMessageIndex: number | null = null
@@ -691,14 +750,32 @@ onBeforeUnmount(() => {
       <p v-if="error" class="inline-error">{{ error }}</p>
     </div>
     <form class="agent-composer" @submit.prevent="send()">
-      <textarea
-        v-model="message"
-        :disabled="!projectId || busy"
-        rows="3"
-        placeholder="对当前项目下指令，Enter 发送 / Shift+Enter 换行"
-        @keydown.enter.exact.prevent="send()"
-      />
-      <button class="send-button" title="发送消息" :disabled="!projectId || busy || !message.trim()"><Send :size="15" /></button>
+      <div class="composer-toolbar">
+        <ModelPicker
+          :providers="providers"
+          :busy="providerBusy"
+          @select="selectProvider"
+          @add="openProviderDialog"
+        />
+        <span v-if="providerError && !showProviderDialog" class="provider-inline-error">{{ providerError }}</span>
+      </div>
+      <div class="composer-input">
+        <textarea
+          v-model="message"
+          :disabled="!projectId || busy"
+          rows="3"
+          placeholder="对当前项目下指令，Enter 发送 / Shift+Enter 换行"
+          @keydown.enter.exact.prevent="send()"
+        />
+        <button class="send-button" title="发送消息" :disabled="!projectId || busy || !message.trim()"><Send :size="15" /></button>
+      </div>
     </form>
+    <ProviderDialog
+      v-if="showProviderDialog"
+      :busy="providerBusy"
+      :error="providerError"
+      @submit="submitProvider"
+      @cancel="closeProviderDialog"
+    />
   </aside>
 </template>

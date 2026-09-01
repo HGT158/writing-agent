@@ -58,6 +58,7 @@ async def extract_preferences(
     assistant_reply: str,
     profile_text: str,
     json_mode: bool = True,
+    temperature: float = 0.3,
 ) -> list[tuple[str, str]]:
     """一次非流式提取调用；返回 [(kind, content)]，无可沉淀内容返回空列表。"""
     system = "你在为写作助手维护长期记忆，从一轮对话中提取值得长期保留的用户偏好。只输出 JSON。"
@@ -77,7 +78,7 @@ async def extract_preferences(
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
+        temperature=temperature,
         json_mode=json_mode,
     )
     result = json.loads(extract_json(text))

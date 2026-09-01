@@ -27,6 +27,7 @@ from .context import (
 from .events import EventBus, current_task_id
 from .executor import ToolRegistry
 from .llm import chat_text, stream_chat_turn
+from .llm_providers import LLMProvider, LLMProviderStore
 from .loop import RuntimeServices, build_graph
 from .project_editing import ProjectChatResult, ProjectEditBatch, hunk_count
 from .schemas import AgentState, ToolContext
@@ -53,11 +54,83 @@ class AgentRuntime:
         self.tools.register_all(make_builtin_tools(settings.data_dir, self.store))
         self.mcp: MCPManager | None = None
         self.scheduler: RuntimeScheduler | None = None
-        self.llm = AsyncOpenAI(
-            api_key=settings.openai_api_key or "missing",
-            base_url=settings.openai_base_url,
-            timeout=settings.llm_timeout_seconds,
+        # 模型提供商注册表与当前选择（架构 §5.4 v1.31）：持久化于项目根目录
+        # llm_providers.json；首次启动从 .env 合成 default 提供商完成迁移。
+        self.providers = LLMProviderStore(
+            settings.project_root / "llm_providers.json",
+            default_provider=LLMProvider(
+                id="default",
+                name="默认提供商",
+                base_url=settings.openai_base_url,
+                api_key=settings.openai_api_key,
+                models=[settings.model_name] if settings.model_name else [],
+                temperature=0.3,
+            ),
         )
+        self._llm_clients: dict[tuple[str, str], AsyncOpenAI] = {}
+        self._llm_override: AsyncOpenAI | None = None
+
+    @property
+    def llm(self) -> AsyncOpenAI:
+        """当前提供商的客户端（门面保留：任务内应消费 _resolve_llm 的任务级快照）。"""
+        if self._llm_override is not None:
+            return self._llm_override
+        provider, _model = self.providers.resolve()
+        return self._client_for(provider)
+
+    @llm.setter
+    def llm(self, value: AsyncOpenAI | None) -> None:
+        self._llm_override = value
+
+    def _client_for(self, provider: LLMProvider) -> AsyncOpenAI:
+        key = (provider.base_url, provider.api_key)
+        client = self._llm_clients.get(key)
+        if client is None:
+            client = AsyncOpenAI(
+                api_key=provider.api_key or "missing",
+                base_url=provider.base_url,
+                timeout=self.settings.llm_timeout_seconds,
+            )
+            self._llm_clients[key] = client
+        return client
+
+    def _resolve_llm(self) -> tuple[AsyncOpenAI, str, float]:
+        """任务启动时解析一次当前提供商快照 (client, model, temperature)。
+
+        切换提供商只更新指针并持久化，不影响已解析的快照——运行中任务
+        不被打断，任务内不会中途换模型（架构 §5.4 v1.31）。
+        测试替身经 `runtime.llm = ...` 注入时快照使用替身客户端。
+        """
+        provider, model = self.providers.resolve()
+        if not provider.api_key:
+            raise RuntimeError(
+                f"模型提供商「{provider.name}」未配置 OPENAI_API_KEY："
+                "请在 Agent 面板「添加提供商」中填写，或编辑 .env 后重启"
+            )
+        client = self._llm_override if self._llm_override is not None else self._client_for(provider)
+        return client, model, provider.temperature
+
+    def list_llm_providers(self) -> dict:
+        return self.providers.payload()
+
+    def add_llm_provider(
+        self,
+        *,
+        name: str,
+        base_url: str,
+        api_key: str,
+        models: list[str],
+        temperature: float | None = None,
+    ) -> dict:
+        self.providers.add(
+            name=name, base_url=base_url, api_key=api_key,
+            models=models, temperature=temperature,
+        )
+        return self.providers.payload()
+
+    def select_llm_provider(self, provider_id: str, model: str) -> dict:
+        self.providers.select(provider_id, model)
+        return self.providers.payload()
 
     async def start(self, *, enable_scheduler: bool = False) -> None:
         """连接 MCP servers 并把发现的工具纳入统一工具表；失败不阻断启动。"""
@@ -98,8 +171,7 @@ class AgentRuntime:
         self, assistant_id: str, task: str, session_id: str | None = None, *,
         lock_task_id: str | None = None, lock_already_held: bool = False,
     ) -> AgentState:
-        if not self.settings.openai_api_key:
-            raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
+        llm, model, temperature = self._resolve_llm()
 
         assistant = self.assistants.get(assistant_id)  # KeyError 内含可用助手列表
         if session_id is not None:
@@ -118,8 +190,9 @@ class AgentRuntime:
             self.bus.emit("info", text=f"已注入助手记忆：{self._recall_summary_text(trace)}")
 
             services = RuntimeServices(
-                llm=self.llm,
-                model=self.settings.model_name,
+                llm=llm,
+                model=model,
+                temperature=temperature,
                 assistant=assistant,
                 tools=self.tools,
                 skills=self.skills,
@@ -174,8 +247,7 @@ class AgentRuntime:
         lock_already_held: bool = False,
     ):
         """生成待确认的选区 change set，不直接修改项目文件。"""
-        if not self.settings.openai_api_key:
-            raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
+        llm, model, temperature = self._resolve_llm()
         assistant = self.assistants.get(assistant_id)
         task_id = lock_task_id or uuid.uuid4().hex[:12]
         session_id = uuid.uuid4().hex[:12]
@@ -202,13 +274,13 @@ class AgentRuntime:
                 f"选中文本：\n{selected_text}"
             )
             replacement = (await chat_text(
-                self.llm,
-                self.settings.model_name,
+                llm,
+                model,
                 [
                     {"role": "system", "content": assistant.persona},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.3,
+                temperature=temperature,
                 json_mode=False,
             )).strip()
             if not replacement:
@@ -249,11 +321,18 @@ class AgentRuntime:
         finally:
             self.store.release_lock(assistant_id, task_id)
 
-    async def _summarize_chat_history(self, transcript: str) -> str:
+    async def _summarize_chat_history(
+        self,
+        transcript: str,
+        *,
+        llm: AsyncOpenAI,
+        model: str,
+        temperature: float,
+    ) -> str:
         """压缩项目聊天的早期历史；不发 token 事件，不污染可见回复（架构 §3.3）。"""
         return await chat_text(
-            self.llm,
-            self.settings.model_name,
+            llm,
+            model,
             [
                 {
                     "role": "system",
@@ -270,7 +349,7 @@ class AgentRuntime:
                     ),
                 },
             ],
-            temperature=0.2,
+            temperature=temperature,
             json_mode=False,
         )
 
@@ -293,6 +372,9 @@ class AgentRuntime:
         chat_session_id: str,
         user_message: str,
         assistant_reply: str,
+        llm: AsyncOpenAI,
+        model: str,
+        temperature: float,
     ) -> None:
         """轮次终态选择性沉淀（架构 §5.4 v1.30）。
 
@@ -313,12 +395,13 @@ class AgentRuntime:
                 recorder.done(work, detail=f"- [偏好] {direct}")
                 return
             items = await chat_memory.extract_preferences(
-                self.llm,
-                self.settings.model_name,
+                llm,
+                model,
                 user_message=user_message,
                 assistant_reply=assistant_reply,
                 profile_text=self.store.get_assistant_profile(assistant_id),
                 json_mode=self.settings.json_mode,
+                temperature=temperature,
             )
             if not items:
                 return
@@ -352,8 +435,7 @@ class AgentRuntime:
         lock_already_held: bool = False,
     ) -> ProjectChatResult:
         """项目 Agent 对话；文件修改只生成待确认 change set。"""
-        if not self.settings.openai_api_key:
-            raise RuntimeError("未配置 OPENAI_API_KEY：请复制 .env.example 为 .env 并填写后重试")
+        llm, model, temperature = self._resolve_llm()
         assistant = self.assistants.get(assistant_id)
         lock_task_id = lock_task_id or uuid.uuid4().hex[:12]
         if not lock_already_held:
@@ -456,7 +538,9 @@ class AgentRuntime:
                 keep_recent=self.settings.chat_context_keep_recent,
                 existing_summary=existing.summary if existing else None,
                 existing_summary_through=existing.covered_through_message_id if existing else None,
-                summarize=self._summarize_chat_history,
+                summarize=lambda transcript: self._summarize_chat_history(
+                    transcript, llm=llm, model=model, temperature=temperature
+                ),
             )
             for warning in chat_context.warnings:
                 self.bus.emit("warning", text=warning)
@@ -508,12 +592,13 @@ class AgentRuntime:
                 },
             }]
             first = await stream_chat_turn(
-                self.llm,
-                self.settings.model_name,
+                llm,
+                model,
                 messages,
                 tools=tool_schema,
                 on_text=emit_text,
                 total_timeout_seconds=self.settings.llm_stream_timeout_seconds,
+                temperature=temperature,
             )
             if not first.tool_calls:
                 reply = "".join(visible)
@@ -534,6 +619,9 @@ class AgentRuntime:
                     chat_session_id=chat_session_id,
                     user_message=message,
                     assistant_reply=reply,
+                    llm=llm,
+                    model=model,
+                    temperature=temperature,
                 )
                 recorder.finish_task(
                     "succeeded", title=message.strip()[:80], detail="无工具调用"
@@ -641,11 +729,12 @@ class AgentRuntime:
                 emit_text(text)
 
             await stream_chat_turn(
-                self.llm,
-                self.settings.model_name,
+                llm,
+                model,
                 messages,
                 on_text=emit_followup,
                 total_timeout_seconds=self.settings.llm_stream_timeout_seconds,
+                temperature=temperature,
             )
             reply = "".join(visible)
             if not reply.strip():
@@ -665,6 +754,9 @@ class AgentRuntime:
                 chat_session_id=chat_session_id,
                 user_message=message,
                 assistant_reply=reply,
+                llm=llm,
+                model=model,
+                temperature=temperature,
             )
             recorder.finish_task(
                 "succeeded",

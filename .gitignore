@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+llm_providers.json
 
 # Python caches, environments, builds, and coverage
 __pycache__/

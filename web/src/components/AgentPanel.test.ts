@@ -10,11 +10,44 @@ const apiMocks = vi.hoisted(() => ({
   listProjectChatSessions: vi.fn(),
   getProjectChatSession: vi.fn(),
   deleteProjectChatSession: vi.fn(),
+  listLlmProviders: vi.fn(),
+  addLlmProvider: vi.fn(),
+  selectLlmProvider: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({ apiClient: apiMocks }))
 
 import AgentPanel from './AgentPanel.vue'
+
+const providersPayload = {
+  current: { provider_id: 'default', model: 'test-chat' },
+  providers: [
+    {
+      id: 'default', name: '默认提供商', base_url: 'https://api.example.com',
+      models: ['test-chat'], temperature: 0.3, api_key_hint: 'sk-***7890',
+    },
+    {
+      id: 'p-other', name: '备选厂商', base_url: 'https://api.other.com',
+      models: ['other-chat', 'other-reasoner'], temperature: 0.7, api_key_hint: 'sk-***9876',
+    },
+  ],
+}
+
+const providersSwitched = {
+  current: { provider_id: 'p-other', model: 'other-reasoner' },
+  providers: providersPayload.providers,
+}
+
+const providerAdded = {
+  current: { provider_id: 'default', model: 'test-chat' },
+  providers: [
+    ...providersPayload.providers,
+    {
+      id: 'p-new', name: '新建厂商', base_url: 'https://api.new.com',
+      models: ['new-chat'], temperature: 0.3, api_key_hint: 'sk-****1111',
+    },
+  ],
+}
 
 const change: ChangeSetPreview = {
   change_set_id: 'change-1',
@@ -58,6 +91,9 @@ describe('AgentPanel', () => {
     apiMocks.getProjectChatSession.mockReset()
     apiMocks.deleteProjectChatSession.mockReset().mockResolvedValue({ deleted: true })
     apiMocks.chatProject.mockResolvedValue({ task_id: 'task-1', chat_session_id: 'session-1' })
+    apiMocks.listLlmProviders.mockReset().mockResolvedValue(providersPayload)
+    apiMocks.addLlmProvider.mockReset()
+    apiMocks.selectLlmProvider.mockReset().mockResolvedValue(providersSwitched)
   })
 
   it('loads the most recent session and keeps it when the document changes', async () => {
@@ -909,6 +945,9 @@ describe('AgentPanel keyboard semantics', () => {
     apiMocks.getProjectChatSession.mockReset()
     apiMocks.deleteProjectChatSession.mockReset().mockResolvedValue({ deleted: true })
     apiMocks.chatProject.mockResolvedValue({ task_id: 'task-1', chat_session_id: 'session-1' })
+    apiMocks.listLlmProviders.mockReset().mockResolvedValue(providersPayload)
+    apiMocks.addLlmProvider.mockReset()
+    apiMocks.selectLlmProvider.mockReset().mockResolvedValue(providersSwitched)
   })
 
   it('activates change card navigation with Enter and Space (phase8 P3-5)', async () => {
@@ -962,5 +1001,113 @@ describe('AgentPanel keyboard semantics', () => {
       ['project-1', 'document-1'],
       ['project-1', 'document-1'],
     ])
+  })
+})
+
+describe('AgentPanel model picker integration (v1.31)', () => {
+  beforeEach(() => {
+    HTMLElement.prototype.scrollTo = vi.fn()
+    apiMocks.chatProject.mockReset()
+    apiMocks.watchTask.mockReset().mockImplementation(() => ({ close: vi.fn() }))
+    apiMocks.listProjectChatSessions.mockReset().mockResolvedValue([])
+    apiMocks.getProjectChatSession.mockReset()
+    apiMocks.deleteProjectChatSession.mockReset().mockResolvedValue({ deleted: true })
+    apiMocks.listLlmProviders.mockReset().mockResolvedValue(providersPayload)
+    apiMocks.addLlmProvider.mockReset()
+    apiMocks.selectLlmProvider.mockReset().mockResolvedValue(providersSwitched)
+  })
+
+  it('shows the current provider and model on the composer picker', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.get('.model-button').text()).toContain('默认提供商 · test-chat')
+  })
+
+  it('keeps a fallback label when the provider list cannot load', async () => {
+    apiMocks.listLlmProviders.mockRejectedValue(new Error('down'))
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.get('.model-button').text()).toContain('模型')
+  })
+
+  it('switches provider and model through the picker menu', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('button[title="切换模型与提供商"]').trigger('click')
+    const options = wrapper.findAll('.model-option')
+    expect(options).toHaveLength(3)
+    const active = options.find((option) => option.classes().includes('active'))
+    expect(active?.text()).toContain('test-chat')
+
+    await options.find((option) => option.text().includes('other-reasoner'))!.trigger('click')
+    expect(apiMocks.selectLlmProvider).toHaveBeenCalledWith('p-other', 'other-reasoner')
+    await flushPromises()
+    expect(wrapper.get('.model-button').text()).toContain('备选厂商 · other-reasoner')
+  })
+
+  it('keeps the original selection visible when switching fails', async () => {
+    apiMocks.selectLlmProvider.mockRejectedValue(new Error('提供商未声明该模型'))
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('button[title="切换模型与提供商"]').trigger('click')
+    await wrapper.findAll('.model-option')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.model-button').text()).toContain('默认提供商 · test-chat')
+    expect(wrapper.get('.provider-inline-error').text()).toContain('提供商未声明该模型')
+  })
+
+  it('adds a provider through the dialog and auto-selects its first model', async () => {
+    apiMocks.addLlmProvider.mockResolvedValue(providerAdded)
+    apiMocks.selectLlmProvider.mockResolvedValue({
+      ...providerAdded,
+      current: { provider_id: 'p-new', model: 'new-chat' },
+    })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('button[title="切换模型与提供商"]').trigger('click')
+    await wrapper.get('.model-add-action').trigger('click')
+    expect(wrapper.find('.dialog-backdrop').exists()).toBe(true)
+
+    await wrapper.get('#provider-name').setValue('新建厂商')
+    await wrapper.get('#provider-base-url').setValue('https://api.new.com')
+    await wrapper.get('#provider-api-key').setValue('sk-new-0000')
+    await wrapper.get('#provider-models').setValue('new-chat\nnew-mini\n')
+    await wrapper.get('.dialog-backdrop form').trigger('submit')
+
+    expect(apiMocks.addLlmProvider).toHaveBeenCalledWith({
+      name: '新建厂商',
+      base_url: 'https://api.new.com',
+      api_key: 'sk-new-0000',
+      models: ['new-chat', 'new-mini'],
+    })
+    await flushPromises()
+    expect(apiMocks.selectLlmProvider).toHaveBeenCalledWith('p-new', 'new-chat')
+    expect(wrapper.get('.model-button').text()).toContain('新建厂商 · new-chat')
+    // 保存成功后对话框关闭
+    expect(wrapper.find('.dialog-backdrop').exists()).toBe(false)
+  })
+
+  it('keeps the add dialog open with the server error when adding fails', async () => {
+    apiMocks.addLlmProvider.mockRejectedValue(new Error('base_url 必须以 http:// 或 https:// 开头'))
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('button[title="切换模型与提供商"]').trigger('click')
+    await wrapper.get('.model-add-action').trigger('click')
+    await wrapper.get('#provider-name').setValue('坏地址')
+    await wrapper.get('#provider-base-url').setValue('https://ok.com')
+    await wrapper.get('#provider-api-key').setValue('sk-1')
+    await wrapper.get('#provider-models').setValue('m')
+    await wrapper.get('.dialog-backdrop form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.find('.dialog-backdrop').exists()).toBe(true)
+    expect(wrapper.get('.dialog-backdrop .inline-error').text()).toContain('base_url')
   })
 })

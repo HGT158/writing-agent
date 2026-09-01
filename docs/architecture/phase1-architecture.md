@@ -1,7 +1,7 @@
 # 个人写作 Agent — 阶段 1：架构设计文档
 
-> 版本：v1.30 · 2026-08-31
-> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐、phase9 第一、第二梯队及 P3-34 均归入 v1.27 并已完成、v1.28 助手 persona 可写可编辑、v1.29 加固批次（phase7/phase8 P3 清尾）、v1.30 助手记忆系统完善（聊天记忆注入与选择性沉淀、画像查看编辑、recall 可观测）
+> 版本：v1.31 · 2026-08-31
+> 状态：阶段 4 写作 IDE、v1.11 复审加固、v1.13 项目 Agent 流式编辑、v1.14 空白文档生成修复、v1.15 项目 Agent 多会话历史、v1.16 失败路径加固、v1.17 活动流跨事件滑窗、内联 diff 审阅与上下文压缩、v1.18 SSE 断线游标续传、v1.19 项目聊天持久化工作记录、v1.20 多 hunk change set 与逐 hunk 审查、v1.21 phase6 复审加固、v1.22 多主题界面、v1.23 phase7 复审加固、v1.24 phase8 复审加固、v1.25 资源管理器整理、v1.26 文档口径对齐、phase9 第一、第二梯队及 P3-34 均归入 v1.27 并已完成、v1.28 助手 persona 可写可编辑、v1.29 加固批次（phase7/phase8 P3 清尾）、v1.30 助手记忆系统完善（聊天记忆注入与选择性沉淀、画像查看编辑、recall 可观测）、v1.31 TRAE 式模型/提供商切换（多提供商配置存储、按任务路由、温度配置化）
 > v1.1 变更：新增「Assistant（助手）」一等概念——多助手、助手间记忆隔离、同助手跨会话记忆共享（见第 4 节）
 > v1.2 变更：根据《阶段 1 架构文档审查报告》修复全部 4 个 P0、6 个 P1、12 个 P2 问题。主要改动：Planner 降级路径可路由化（§5.1/§9）、状态图与路由描述对齐（§3）、文章 API 隔离红线收紧（§5.9）、新增同助手并发控制（§4.6）、内置文件工具沙箱化并移除默认 filesystem MCP（§5.6）、Skill 依赖缺失边界（§5.5）、上下文裁剪策略（§3.3）、Reflect 质检清单（§3.4）、助手删除语义（§4.2）、中文检索定案 FTS5 trigram（§5.7）、tests 纳入 MVP（§8/§10）及一批 P2 措辞修正。
 > v1.3 变更：根据复审意见修复 R1–R5——运行锁改为 app.db 内 `run_locks` 表实现**跨进程互斥**并定义崩溃残留回收（§4.6）；补 `sources` 表定义（含 `assistant_id` 列，§5.7）；trigram 不足 3 字查询回退 LIKE（§5.7）；统一工具协议增加隐式 `ToolContext` 注入 `assistant_id`（§5.2）；`AgentState` 补 `reflect_fails` 计数字段（§3.1）；删除助手前检查运行锁（§4.2）。
@@ -57,12 +57,14 @@
 
 > v1.30 变更：助手记忆系统完善（backlog 2026-08-22 登记项）。**（1）项目聊天注入本助手记忆（§4.7 既有声明补齐实现）**：chat_project 的 system prompt 在编辑指导之前注入 recall 结果（画像全文 + 命中历史文章索引 + 相关对话片段），作为 system prompt 的一部分参与既有 token 预算与 v1.21 兜底计算；工作记录新增「已注入助手记忆」进度条目（含命中摘要与分路降级标记）。**（2）聊天轮次终态选择性沉淀**：succeeded 终态且回复持久化后、任务终态写入前执行——零成本确定性信号门槛（未命中不写画像、不调模型）→ 显式指令带正文的剥离指令词直接 `memorize(kind="preference")`（零模型调用）→ 其余命中用一次非流式 JSON 提取调用（输入当轮对话 + 现有画像全文，输出 ≤3 条 `{kind, content}`，kind ∈ preference/style/topic，含与画像已有等价记录去重）逐条经 `store.memorize` 写入；failed/interrupted 终态不沉淀；提取或写入失败降级 warning（日志 + 工作记录警告条目），不影响本轮已交付回复（对齐 §3.3 压缩失败降级语义）；`CHAT_MEMORY_CONSOLIDATION` 开关默认开。**（3）recall 可观测**：MemoryStore 新增 `recall_trace`（画像条数、文章命中、对话片段、分路降级标记），`recall` 改为基于 trace 组装、签名与返回文本不变；普通任务启动时以 `info` 事件播报命中摘要。**（4）画像白盒读写**：新增 `GET/PUT /api/assistants/{assistant_id}/memory/profile`（整文替换、UTF-8 原样写入、50,000 字符上限、空白=显式清空、助手运行中 409 与 PATCH assistant 同边界、写失败按原内容尽力回滚）；前端助手选择器新增「记忆画像」查看/编辑对话框。**（5）随行 clamp（phase7 P3-4）**：`list_change_sets` 的 `page_size` 在 Memory 层收口 ≤100（§5.7）。
 
+> v1.31 变更：TRAE 式模型/提供商切换（backlog 2026-08-22 登记项；方案经用户确认：独立本地配置文件存密钥、按任务路由、温度按提供商统一）。**（1）多提供商配置存储**：新增 `agent/llm_providers.py` 的 `LLMProviderStore`，全部提供商（id/显示名/base_url/api_key/可用模型列表/温度）与当前选择持久化于项目根目录 `llm_providers.json`（与 `.env` 同目录，已加入 `.gitignore`，白盒可手改）；写入走「临时文件 + 原子替换」并尽力收紧文件权限（POSIX `chmod 0600` / Windows `icacls` 限当前用户，失败仅记日志不阻断）。首次启动从 `.env` 的 `OPENAI_API_KEY/OPENAI_BASE_URL/MODEL_NAME` 合成 `default` 提供商并落盘（一次性迁移，`.env` 此后仅作首次引导占位）；文件缺失即按引导重建 default，文件损坏（JSON 解析失败、`current` 指向未知提供商或未声明模型）在 Runtime 启动时显式报错并指向文件路径，不静默回退。**（2）按任务路由与运行期切换**：Runtime 持有提供商注册表、按 `base_url + api_key` 复用的 `AsyncOpenAI` client 缓存与当前选择指针；每个任务（`run` / `chat_project` / `rewrite_selection`）在获锁后解析一次「当前提供商 → (client, model, temperature)」作为本任务快照，任务内全部 LLM 调用（含历史压缩与记忆沉淀提取）使用同一快照；切换当前提供商 = 原子更新指针并持久化，只影响后续任务，不打断运行中任务。切换/新增不占用助手运行锁——提供商是全局基础设施而非助手数据（§2 共享边界）；`runtime.llm` 保持为「当前提供商客户端」的属性门面，注入的测试替身经 setter 覆盖仍生效。**（3）温度配置化（phase6 遗留闭环）**：温度成为提供商配置项（`temperature`，0–2，缺省 0.3），`llm.py` 与各调用点（原 Planner 0.3 / 大纲 0.5 / 成文 0.6 / 质检与压缩与记忆提取 0.2 / 选区改写 0.3）的硬编码常量收敛为统一使用当前提供商温度——节点级差异取消（取舍经用户确认；多提供商后按厂商统一调节更可控）。**（4）API**：`GET /api/llm/providers`（列表 + 当前选择；`api_key` 永不下发原文，只回掩码尾缀）、`POST /api/llm/providers`（新增，校验后原子落盘并返回刷新后的列表载荷）、`POST /api/llm/providers/current`（切换当前提供商与模型；未知提供商 404、未声明模型 400）。**（5）前端**：Agent 面板输入区新增模型选择按钮与下拉菜单（按提供商分组、勾选当前项、方向键/Home/End 导航对齐主题菜单交互），二级入口「添加提供商」对话框（显示名/base_url/API Key/可用模型每行一个/可选温度）；保存成功后刷新列表并自动切换到新提供商的第一个模型，服务端拒绝原样提示且不关闭对话框。「可用性测试按钮」（"你好"探活）为后续增强，本版不做。**（6）密钥边界**：AGENTS.md 硬性规则修订为「密钥只能来自 `.env` 或项目根目录受管的 `llm_providers.json`，禁止硬编码和提交」；`.env.example` 中 `OPENAI_*` 标注为首次引导占位。
+
 ---
 
 | # | 假设 | 影响 |
 |---|------|------|
 | A1 | 单用户、本地运行，无鉴权 | FastAPI 只绑 `127.0.0.1`，并校验 Host 仅为本机白名单；SQLite 单文件 |
-| A2 | LLM 走 OpenAI 兼容接口，默认 DeepSeek | 一套 client 代码，`base_url` 切换服务商 |
+| A2 | LLM 走 OpenAI 兼容接口，默认 DeepSeek；提供商/模型可运行期切换（v1.31），温度是提供商配置项 | 一套 client 代码，多提供商配置存 `llm_providers.json`，Runtime 按任务路由 |
 | A3 | 搜索首选 Tavily MCP Server，Brave 备选 | `mcp_servers.json` 配置切换，代码无关 |
 | A4 | 中文写作为主，长文分段生成 | 大纲→逐节成文→合并，避免单次输出截断 |
 | A5 | LangChain 系只引入 `langgraph` + `langchain-core` + `langgraph-checkpoint-sqlite`（含 aiosqlite），不引入全家桶其余部分 | 依赖轻，工具抽象层自己控制 |
@@ -137,7 +139,7 @@ flowchart TB
 
 | 共享（全局基础设施，非记忆） | 隔离（每助手独立命名空间） |
 |------|------|
-| MCP 工具连接、Skill 目录（能力本身）、LLM client、Scheduler 进程 | 长期画像 profile.md、文章索引、会话/消息历史、文章输出目录、文章项目目录、运行锁 |
+| MCP 工具连接、Skill 目录（能力本身）、LLM client（提供商注册表与当前选择，v1.31）、Scheduler 进程 | 长期画像 profile.md、文章索引、会话/消息历史、文章输出目录、文章项目目录、运行锁 |
 
 ---
 
@@ -400,7 +402,7 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 组装顺序（进程启动时执行一次）：
 
 1. 加载 `.env` 与 `config/settings.py`
-2. 初始化 LLM client（OpenAI 兼容）
+2. 初始化模型提供商存储（v1.31：项目根目录 `llm_providers.json`，见下文「模型提供商按任务路由」），并按当前选择构建 OpenAI 兼容 client（缓存复用）
 3. 启动 MCP Client，连接 `mcp_servers.json` 中的全部 server，`list_tools()` 发现工具
 4. 扫描 `skills/` 目录，注册 Skill 元数据
 5. 构建 Unified Tool Registry = 内置工具（`agent/tools.py`：save_markdown / read_file / finalize_article，**全部沙箱限制在 `data/` 内**）+ 与既有名称不冲突的 MCP 工具；同名 MCP 工具跳过并告警
@@ -410,6 +412,8 @@ observe / plan / act / reflect / **write 五个节点全部在本模块装配**�
 9. 仅当以 `schedule` 长驻模式启动时，在**当前 Runtime 的 asyncio 事件循环**上注册并启动 APScheduler；一次性 `run` 不启动 Scheduler
 
 每次任务：`runtime.run(assistant_id, task)` → **按助手获取运行锁（占用则拒绝，§4.6）** → 取该助手 persona + 技能子集 → `recall` 一次写入 `state.memory_context` → 进入 Loop。
+
+**模型提供商按任务路由（v1.31）**：Runtime 持有 `LLMProviderStore`（`agent/llm_providers.py`）——全部提供商与当前选择（提供商 id + 模型名）持久化于项目根目录 `llm_providers.json`，与 `.env` 同目录、已 gitignore、白盒可手改；写入走「临时文件 + 原子替换」，并尽力收紧文件权限（POSIX `chmod 0600` / Windows `icacls` 限当前用户，失败仅记日志不阻断）。首次启动文件不存在时，从 `.env` 的 `OPENAI_API_KEY/OPENAI_BASE_URL/MODEL_NAME` 合成 `default` 提供商并落盘（一次性迁移，`.env` 此后仅作首次引导占位）；文件损坏（JSON 解析失败、`current` 指向未知提供商或未声明模型、提供商 id 重复）在启动时显式报错并指向文件路径，不静默回退。每个任务（`run` / `chat_project` / `rewrite_selection`）在获锁后解析一次「当前提供商 → (client, model, temperature)」作为本任务快照：client 按 `base_url + api_key` 缓存复用，任务内全部 LLM 调用（含历史压缩与记忆沉淀提取）使用同一快照。切换当前提供商 = 原子更新指针并持久化，只影响后续任务，不打断运行中任务；切换/新增不占用助手运行锁（提供商是全局基础设施而非助手数据，§2 共享边界），并发写文件为最后写入者胜出的整文件原子替换。当前提供商未配置 API Key 时任务以「未配置 OPENAI_API_KEY」语义报错拒绝启动，提示经界面添加提供商或编辑 `.env`（与既有缺钥行为对齐）。`runtime.llm` 保留为「当前提供商客户端」的属性门面（测试替身经 setter 注入仍生效），但任务内一律消费启动时的解析快照。**温度配置化（v1.31，phase6 遗留闭环）**：温度是提供商配置项（`temperature`，0–2，缺省 0.3），全部 LLM 调用点统一使用当前提供商温度，原 Planner/大纲/成文/质检等节点级硬编码差异取消。
 
 项目聊天入口 `runtime.chat_project(...)` 复用同一运行锁、LLM client、EventBus、Skill 与 MemoryStore。它的 system prompt 始终注入 editing Skill 指导，不受助手 `skills` 子集裁剪——写作工作台的审校/改写是核心交互；选区改写入口 `rewrite_selection` 仍校验子集，未启用 editing 的助手拒绝改写（v1.26 明确该差异）。它把模型文本 delta 立即发为 `token`，累积并完成流式 tool-call 参数的 JSON/schema 校验后才发送 `tool_call` 并执行一次 `propose_project_edits`；异常路径显式关闭模型流。若发生工具调用，最多追加一个无工具的流式说明轮次。API 任务终态中的 `reply` 等于本次任务所有可见文本 delta 的顺序拼接，`change_set_ids` 来自工具执行结果；模型没有返回可见文本时，Runtime 发送并持久化明确提示，不能留下无反馈的连续 user 消息。
 
@@ -568,6 +572,9 @@ JOBS = [
 | `PATCH /api/assistants/{assistant_id}` | 编辑助手（v1.28）：显示名、描述与系统提示词的部分更新，仅提供的字段生效，全部缺省返回 400；空白 `persona` 落为默认 persona；以助手运行锁串行，该助手任一任务运行期间返回 409，边界与删除一致；未知助手 404 |
 | `GET /api/assistants/{assistant_id}/memory/profile` | 返回本助手长期画像 `{content}`（v1.30）；未知助手 404；profile 文件不存在返回空串 |
 | `PUT /api/assistants/{assistant_id}/memory/profile` | 整文替换长期画像（v1.30）：body `{content}` 上限 50,000 字符，UTF-8 原样写入、空白即显式清空；先取助手运行锁，该助手任一任务运行期间返回 409（与 PATCH assistant 同边界）；超上限 400，未知助手 404 |
+| `GET /api/llm/providers` | 模型提供商列表与当前选择（v1.31）：`{current: {provider_id, model}, providers: [{id, name, base_url, models, temperature, api_key_hint}]}`；`api_key` 永不下发原文，只回掩码尾缀（如 `sk-***abcd`），未配置回空串 |
+| `POST /api/llm/providers` | 新增提供商（v1.31）：body `{name, base_url, api_key, models, temperature?}`；校验失败 422/400（base_url 须 http(s)、models 非空且去重、温度 0–2）；id 服务端生成，成功原子落盘并返回刷新后的列表载荷 |
+| `POST /api/llm/providers/current` | 切换当前模型与提供商（v1.31）：body `{provider_id, model}`；未知提供商 404，该提供商未声明该模型 400；持久化到 `llm_providers.json`，只影响后续任务，不占用助手运行锁 |
 | `POST /api/tasks` | 提交任务（body 必含 `assistant_id`），入队前同步校验助手存在且未被运行锁占用；未知助手返回 404，正忙返回 409，成功返回 `task_id` |
 | `GET /api/tasks/{id}?assistant_id=X` | 查询任务终态；任务记录绑定创建时的 `assistant_id`，跨助手查询按 404 处理 |
 | `GET /api/tasks/{id}/stream?assistant_id=X` | SSE：按订阅者独立队列广播 `thought` / `tool_call` / `token` / `done` / `failed` 事件；跨助手按 404 处理；支持 `after_seq` 参数或 `Last-Event-ID` 头断线续传，游标落后于窗口时先发 `reconnect_gap` |
@@ -617,6 +624,8 @@ Vue 3 + Vite 单页采用 VS Code 式写作 IDE，而非聊天主界面：顶部
 标题栏提供**主题选择器**（v1.22）：五套内置主题以 CSS 变量驱动，切换经 `dataset.theme` 生效并持久化到 `localStorage`（仅显式选择时写入），首次访问跟随系统深浅偏好且未选择时运行期实时联动（选择后以选择为准），存储不可用时降级默认主题不阻断启动，挂载前初始化避免闪烁；深色主题同步覆盖 CodeMirror 行号、光标与语法高亮。助手选择器旁提供**创建助手**与**删除助手**入口，直接复用 `POST /api/assistants` 与 `DELETE /api/assistants/{id}`（默认归档语义）；v1.28 起新增**编辑助手**入口：编辑对话框 id 只读展示，显示名、描述与系统提示词预填当前值（经 `GET /api/assistants/{id}` 获取），保存调用 `PATCH /api/assistants/{id}`，成功后刷新助手列表并同步选择器显示名。创建对话框校验 id 与后端同一规则（`^[a-z0-9][a-z0-9_-]{0,49}$`，含下划线），并提供可选的系统提示词多行输入（上限与后端一致 50,000 字符）；编辑对话框系统提示词清空保存即恢复默认 persona，两处输入均不强制。删除必须二次确认并说明这是归档而非抹除，成功后重新拉取助手列表并切换到剩余助手；只剩一个助手时禁用删除。助手正忙（409）等服务端拒绝必须原样提示，前端不猜测原因；编辑提交失败时对话框保持打开并保留已填内容。
 
 助手选择器同时提供**记忆画像**入口（v1.30）：对话框经 `GET /api/assistants/{id}/memory/profile` 加载 profile.md 全文展示，多行文本可编辑并经 `PUT` 整文保存——白盒原则，人与 Agent 共用同一文件，前端不解析、不重排内容，仅做长度上限（50,000 字符）与保存状态提示；保存成功后刷新内容，409（助手任务运行中）/400（超上限）服务端拒绝原样提示且不关闭对话框。项目聊天工作记录新增两类进度条目（复用既有 progress/warning 呈现，不新增事件类型）：「已注入助手记忆」（含命中摘要与降级标记）与「已沉淀助手记忆」（含沉淀条目），沉淀失败以警告条目呈现。
+
+**Agent 面板输入区模型选择（v1.31）**：composer 新增模型选择按钮，文案显示当前「提供商 · 模型」；下拉菜单按提供商分组列出可用模型、勾选当前项，交互对齐主题菜单——打开聚焦当前项、方向键循环导航、Home/End 跳首尾、Esc/点击外部关闭。选中菜单项即调用 `POST /api/llm/providers/current` 切换并更新按钮文案，切换失败在面板内原样提示且保持原选择。菜单底部「添加提供商…」二级入口打开对话框：显示名、base_url、API Key、可用模型（每行一个）与可选温度（0–2，缺省 0.3）；提交调用 `POST /api/llm/providers`，成功后刷新列表并**自动切换**到新提供商的第一个模型；服务端拒绝（422/400）原样提示且不关闭对话框、保留已填内容。提供商列表经 `GET /api/llm/providers` 获取并本地缓存于 AgentPanel，切换/新增后以响应载荷刷新；前端任何时候拿不到 API Key 原文，只显示掩码尾缀；配置本体在项目根目录 `llm_providers.json`（不入 git）。「可用性测试按钮」（"你好"探活）为后续增强，本版不提供。
 
 选中文本后显示锚定工具栏，含提示词输入和生成按钮；生成期间保留 CodeMirror 选区状态，返回后以 diff 显示原文与建议文本，并提供接受、拒绝、重新生成。**工具栏必须可输入**：浮层只能对非输入控件区域调用 `preventDefault` 来保持编辑器选区，绝不能拦截输入框自身的 `mousedown`，否则浏览器不会给输入框聚焦；组件挂载后显式聚焦输入框，`Esc` 关闭。CodeMirror 原生选区在编辑器失焦后不可见，因此工具栏打开期间必须用装饰保持选区高亮，用户在输入提示词时仍能看到改写目标。Agent 面板的聊天可作用于当前文件、当前选区或显式附加文件；每项目可有多个持久化会话，打开项目默认恢复最近会话，同项目切换文档不得清空或切换会话。会话选择器支持新建、切换、删除；存在 pending diff 时禁止删除。同一聊天任务的 `token` delta 必须追加到一个助手消息气泡，不得每个 delta 新建气泡；气泡内容按 Markdown 渲染，流式期间也保持渲染一致，渲染同样要经过 HTML 消毒。工具调用与修改建议生成状态自 v1.19 起由工作记录条目呈现（见下文），不再单独显示紧凑状态行；若产生文件修改，同样进入 change set 预览，不直接覆盖。消息区默认跟随最新内容滚动，但用户主动上滚查看历史时必须停止自动跟随，直到用户回到底部。Markdown 预览把文档和模型输出视为不可信输入，`marked` 解析结果必须经过 HTML 消毒后才能交给 `v-html`。
 
@@ -749,6 +758,9 @@ writing-agent/
 `.env.example`：
 
 ```bash
+# LLM 首次引导（OpenAI 兼容接口，默认 DeepSeek）：首次启动自动合成为项目根目录
+# llm_providers.json 的 default 提供商；此后提供商/模型/温度经 Agent 面板切换并
+# 持久化于该文件（不入 git），本节变量仅作首次引导占位（架构 §5.4 v1.31）
 OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://api.deepseek.com
 MODEL_NAME=deepseek-chat
@@ -844,6 +856,11 @@ CHAT_CONTEXT_DOC_MAX_CHARS=12000
 | 重命名文档的目标路径与项目内既有文档冲突 | 专用冲突异常映射 409，磁盘与元数据不变（v1.25） |
 | 重命名或删除存在待处理 change set、活跃写意图的文档 | 前置拒绝映射 409；先按既有机制恢复孤儿写意图（v1.25） |
 | 删除作为项目入口的文档 | 入口改指向其余可编辑文档之一（按路径序），没有则置空；删除本身照常执行（v1.25） |
+| `llm_providers.json` 缺失 | 首次启动从 `.env` 合成 `default` 提供商并原子落盘（§5.4） |
+| `llm_providers.json` 损坏（JSON 解析失败、current 指向未知提供商/未声明模型、id 重复） | Runtime 启动显式报错并指向文件路径，不静默回退；人工修复或删除该文件后重启自动重建 |
+| 切换到未知提供商或未声明模型 | API 404 / 400，当前选择保持不变 |
+| 当前提供商未配置 API Key | 任务拒绝启动，错误语义与原「未配置 OPENAI_API_KEY」一致，提示经界面添加提供商或编辑 .env |
+| 新增提供商参数非法（base_url 非 http(s)、models 空、温度越界） | 422/400 原样返回；磁盘与既有提供商不变 |
 
 ---
 

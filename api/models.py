@@ -73,6 +73,23 @@ class ChangeSetHunkAction(BaseModel):
     assistant_id: str
 
 
+class LLMProviderCreate(BaseModel):
+    """新增模型提供商（v1.31）：api_key 只落 llm_providers.json，不入 git。"""
+
+    name: str = Field(min_length=1, max_length=100)
+    base_url: str = Field(min_length=1, max_length=2_000)
+    api_key: str = Field(min_length=1, max_length=4_096)
+    models: list[str] = Field(min_length=1, max_length=100)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+
+
+class LLMProviderSelect(BaseModel):
+    """切换当前模型与提供商（v1.31）。"""
+
+    provider_id: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+
+
 class ProjectChatRequest(BaseModel):
     assistant_id: str
     message: str = Field(min_length=1, max_length=100_000)

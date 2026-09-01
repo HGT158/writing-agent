@@ -26,6 +26,8 @@ from .models import (
     ChangeSetHunkAction,
     DocumentRename,
     DocumentSave,
+    LLMProviderCreate,
+    LLMProviderSelect,
     MemoryProfileUpdate,
     ProjectChatRequest,
     ProjectCreate,
@@ -211,6 +213,34 @@ def create_app(
                 runtime.store.get_assistant_profile, assistant_id
             )
             return {"content": content}
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.get("/api/llm/providers")
+    async def list_llm_providers():
+        """模型提供商列表与当前选择（v1.31）；api_key 只回掩码尾缀。"""
+        return runtime.list_llm_providers()
+
+    @app.post("/api/llm/providers", status_code=status.HTTP_201_CREATED)
+    async def add_llm_provider(body: LLMProviderCreate):
+        try:
+            return await asyncio.to_thread(
+                runtime.add_llm_provider,
+                name=body.name,
+                base_url=body.base_url,
+                api_key=body.api_key,
+                models=body.models,
+                temperature=body.temperature,
+            )
+        except Exception as exc:
+            _raise_http(exc)
+
+    @app.post("/api/llm/providers/current")
+    async def select_llm_provider(body: LLMProviderSelect):
+        try:
+            return await asyncio.to_thread(
+                runtime.select_llm_provider, body.provider_id, body.model
+            )
         except Exception as exc:
             _raise_http(exc)
 
