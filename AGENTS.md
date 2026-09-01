@@ -4,8 +4,8 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.31**。
-- 阶段 2、3、4 及 v1.13–v1.31 均已完成；当前基线：Python **344/344**、记忆隔离 **11/11**、前端 **174/174**。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.32**。
+- 阶段 2、3、4 及 v1.13–v1.32 均已完成；当前基线：Python **344/344**、记忆隔离 **11/11**、前端 **174/174**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑和每项目多会话历史。
 - v1.17 补齐：活动 SSE 订阅者按 `seq` 跨越事件滑窗（修复长回复超过窗口后停流）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
 - v1.18 补齐：SSE 断线游标续传——数据帧带标准 `id: <seq>` 行，流端点接受 `after_seq` / `Last-Event-ID` 游标，游标落后于窗口时发 `reconnect_gap` 缺口信号；前端按退避自动重连、按 `seq` 去重，缺口后等待终态并重载持久化会话。
@@ -23,6 +23,7 @@
 - v1.29 补齐（加固批次）：写意图 finalize 返回契约统一 `list[str]`（缺失分支返回空列表）；`WorkLogRecorder` 终态后 `start` 显式拒绝；`watchTask` 退避复位以收到首个事件（数据帧或 heartbeat）为准、开连即断不再无限快速重连；补五项崩溃恢复回归测试（并发终态对账、迁移后二次启动、真实 recorder 取消分支、跨助手 change set 404、工作事件断线补发）；工作记录截断标注改「脱敏后 N 字符」与 import 分组。详见 backlog「已完成并移出待办」。
 - v1.30 补齐（助手记忆系统完善）：项目聊天 system prompt 注入本助手记忆（recall_trace 画像全文+文章命中+对话片段，补齐 §4.7 既有声明）并以「已注入助手记忆」工作条目呈现命中摘要；聊天轮次 succeeded 终态选择性沉淀——确定性信号门槛（未命中零成本）→ 显式指令剥离指令词直达 `memorize`（零模型调用）/ 其余命中一次 JSON 提取（≤3 条，kind ∈ preference/style/topic，含画像去重），failed/interrupted 不沉淀，失败降级 warning 不影响回复，`CHAT_MEMORY_CONSOLIDATION` 可整体关闭；新增 `GET/PUT /api/assistants/{id}/memory/profile`（整文白盒替换、50,000 字符上限、助手运行中 409）与前端标题栏「记忆画像」对话框；`recall_trace` 结构化命中 + 普通任务启动 `info` 播报；随行 clamp：`list_change_sets` 的 page_size 在 Memory 层收口 ≤100（phase7 P3-4）。同版无障碍小批次：ChangeDiff 卡片头部与 hunk 的 Space 键激活（phase8 P3-5）、主题菜单打开后聚焦当前项并支持方向键循环导航与 Home/End（phase7 P3-9）、工作记录 changes 条目补按钮语义与 Enter/Space 激活（phase7 P3-9 剩余部分）。
 - v1.31 补齐（TRAE 式模型/提供商切换）：多提供商配置存储 `agent/llm_providers.py`——提供商与当前选择持久化于项目根目录 `llm_providers.json`（与 .env 同目录、已 gitignore、白盒可手改、临时文件+原子替换写入并尽力收紧权限），首次启动从 `.env` 合成 `default` 提供商，文件损坏启动时显式报错；Runtime 按任务路由——每任务（run/chat_project/rewrite_selection）启动时解析一次「当前提供商 → (client, model, temperature)」快照，切换=原子更新指针只影响后续任务、不打断运行中任务、不占用助手运行锁，`runtime.llm` 保留属性门面（测试替身注入兼容）；温度配置化（phase6 遗留闭环）——温度为提供商配置项（0–2，缺省 0.3），llm.py 及全部调用点硬编码收敛为统一读配置；API 新增 `GET /api/llm/providers`（api_key 只回掩码尾缀）、`POST /api/llm/providers`、`POST /api/llm/providers/current`（未知提供商 404/未声明模型 400）；前端 Agent 面板输入区新增模型选择按钮（按提供商分组、键盘导航对齐主题菜单）与「添加提供商」二级对话框（保存后自动切换到新提供商第一个模型，服务端拒绝原样提示不关对话框）。「可用性测试按钮」（你好探活）为后续增强未实施。硬性规则 4/11 已随密钥边界修订。
+- v1.32 补齐（phase10 文档口径）：纯文档修正与实现的偏差，不改任何代码行为——§5.7 工作记录截断标注口径改「脱敏后长度标注」（对齐 v1.29 实现）、§5.4 补工作记录终态守卫契约、§9 聊天记忆沉淀失败语义如实化（提取失败画像保持原状；memorize 逐条写入，中途失败已写入条目保留、其余跳过）、v1.31 两处措辞（任务快照解析先于运行锁获取、icacls 收紧范围含 SYSTEM）；另修正 docs/README.md 与 new-session-prompt 的陈旧版本引用（原停留在 v1.28）。phase10 审查报告见 `docs/reviews/phase10-code-review.md`（v1.28–v1.31 四提交区间复审：无 P0，3 P1 / 8 P2 / 23 P3；文档口径项已随本版关闭，代码侧修复待排期，观察项已登记 backlog）。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读
