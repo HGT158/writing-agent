@@ -134,3 +134,52 @@ def test_list_change_sets_page_size_clamped_at_memory_layer(tmp_path):
         store.list_change_sets_for_document(
             "writer-a", project.project_id, document.document_id, page=1, page_size=0,
         )
+
+
+# ---------- 编码损坏的自愈途径（phase10 P2-6） ----------
+
+def test_replace_profile_overwrites_unreadable_file(tmp_path):
+    """白盒手改把 profile 存成非 UTF-8（如记事本 ANSI）后，PUT 应能覆盖修复而非 500。"""
+    store = MemoryStore(tmp_path)
+    store.memorize("writer-a", "preference", "原始条目")
+    path = tmp_path / "assistants" / "writer-a" / "memory" / "profile.md"
+    path.write_bytes("这不是 UTF-8 编码的画像内容".encode("gbk"))
+
+    store.replace_assistant_profile("writer-a", "重新保存的画像内容")
+
+    assert store.get_assistant_profile("writer-a") == "重新保存的画像内容"
+
+
+def test_recalls_survive_corrupted_profile_file(tmp_path):
+    """recall 六路分路降级不受编码损坏影响（既有契约，覆盖编码损坏这一形态）。"""
+    store = MemoryStore(tmp_path)
+    path = tmp_path / "assistants" / "writer-a" / "memory" / "profile.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"\xb2\xbb\xba\xcf\xb7\xa8")
+
+    trace = store.recall_trace("writer-a", "任意查询")
+
+    assert trace.degraded  # profile 路标记降级，不抛异常
+
+
+def test_profile_replace_is_atomic_and_fails_without_touching_file(tmp_path, monkeypatch):
+    """phase10 P3-12/P2-6：profile 整文替换走临时文件+os.replace，
+    落盘失败不截断既有文件（GET 并发读也不会看到半程文件）。"""
+    import os
+
+    store = MemoryStore(tmp_path)
+    store.replace_assistant_profile("writer-a", "旧画像内容")
+    real_replace = os.replace
+
+    def broken_replace(src, dst):
+        if str(dst).endswith("profile.md"):
+            raise OSError("replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", broken_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        store.replace_assistant_profile("writer-a", "新画像内容")
+    monkeypatch.undo()
+
+    assert store.get_assistant_profile("writer-a") == "旧画像内容"
+    assert not list((tmp_path / "assistants" / "writer-a" / "memory").glob("*.tmp"))

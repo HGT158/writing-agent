@@ -193,3 +193,132 @@ def test_update_rolls_back_persona_when_yaml_write_fails(tmp_path, monkeypatch):
     assert registry.get("editor").persona == "旧人设"
     assert registry.get("editor").name == "编辑助手"
     store.close()
+
+
+# ---------- phase10 第三批次：助手文件一致性 ----------
+
+def test_update_and_create_reject_blank_name(tmp_path):
+    """phase10 P2-5：registry 层收口空白显示名，CLI/API 两端自动对齐。"""
+    registry, store = _registry(tmp_path)
+    registry.create("editor", "编辑助手")
+    with pytest.raises(ValueError, match="显示名"):
+        registry.update("editor", name="   ")
+    assert registry.get("editor").name == "编辑助手"
+    with pytest.raises(ValueError, match="显示名"):
+        registry.create("blank-name", "   ")
+    store.close()
+
+
+def test_update_rollback_failure_is_logged_and_raises(tmp_path, monkeypatch, caplog):
+    """phase10 P2-2：回滚失败经 logging 运行期可见，不再写进会被 reload 清空的列表。"""
+    import logging
+
+    registry, store = _registry(tmp_path)
+    created = registry.create("editor", "编辑助手", persona="旧人设")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(registry, "_atomic_write_text", boom)
+    with caplog.at_level(logging.WARNING, logger="agent.assistant_registry"):
+        with pytest.raises(OSError, match="disk full"):
+            registry.update("editor", name="新名字", persona="新人设")
+
+    assert any("回滚" in record.message for record in caplog.records)
+    monkeypatch.undo()
+    # 所有写入（含回滚）都失败：文件保持原样，助手仍在注册表中
+    assert "新名字" not in (created.directory / "assistant.yaml").read_text(encoding="utf-8")
+    assert registry.get("editor").name == "编辑助手"
+    store.close()
+
+
+def test_update_writes_are_atomic_no_partial_file(tmp_path, monkeypatch):
+    """phase10 P2-3：assistant.yaml/persona.md 走临时文件+os.replace，
+    落盘失败不截断既有文件、不留临时文件。"""
+    registry, store = _registry(tmp_path)
+    created = registry.create("editor", "编辑助手", persona="旧人设")
+    real_replace = assistant_registry_module.os.replace
+
+    def broken_replace(src, dst):
+        if str(dst).endswith(("assistant.yaml", "persona.md")):
+            raise OSError("replace failed")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(assistant_registry_module.os, "replace", broken_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        registry.update("editor", name="新名字", persona="新人设")
+    monkeypatch.undo()
+
+    assert (created.directory / "persona.md").read_text(encoding="utf-8").strip() == "旧人设"
+    assert "编辑助手" in (created.directory / "assistant.yaml").read_text(encoding="utf-8")
+    assert not list(created.directory.glob("*.tmp"))
+    registry.reload()
+    assert registry.get("editor").name == "编辑助手"
+    assert registry.get("editor").persona == "旧人设"
+    store.close()
+
+
+def test_reload_is_safe_against_concurrent_reads(tmp_path):
+    """phase10 P2-4：reload 以「整体重建+单次替换」进行，读端不会命中清空窗口。"""
+    import threading
+
+    registry, store = _registry(tmp_path)
+    registry.create("writer-a", "作者甲")
+    stop = threading.Event()
+    errors: list[Exception] = []
+
+    def reader():
+        while not stop.is_set():
+            try:
+                registry.get("writer-a")
+                registry.list()
+            except KeyError as exc:  # 清空窗口内存在的助手瞬时 404
+                errors.append(exc)
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    try:
+        for _ in range(20):
+            registry.reload()
+    finally:
+        stop.set()
+        thread.join()
+
+    assert not errors
+    store.close()
+
+
+def test_persona_over_limit_rejected_in_registry(tmp_path):
+    """phase10 P3-2：persona 50,000 字符上限下沉 registry 单点收口，CLI 与 API 同口径。"""
+    registry, store = _registry(tmp_path)
+    with pytest.raises(ValueError, match="50000"):
+        registry.create("big-persona", "编辑助手", persona="字" * 50_001)
+    registry.create("editor", "编辑助手")
+    with pytest.raises(ValueError, match="50000"):
+        registry.update("editor", persona="字" * 50_001)
+    assert registry.get("editor").persona == _DEFAULT_PERSONA
+    store.close()
+
+
+def test_persona_file_outside_directory_rejected(tmp_path):
+    """phase10 P3-4：手改 persona_file 指向助手目录之外按损坏配置拒绝。"""
+    registry, store = _registry(tmp_path)
+    created = registry.create("editor", "编辑助手", persona="旧人设")
+    cfg = created.directory / "assistant.yaml"
+    raw = yaml.safe_load(cfg.read_text(encoding="utf-8"))
+
+    raw["persona_file"] = "../escaped-persona.md"
+    cfg.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="persona_file"):
+        registry.update("editor", name="新名字")
+
+    raw["persona_file"] = str(tmp_path / "outside-persona.md")
+    cfg.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="persona_file"):
+        registry.update("editor", name="新名字")
+
+    # reload 不阻断启动，但该助手按损坏配置标记警告并跳过
+    registry.reload()
+    assert all(item.id != "editor" for item in registry.list())
+    assert any("editor" in warning for warning in registry.warnings)
+    store.close()

@@ -985,3 +985,36 @@ def _settings(tmp_path: Path) -> Settings:
         skills_dir=Path(__file__).resolve().parents[1] / "skills",
         mcp_config=empty, openai_api_key="fake", openai_base_url="", model_name="fake",
     )
+
+
+def test_finish_task_retry_after_persist_failure_writes_terminal(tmp_path, monkeypatch):
+    """phase10 P3-8：终态旗标移到终态行成功落库之后——落库中途失败时
+    补偿调用（finish_task("failed")）可以重试，不被幂等守卫吞掉。"""
+    store = MemoryStore(tmp_path)
+    project = store.create_project("writer-a", "终态重试项目")
+    session = store.create_project_chat_session("writer-a", project.project_id)
+    recorder, store, _ = _recorder(tmp_path, project, session.chat_session_id)
+    real = store.add_project_chat_work_event
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        if kwargs.get("kind") == "task":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("sqlite busy")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(store, "add_project_chat_work_event", flaky)
+    with pytest.raises(RuntimeError, match="sqlite busy"):
+        recorder.finish_task("failed", title="任务")
+    recorder.finish_task("failed", title="任务")  # 补偿路径：守卫未置位，可重试
+    monkeypatch.undo()
+
+    rows = [
+        row for row in store.list_project_chat_work_events(
+            "writer-a", project.project_id, session.chat_session_id
+        )
+        if row.kind == "task"
+    ]
+    assert len(rows) == 1 and rows[0].status == "failed"
+    store.close()

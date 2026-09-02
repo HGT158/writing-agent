@@ -323,10 +323,14 @@ class WorkLogRecorder:
                 self.done(item.work_id, status="interrupted")
 
     def finish_task(self, status: str, *, title: str = "任务", detail: str = "") -> None:
-        """写任务终态与溢出摘要；终态不受明细上限约束且幂等。"""
+        """写任务终态与溢出摘要；终态不受明细上限约束且幂等。
+
+        终态旗标在终态行成功落库之后置位（phase10 P3-8）：落库中途失败时
+        调用方的补偿 finish_task 可以重试，不被幂等守卫吞掉；finish_task
+        全程同步执行，旗标后置不会让 start/note 进入终态写入窗口。
+        """
         if self._finished:
             return
-        self._finished = True
         self.interrupt_running()
         if self._dropped:
             parts = "；".join(
@@ -363,3 +367,4 @@ class WorkLogRecorder:
             created_at=self.started_at,
             completed_at=_now(),
         )
+        self._finished = True

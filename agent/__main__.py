@@ -96,7 +96,13 @@ async def _cmd_schedule() -> int:
 def _read_persona(args: argparse.Namespace) -> str | None:
     """--persona 与 --persona-file 互斥由 argparse 约束；文件按 UTF-8 读取。"""
     if args.persona_file is not None:
-        return Path(args.persona_file).read_text(encoding="utf-8")
+        try:
+            return Path(args.persona_file).read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            # 非 UTF-8 文件给可读提示，不再是裸 codec traceback 摘要（phase10 P3-2）
+            raise ValueError(
+                f"persona 文件必须是 UTF-8 文本：{args.persona_file}（{exc}）"
+            ) from exc
     return args.persona
 
 

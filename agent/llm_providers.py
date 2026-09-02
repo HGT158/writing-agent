@@ -15,14 +15,21 @@ import logging
 import os
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 PROVIDERS_FILE_NAME = "llm_providers.json"
 DEFAULT_TEMPERATURE = 0.3
+# 掩码回显前后缀的最小密钥长度；更短的密钥熵低，整体掩码不泄露任何片段（phase10 P3-16）
+MASK_MIN_LENGTH = 16
+# 启动清扫孤儿 tmp 的宽限：更晚的 tmp 可能属于并发进程正在进行的写入
+STALE_TMP_GRACE_SECONDS = 60
 
 
 @dataclass
@@ -42,10 +49,13 @@ class ProviderSelection:
 
 
 def mask_api_key(api_key: str) -> str:
-    """API 载荷只回掩码尾缀，原文永不下发（架构 §5.9 v1.31）。"""
+    """API 载荷只回掩码尾缀，原文永不下发（架构 §5.9 v1.31）。
+
+    短密钥整体掩码（phase10 P3-16）：9 位曾回显 7 位、12 位回显 7/12，比例过高。
+    """
     if not api_key:
         return ""
-    if len(api_key) <= 8:
+    if len(api_key) < MASK_MIN_LENGTH:
         return "***"
     return f"{api_key[:3]}***{api_key[-4:]}"
 
@@ -97,10 +107,26 @@ class LLMProviderStore:
         self.path = path
         self._providers: list[LLMProvider] = []
         self._selection = ProviderSelection(provider_id="", model="")
+        # 变更+落盘串行：API 写端经 asyncio.to_thread 在工作线程执行，
+        # 与读端/payload 并发时不得撕裂（phase10 P2-1）。RLock 允许 add/select 持锁调 _flush。
+        self._lock = threading.RLock()
         if self.path.exists():
             self._load()
         else:
             self._bootstrap(default_provider)
+        self._sweep_stale_tmp()
+
+    def _sweep_stale_tmp(self) -> None:
+        """清扫崩溃/断电残留的孤儿 tmp（含明文 Key）；宽限期内的保留给并发进程（phase10 P3-17）。"""
+        try:
+            now = time.time()
+            for stale in self.path.parent.glob(".llm_providers-*.tmp"):
+                if now - stale.stat().st_mtime < STALE_TMP_GRACE_SECONDS:
+                    continue
+                stale.unlink()
+                logger.info("已清理模型提供商配置残留临时文件 %s", stale.name)
+        except OSError:
+            logger.debug("清扫模型提供商配置临时文件失败（不影响使用）", exc_info=True)
 
     # ---------------------------------------------------------------- 加载
 
@@ -148,13 +174,22 @@ class LLMProviderStore:
                 raise RuntimeError(
                     f"模型提供商配置 {self.path} 结构非法：提供商 {provider_id} 的 models 不能为空"
                 )
+            # 白盒手改的值级校验失败同样显式报错并指向文件路径（phase10 P3-19）
+            try:
+                models = _clean_models([str(model) for model in models_raw])
+                temperature = _clean_temperature(item.get("temperature"))
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"模型提供商配置 {self.path} 损坏：提供商 {provider_id} 的 {exc}；"
+                    "请手工修复或删除该文件后重启"
+                ) from exc
             providers.append(LLMProvider(
                 id=provider_id,
                 name=str(item.get("name", provider_id)),
                 base_url=str(item.get("base_url", "")),
                 api_key=str(item.get("api_key", "")),
-                models=[str(model) for model in models_raw],
-                temperature=_clean_temperature(item.get("temperature")),
+                models=models,
+                temperature=temperature,
             ))
         if not providers:
             raise RuntimeError(f"模型提供商配置 {self.path} 结构非法：providers 不能为空")
@@ -187,27 +222,33 @@ class LLMProviderStore:
         raise KeyError(provider_id)
 
     def selection(self) -> ProviderSelection:
-        return ProviderSelection(self._selection.provider_id, self._selection.model)
+        with self._lock:
+            current = self._selection
+        return ProviderSelection(current.provider_id, current.model)
 
     def resolve(self) -> tuple[LLMProvider, str]:
-        provider = self.get(self._selection.provider_id)
-        return provider, self._selection.model
+        with self._lock:
+            current = self._selection
+        provider = self.get(current.provider_id)
+        return provider, current.model
 
     def payload(self) -> dict:
-        return {
-            "current": {
-                "provider_id": self._selection.provider_id,
-                "model": self._selection.model,
-            },
-            "providers": [{
-                "id": provider.id,
-                "name": provider.name,
-                "base_url": provider.base_url,
-                "models": list(provider.models),
-                "temperature": provider.temperature,
-                "api_key_hint": mask_api_key(provider.api_key),
-            } for provider in self._providers],
-        }
+        with self._lock:
+            current = self._selection  # 单一快照引用，杜绝撕裂读（phase10 P2-1）
+            return {
+                "current": {
+                    "provider_id": current.provider_id,
+                    "model": current.model,
+                },
+                "providers": [{
+                    "id": provider.id,
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "models": list(provider.models),
+                    "temperature": provider.temperature,
+                    "api_key_hint": mask_api_key(provider.api_key),
+                } for provider in self._providers],
+            }
 
     # ---------------------------------------------------------------- 变更
 
@@ -224,8 +265,7 @@ class LLMProviderStore:
         if not clean_name or len(clean_name) > 100:
             raise ValueError("提供商名称须为 1-100 个字符")
         clean_url = base_url.strip()
-        if not clean_url.startswith(("http://", "https://")):
-            raise ValueError("base_url 必须以 http:// 或 https:// 开头")
+        self._validate_base_url(clean_url)
         clean_key = api_key.strip()
         if not clean_key:
             raise ValueError("API Key 不能为空")
@@ -239,49 +279,75 @@ class LLMProviderStore:
             models=_clean_models(models),
             temperature=_clean_temperature(temperature),
         )
-        self._providers.append(provider)
-        self._flush()
+        with self._lock:
+            # 先落盘成功再更新内存：flush 失败时内存与磁盘不分叉（phase10 P3-18）
+            self._flush(providers=[*self._providers, provider])
+            self._providers.append(provider)
         return provider
 
+    @staticmethod
+    def _validate_base_url(url: str) -> None:
+        """scheme+netloc 结构校验并拒绝空白字符：坏地址在保存期即拒绝，
+        不拖到首次任务运行才在 SDK 报错里暴露（phase10 P3-20）。"""
+        if any(char.isspace() for char in url):
+            raise ValueError("base_url 不能包含空白字符")
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            raise ValueError("base_url 必须是以 http:// 或 https:// 开头的合法地址")
+
     def select(self, provider_id: str, model: str) -> ProviderSelection:
-        provider = self.get(provider_id)  # KeyError → API 404
-        if model not in provider.models:
-            raise ValueError(f"提供商「{provider.name}」未声明模型 {model}")
-        self._selection = ProviderSelection(provider_id, model)
-        self._flush()
-        return ProviderSelection(provider_id, model)
+        with self._lock:
+            provider = self.get(provider_id)  # KeyError → API 404
+            if model not in provider.models:
+                raise ValueError(f"提供商「{provider.name}」未声明模型 {model}")
+            new_selection = ProviderSelection(provider_id, model)
+            self._flush(selection=new_selection)
+            self._selection = new_selection
+        return new_selection
 
     # ---------------------------------------------------------------- 落盘
 
-    def _flush(self) -> None:
-        data = {
-            "version": 1,
-            "current": {
-                "provider_id": self._selection.provider_id,
-                "model": self._selection.model,
-            },
-            "providers": [{
-                "id": provider.id,
-                "name": provider.name,
-                "base_url": provider.base_url,
-                "api_key": provider.api_key,
-                "models": list(provider.models),
-                "temperature": provider.temperature,
-            } for provider in self._providers],
-        }
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle_fd, tmp_name = tempfile.mkstemp(
-            dir=str(self.path.parent), prefix=".llm_providers-", suffix=".tmp"
-        )
-        try:
-            with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
-                json.dump(data, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-            os.replace(tmp_name, self.path)
-        except BaseException:
+    def _flush(
+        self,
+        *,
+        providers: list[LLMProvider] | None = None,
+        selection: ProviderSelection | None = None,
+    ) -> None:
+        """原子落盘。写端已持锁串行；对当前选择只取一次快照引用，
+        并发切换不可能把交叉配对写进文件（phase10 P2-1）。"""
+        with self._lock:
+            snapshot = list(self._providers if providers is None else providers)
+            current = selection if selection is not None else self._selection
+            data = {
+                "version": 1,
+                "current": {
+                    "provider_id": current.provider_id,
+                    "model": current.model,
+                },
+                "providers": [{
+                    "id": provider.id,
+                    "name": provider.name,
+                    "base_url": provider.base_url,
+                    "api_key": provider.api_key,
+                    "models": list(provider.models),
+                    "temperature": provider.temperature,
+                } for provider in snapshot],
+            }
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            handle_fd, tmp_name = tempfile.mkstemp(
+                dir=str(self.path.parent), prefix=".llm_providers-", suffix=".tmp"
+            )
             try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
-        _tighten_permissions(self.path)
+                with os.fdopen(handle_fd, "w", encoding="utf-8") as handle:
+                    json.dump(data, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())  # 断电不留空/半截配置（phase10 P3-17）
+                os.replace(tmp_name, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+            _tighten_permissions(self.path)

@@ -163,6 +163,57 @@ def test_assistant_patch_updates_fields_and_validates(tmp_path):
         assert unknown.status_code == 404
 
 
+def test_assistant_patch_empty_description_is_allowed(tmp_path):
+    """phase10 P1-1：描述为空的助手可保存任何编辑（空串语义与创建对齐）。
+
+    v1.30 曾单边给 AssistantUpdate.description 加 min_length=1，前端编辑对话框
+    恒携带该字段，空描述助手在 UI 中必然 422 且提示不可读。
+    """
+    with TestClient(_app(tmp_path)) as client:
+        created = client.post(
+            "/api/assistants",
+            json={"id": "blank-desc", "name": "空描述", "description": ""},
+        )
+        assert created.status_code == 201
+
+        # 场景复现：只想改 persona，但载荷恒携带 description: ""
+        patched = client.patch(
+            "/api/assistants/blank-desc",
+            json={"name": "空描述", "description": "", "persona": "新人设"},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["description"] == ""
+        assert patched.json()["persona"] == "新人设"
+
+        cleared = client.patch(
+            "/api/assistants/blank-desc", json={"description": ""}
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["description"] == ""
+        assert cleared.json()["persona"] == "新人设"  # 未提供的字段不受影响
+
+
+def test_assistant_patch_explicit_null_field_rejected(tmp_path):
+    """phase10 P3-1：显式 null 是调用方错误，返回 422 而非静默 no-op。"""
+    with TestClient(_app(tmp_path)) as client:
+        response = client.patch("/api/assistants/default", json={"name": None})
+        assert response.status_code == 422
+        assert "name" in response.json()["detail"]
+
+        assert client.get("/api/assistants/default").json()["name"] == "通用写作助手"
+
+
+def test_assistant_patch_blank_name_rejected(tmp_path):
+    """phase10 P2-5：空白显示名与 CLI 同口径拒绝（原 "   " 可通过 min_length=1 落库）。"""
+    with TestClient(_app(tmp_path)) as client:
+        response = client.patch("/api/assistants/default", json={"name": "   "})
+        assert response.status_code == 400
+        assert client.get("/api/assistants/default").json()["name"] == "通用写作助手"
+
+        created = client.post("/api/assistants", json={"id": "blank-name", "name": "   "})
+        assert created.status_code == 400
+
+
 def test_assistant_patch_rejected_while_task_running(tmp_path):
     runtime = AgentRuntime(_settings(tmp_path))
     with TestClient(_app(tmp_path, runtime)) as client:
@@ -429,3 +480,28 @@ def test_memory_profile_put_rejected_while_assistant_busy(tmp_path):
         assert client.get("/api/assistants/default/memory/profile").status_code == 200
         # client 关闭（lifespan shutdown 会 close runtime）前释放锁
         runtime.store.release_lock("default", "other-task")
+
+
+def test_memory_profile_corrupted_encoding_is_recoverable_via_api(tmp_path):
+    """phase10 P2-6：画像被手改存成非 UTF-8 时，GET 给带指引的 400，
+    PUT 仍可整文覆盖修复，用户无需去文件系统手工处理。"""
+    runtime = AgentRuntime(_settings(tmp_path))
+    profile_path = tmp_path / "assistants" / "default" / "memory" / "profile.md"
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile_path.write_bytes("非 UTF-8 的画像内容".encode("gbk"))
+
+    with TestClient(_app(tmp_path, runtime)) as client:
+        fetched = client.get("/api/assistants/default/memory/profile")
+        assert fetched.status_code == 400
+        assert "UTF-8" in fetched.json()["detail"]
+
+        saved = client.put(
+            "/api/assistants/default/memory/profile",
+            json={"content": "覆盖修复后的画像"},
+        )
+        assert saved.status_code == 200
+        assert saved.json()["content"] == "覆盖修复后的画像"
+
+        reloaded = client.get("/api/assistants/default/memory/profile")
+        assert reloaded.status_code == 200
+        assert reloaded.json()["content"] == "覆盖修复后的画像"

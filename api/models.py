@@ -11,10 +11,15 @@ class AssistantCreate(BaseModel):
 
 
 class AssistantUpdate(BaseModel):
-    """助手编辑（v1.28）：PATCH 部分更新语义，仅提供的字段生效。"""
+    """助手编辑（v1.28）：PATCH 部分更新语义，仅提供的字段生效。
+
+    description 允许空串（phase10 P1-1）：与创建语义对齐——创建入口允许空描述，
+    更新若拒绝空串会让空描述助手在 UI 中无法保存任何编辑。显式 null 由端点
+    检测并返回 422（phase10 P3-1），不与「未提供」混同。
+    """
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
-    description: str | None = Field(default=None, min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=500)
     persona: str | None = Field(default=None, max_length=50_000)
 
 

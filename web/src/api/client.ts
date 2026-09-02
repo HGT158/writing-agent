@@ -21,10 +21,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       let detail = `${response.status} ${response.statusText}`
       try {
         const body = await response.json() as {
-          detail?: string | { code?: string; message?: string }
+          detail?: string | { code?: string; message?: string } | Array<{ msg?: string }>
         }
         if (typeof body.detail === 'string') {
           detail = body.detail || detail
+        } else if (Array.isArray(body.detail)) {
+          // FastAPI 校验错误（422）的 detail 是数组：取首条可读消息，
+          // 不退化成 "422 Unprocessable Entity" 状态文本（phase10 P1-1/P3-22）。
+          const first = body.detail.find((item) => typeof item?.msg === 'string')
+          if (first?.msg) detail = first.msg
         } else if (body.detail && typeof body.detail === 'object' && body.detail.message) {
           // 稳定错误码（stale / already_applied / already_rejected / conflict）取可读消息。
           detail = body.detail.message

@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 def _raise_http(exc: Exception) -> None:
     if isinstance(exc, (KeyError, FileNotFoundError)):
         raise HTTPException(status_code=404, detail="资源不存在") from exc
+    if isinstance(exc, UnicodeError):
+        # 白盒文件被手改存成非 UTF-8（如记事本 ANSI）：给带指引的 400，
+        # 用户可经 PUT 整文覆盖修复（phase10 P2-6）。
+        raise HTTPException(
+            status_code=400,
+            detail="文件编码损坏（需 UTF-8）：可重新保存全文覆盖修复，或用编辑器以 UTF-8 手工转换",
+        ) from exc
     if isinstance(exc, ChangeSetStateError):
         raise HTTPException(
             status_code=409,
@@ -157,6 +164,16 @@ def create_app(
     @app.patch("/api/assistants/{assistant_id}")
     async def update_assistant(assistant_id: str, body: AssistantUpdate):
         fields = body.model_dump(exclude_unset=True)
+        # 显式 null 是调用方错误而非「未提供」：422 拒绝，不做静默 no-op（phase10 P3-1）
+        explicit_nulls = [
+            key for key in ("name", "description", "persona")
+            if key in body.model_fields_set and getattr(body, key) is None
+        ]
+        if explicit_nulls:
+            raise HTTPException(
+                status_code=422,
+                detail=f"字段不允许为 null（省略该字段即保持不变）：{', '.join(explicit_nulls)}",
+            )
         try:
             item = await asyncio.to_thread(
                 runtime.assistants.update,

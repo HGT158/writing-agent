@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -166,6 +168,148 @@ def test_select_unknown_provider_or_model_keeps_selection(tmp_path):
     assert store.selection().model == "test-chat"
 
 
+def test_add_provider_rejects_url_without_netloc_or_with_whitespace(tmp_path):
+    """phase10 P3-20：base_url 校验 scheme+netloc 并拒绝空白字符，坏地址保存期即拒绝。"""
+    from agent.llm_providers import LLMProviderStore
+
+    store = LLMProviderStore(
+        _providers_path(tmp_path), default_provider=store_default(_settings(tmp_path))
+    )
+    with pytest.raises(ValueError):
+        store.add(name="x", base_url="https://", api_key="sk-1", models=["m"])
+    with pytest.raises(ValueError):
+        store.add(name="x", base_url="https://bad .com", api_key="sk-1", models=["m"])
+    with pytest.raises(ValueError):
+        store.add(name="x", base_url="notaurl", api_key="sk-1", models=["m"])
+
+
+def test_hand_edited_invalid_values_fail_with_file_path(tmp_path):
+    """phase10 P3-19：白盒手改的非法值（温度越界、models 空串）报错必须带文件路径。"""
+    from agent.llm_providers import LLMProviderStore
+
+    path = _providers_path(tmp_path)
+    LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+    good = json.loads(path.read_text(encoding="utf-8"))
+
+    broken = json.loads(json.dumps(good))
+    broken["providers"][0]["temperature"] = 5
+    path.write_text(json.dumps(broken), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="llm_providers.json"):
+        LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+
+    broken = json.loads(json.dumps(good))
+    broken["providers"][0]["models"] = ["m1", "   "]
+    path.write_text(json.dumps(broken), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="llm_providers.json"):
+        LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+    assert json.loads(path.read_text(encoding="utf-8")) == broken  # 报错不重写用户文件
+
+
+def test_flush_failure_keeps_memory_unchanged(tmp_path, monkeypatch):
+    """phase10 P3-18：先落盘成功再更新内存，落盘失败时内存与磁盘不分叉。"""
+    from agent.llm_providers import LLMProviderStore
+
+    path = _providers_path(tmp_path)
+    store = LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+    other = store.add(
+        name="厂商二", base_url="https://api.two.com",
+        api_key="sk-two-000000000", models=["two-chat"],
+    )
+    store.select(other.id, "two-chat")
+
+    def broken_replace(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", broken_replace)
+    with pytest.raises(OSError):
+        store.add(
+            name="新厂商", base_url="https://api.new.com",
+            api_key="sk-new-0000", models=["new-chat"],
+        )
+    assert [item.name for item in store.list()] == ["默认提供商", "厂商二"]
+    with pytest.raises(OSError):
+        store.select("default", "test-chat")
+    # 失败的切换不得半途改写内存中的当前选择
+    assert (store.selection().provider_id, store.selection().model) == (other.id, "two-chat")
+    monkeypatch.undo()
+    # 内存可继续演进并与磁盘重新对齐
+    store.add(
+        name="新厂商", base_url="https://api.new.com",
+        api_key="sk-new-0000", models=["new-chat"],
+    )
+    assert [item.name for item in store.list()] == ["默认提供商", "厂商二", "新厂商"]
+
+
+def test_flush_takes_single_selection_snapshot(tmp_path):
+    """phase10 P2-1：_flush/payload 对当前选择必须取单一快照引用。
+
+    用可注入的替身模拟「两次属性读之间另一线程完成切换」：provider_id 读取后
+    替换 store._selection。撕裂读会把 (旧 provider, 新 model) 写进文件，
+    下次启动直接 RuntimeError；单一快照引用则永远落盘完整配对。
+    """
+    from agent.llm_providers import LLMProviderStore, ProviderSelection
+
+    path = _providers_path(tmp_path)
+    store = LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+    other = store.add(
+        name="厂商二", base_url="https://api.two.com",
+        api_key="sk-two-000000000", models=["two-chat"],
+    )
+
+    class SwitchingSelection:
+        """provider_id 读取后模拟并发 select 完成赋值并替换 _selection。"""
+
+        @property
+        def provider_id(self) -> str:
+            store._selection = ProviderSelection(other.id, "two-chat")
+            return "default"
+
+        @property
+        def model(self) -> str:
+            return "test-chat"
+
+    original = store._selection
+    store._selection = SwitchingSelection()
+    try:
+        store._flush()
+    finally:
+        store._selection = original
+    store._selection = SwitchingSelection()
+    try:
+        payload = store.payload()
+    finally:
+        store._selection = original
+
+    assert payload["current"] == {"provider_id": "default", "model": "test-chat"}
+    # 落盘文件中的 current 必须是合法配对（model 属于该 provider 的 models）
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["current"] == {"provider_id": "default", "model": "test-chat"}
+    provider = next(
+        item for item in data["providers"] if item["id"] == data["current"]["provider_id"]
+    )
+    assert data["current"]["model"] in provider["models"]
+
+
+def test_stale_tmp_files_swept_on_init(tmp_path):
+    """phase10 P3-17：启动清扫残留的 .llm_providers-*.tmp（含明文 Key）；
+    新鲜 tmp 属并发进程在写，保留不动。"""
+    from agent.llm_providers import LLMProviderStore
+
+    path = _providers_path(tmp_path)
+    LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+    stale = path.parent / ".llm_providers-abandoned.tmp"
+    stale.write_text("{}", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(stale, (old, old))
+    fresh = path.parent / ".llm_providers-recent.tmp"
+    fresh.write_text("{}", encoding="utf-8")
+
+    LLMProviderStore(path, default_provider=store_default(_settings(tmp_path)))
+
+    assert not stale.exists()
+    assert fresh.exists()
+
+
 def test_api_key_hint_never_reveals_full_secret(tmp_path):
     from agent.llm_providers import LLMProviderStore
 
@@ -178,6 +322,18 @@ def test_api_key_hint_never_reveals_full_secret(tmp_path):
     assert "sk-test-1234567890" not in hint
     raw = json.dumps(json.loads((_providers_path(tmp_path)).read_text(encoding="utf-8")))
     assert "sk-test-1234567890" in raw  # 明文只存在于本地配置文件本身
+
+
+def test_mask_api_key_hides_short_keys_entirely():
+    """phase10 P3-16：短密钥熵低，整体掩码不回显任何片段；仅长密钥回显前后缀。"""
+    from agent.llm_providers import mask_api_key
+
+    assert mask_api_key("") == ""
+    assert mask_api_key("sk-123456") == "***"  # 9 位：曾回显 7 位
+    assert mask_api_key("sk-1234567890") == "***"  # 13 位：曾回显 7 位
+    long_hint = mask_api_key("sk-1234567890abcdef")
+    assert long_hint.startswith("sk-") and long_hint.endswith("cdef")
+    assert "1234567890a" not in long_hint
 
 
 # ---------------------------------------------------------------- Runtime 按任务路由

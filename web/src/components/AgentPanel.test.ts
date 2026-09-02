@@ -1048,6 +1048,27 @@ describe('AgentPanel model picker integration (v1.31)', () => {
     expect(wrapper.get('.model-button').text()).toContain('备选厂商 · other-reasoner')
   })
 
+  it('disables the picker while a switch request is in flight', async () => {
+    // phase10 P3-22/P2-1：快速连点两次会产生并发 in-flight POST，切换期间须禁用触发器。
+    let resolveSwitch: (value: typeof providersSwitched) => void = () => {}
+    apiMocks.selectLlmProvider.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSwitch = resolve
+      }),
+    )
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.get('button[title="切换模型与提供商"]').trigger('click')
+    await wrapper.findAll('.model-option')[1].trigger('click')
+    expect(apiMocks.selectLlmProvider).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('button[title="切换模型与提供商"]').attributes('disabled')).toBeDefined()
+
+    resolveSwitch(providersSwitched)
+    await flushPromises()
+    expect(wrapper.get('button[title="切换模型与提供商"]').attributes('disabled')).toBeUndefined()
+  })
+
   it('keeps the original selection visible when switching fails', async () => {
     apiMocks.selectLlmProvider.mockRejectedValue(new Error('提供商未声明该模型'))
     const wrapper = mountPanel()

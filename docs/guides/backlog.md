@@ -16,10 +16,10 @@
 
 ## phase10 复审观察项（2026-09-02 登记，暂缓）
 
-phase10 代码审查（[../reviews/phase10-code-review.md](../reviews/phase10-code-review.md)）中按处理建议不纳入近期修复批次的观察项；其余 P1/P2/P3 以该报告为工作清单待修复：
+phase10 代码审查（[../reviews/phase10-code-review.md](../reviews/phase10-code-review.md)）中按处理建议不纳入近期修复批次的观察项。**其余全部发现（P1×3、P2×8、P3×16）已于 2026-09-02 在 fix/phase10-review 分支随 v1.33 一次修复完毕**，逐条处置见报告文末「处理结果记录」：
 
-- **persona 在 Loop/选区改写链路的预算与净化（phase10 P3-3）**：persona 由本机用户自写、50,000 字符为合法上限，超长时任务在 LLM 上游失败属边界取舍；待决定是否做 token 估算超限播报与控制字符过滤，实施前先在架构 §4.2 明示语义。
-- **沉淀信号门槛宽泛与多语言指令（phase10 P3-14）**：风格/语气类疑问句每轮多付一次提取调用为架构 §5.4 明示的设计内取舍；英文指令不覆盖，待真实使用需求出现再评估。
+- **persona 在 Loop/选区改写链路的预算与净化（phase10 P3-3）**：persona 由本机用户自写、50,000 字符为合法上限（v1.33 起上限在 registry 层收口），超长时任务在 LLM 上游失败属边界取舍；待决定是否做 token 估算超限播报与控制字符过滤，实施前先在架构 §4.2 明示语义。
+- **沉淀信号门槛宽泛与多语言指令（phase10 P3-14）**：风格/语气类疑问句每轮多付一次提取调用为架构 §5.4 明示的设计内取舍（v1.33 起该调用有 30 秒独立超时兜底）；英文指令不覆盖，待真实使用需求出现再评估。
 - **对话框焦点陷阱与 Escape 统一（phase10 P3-15）**：MemoryProfileDialog 与 ProjectDialog/AssistantDialog 同缺，属既有全局缺口，统一补齐时一并处理。
 - **llm_providers.json 多进程读侧陈旧（phase10 P3-21）**：Scheduler 长驻进程不重载配置，UI 切换对其不生效；先补架构文档多进程边界说明（Scheduler 重启后生效），再评估任务启动按 mtime 重载。
 - **并发对账测试语义（phase10 P3-10）**：`reconciled_task_ids` 表示「尝试过」而非「实际补写」；后续让 `interrupt_work_task` 返回是否实际插入并收紧测试断言。

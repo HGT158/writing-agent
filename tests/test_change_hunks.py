@@ -109,10 +109,14 @@ def test_second_start_after_successful_migration_is_noop(tmp_path):
     reopened.close()
 
 
-def test_finalize_write_intent_returns_empty_list_when_intent_missing(tmp_path):
-    """finalize 返回契约（phase7 P3-5）：意图缺失分支返回空列表而非 None，
-    注解与实际返回统一为 list[str]——save/恢复路径丢弃返回值、
-    accept hunk 路径消费（list[str] 返回已由 go_stale 用例断言）。"""
+def test_finalize_write_intent_missing_intent_raises_conflict(tmp_path):
+    """phase10 P3-9：意图缺失分支不再静默成功（假成功会让 accept 报 200
+    而 hunk 仍 pending、无任何告警），改抛 StorageRecoveryPendingError（409）。
+
+    修订 phase7 P3-5 的旧契约（当时改为返回空列表以消除 None.length 崩溃链）；
+    前端崩溃链已由 list[str] 类型统一保持解决，此处进一步把假成功改为显式冲突。
+    """
+    from memory.errors import StorageRecoveryPendingError
     from memory.projects import _WriteIntent, _finalize_write_intent
 
     store, project, document = _store_with_document(tmp_path)
@@ -125,9 +129,8 @@ def test_finalize_write_intent_returns_empty_list_when_intent_missing(tmp_path):
         created_at="2026-08-30T00:00:00",
     )
 
-    assert _finalize_write_intent(
-        store._conn, "writer-a", project.project_id, intent
-    ) == []
+    with pytest.raises(StorageRecoveryPendingError, match="意图"):
+        _finalize_write_intent(store._conn, "writer-a", project.project_id, intent)
     store.close()
 
 
