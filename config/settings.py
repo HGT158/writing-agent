@@ -43,6 +43,8 @@ class Settings:
     chat_context_doc_max_chars: int = 12000
     # 聊天轮次终态选择性记忆沉淀（架构 §5.4 v1.30）：False 整体关闭沉淀，注入不受影响。
     chat_memory_consolidation: bool = True
+    # 沉淀提取调用的独立超时（phase10 P2-7）：无界调用会拖住任务终态与助手锁。
+    chat_memory_extraction_timeout_seconds: float = 30.0
     json_mode: bool = True  # LLM 是否优先用 response_format=json_object（失败自动回退纯文本+宽容解析）
     # Scheduler 长驻模式消费，见架构 §5.8。
     jobs: list[dict] = field(default_factory=list)
@@ -73,6 +75,9 @@ def load_settings() -> Settings:
         chat_context_doc_max_chars=max(0, int(os.environ.get("CHAT_CONTEXT_DOC_MAX_CHARS", "12000"))),
         chat_memory_consolidation=os.environ.get("CHAT_MEMORY_CONSOLIDATION", "true").lower()
         not in ("0", "false", "no"),
+        chat_memory_extraction_timeout_seconds=float(
+            os.environ.get("CHAT_MEMORY_EXTRACTION_TIMEOUT_SECONDS", "30")
+        ),
         json_mode=os.environ.get("LLM_JSON_MODE", "true").lower() not in ("0", "false", "no"),
         jobs=[dict(job) for job in JOBS],
     )

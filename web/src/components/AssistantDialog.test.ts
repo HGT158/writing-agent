@@ -89,4 +89,12 @@ describe('AssistantDialog', () => {
       id: 'editor', name: '编辑助手', description: '', persona: '',
     }])
   })
+
+  it('shows a persona character counter against the 50000 limit', async () => {
+    // phase10 P3-5：maxlength 静默截断粘贴，字数计数让用户看见消耗与余量。
+    const wrapper = mountDialog()
+    await wrapper.get('#assistant-persona').setValue('12345')
+
+    expect(wrapper.text()).toContain('5 / 50000')
+  })
 })

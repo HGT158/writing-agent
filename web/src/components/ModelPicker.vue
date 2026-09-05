@@ -157,7 +157,13 @@ onBeforeUnmount(() => {
       <div v-if="!providers || !providers.providers.length" class="model-provider-name" role="presentation">
         暂无提供商配置
       </div>
-      <button type="button" class="model-add-action" role="menuitem" @click="openAddDialog">
+      <button
+        type="button"
+        class="model-add-action"
+        role="menuitem"
+        :ref="(el) => setOptionRef(el, menuItems.length)"
+        @click="openAddDialog"
+      >
         <Plus :size="13" />
         添加提供商…
       </button>

@@ -69,6 +69,7 @@ onMounted(async () => {
         <input id="assistant-description" v-model="description" maxlength="500" placeholder="深度技术文章，注重引用来源" :disabled="busy" />
         <label for="assistant-persona">{{ isEdit ? '系统提示词（清空保存即恢复默认）' : '系统提示词（可选）' }}</label>
         <textarea id="assistant-persona" v-model="persona" rows="6" maxlength="50000" placeholder="你是一名严谨的编辑，注重……" :disabled="busy"></textarea>
+        <p class="dialog-hint">{{ persona.length }} / 50000</p>
         <p class="dialog-hint">每个助手拥有独立的人设、记忆和文章项目，彼此不共享。</p>
         <p v-if="idError || error" class="inline-error">{{ idError || error }}</p>
         <div class="dialog-actions">

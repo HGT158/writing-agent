@@ -186,8 +186,19 @@ class AgentRuntime:
             self.store.create_session(assistant_id, session_id, task)
             trace = self.store.recall_trace(assistant_id, task)
             memory_context = trace.text
+            memory_clipped = False
+            if memory_context and self.settings.chat_context_token_budget > 0:
+                # 记忆注入按预算份额（1/3）裁剪，与聊天路径一致（phase10 P1-3）
+                memory_context, memory_clipped = clip_content_to_token_budget(
+                    memory_context, self.settings.chat_context_token_budget // 3
+                )
             self.store.add_message(assistant_id, session_id, "user", task)
-            self.bus.emit("info", text=f"已注入助手记忆：{self._recall_summary_text(trace)}")
+            # 只在命中或降级时播报，与 chat 路径门控一致（phase10 P3-13）
+            if trace.text or trace.degraded:
+                summary = self._recall_summary_text(trace)
+                if memory_clipped:
+                    summary += "（超出注入预算已截断）"
+                self.bus.emit("info", text=f"已注入助手记忆：{summary}")
 
             services = RuntimeServices(
                 llm=llm,
@@ -380,6 +391,8 @@ class AgentRuntime:
 
         确定性门槛 → 显式指令直达 / 一次启发式提取；任何失败降级 warning，
         不得影响本轮已交付的聊天回复（对齐 §3.3 压缩失败降级语义）。
+        提取调用有独立短超时（phase10 P2-7），不拖住任务终态与助手锁；
+        回复已交付后的取消不改记 interrupted（phase10 P3-11）。
         """
         if not self.settings.chat_memory_consolidation:
             return
@@ -388,38 +401,110 @@ class AgentRuntime:
                 return
             direct = chat_memory.extract_explicit_command(user_message)
             if direct is not None:
-                self.store.memorize(
-                    assistant_id, "preference", direct, session_id=chat_session_id
+                self._memorize_direct_command(
+                    recorder,
+                    assistant_id=assistant_id,
+                    chat_session_id=chat_session_id,
+                    content=direct,
                 )
-                work = recorder.start("progress", "已沉淀助手记忆")
-                recorder.done(work, detail=f"- [偏好] {direct}")
                 return
-            items = await chat_memory.extract_preferences(
-                llm,
-                model,
+            await self._memorize_extracted_items(
+                recorder,
+                assistant_id=assistant_id,
+                chat_session_id=chat_session_id,
                 user_message=user_message,
                 assistant_reply=assistant_reply,
-                profile_text=self.store.get_assistant_profile(assistant_id),
-                json_mode=self.settings.json_mode,
+                llm=llm,
+                model=model,
                 temperature=temperature,
             )
-            if not items:
-                return
-            lines: list[str] = []
-            for kind, content in items:
-                self.store.memorize(
-                    assistant_id, kind, content, session_id=chat_session_id
-                )
-                lines.append(f"- [{chat_memory.kind_label(kind)}] {content}")
-            work = recorder.start("progress", "已沉淀助手记忆")
-            recorder.done(work, detail="\n".join(lines))
+        except asyncio.CancelledError:
+            # 回复已交付并落库：沉淀被取消只放弃沉淀本身，
+            # 不得把本轮改记为 interrupted（phase10 P3-11）。
+            logger.info(
+                "聊天记忆沉淀被取消（assistant=%s session=%s）",
+                assistant_id, chat_session_id,
+            )
         except Exception:
             logger.warning(
                 "聊天记忆沉淀失败（assistant=%s session=%s）",
                 assistant_id, chat_session_id, exc_info=True,
             )
             try:
-                recorder.note("warning", "本轮记忆沉淀失败，已跳过（不影响回复）")
+                recorder.note("warning", "本轮记忆沉淀失败：未写入任何条目（不影响回复）")
+            except Exception:
+                logger.debug("沉淀降级警告工作项写入失败", exc_info=True)
+
+    def _memorize_direct_command(
+        self,
+        recorder: WorkLogRecorder,
+        *,
+        assistant_id: str,
+        chat_session_id: str,
+        content: str,
+    ) -> None:
+        """显式指令直达（零模型调用）；与画像既有条目去重（phase10 P1-2）。"""
+        profile_text = self.store.get_assistant_profile(assistant_id)
+        if chat_memory.is_duplicate_memory(content, profile_text):
+            return
+        self.store.memorize(assistant_id, "preference", content, session_id=chat_session_id)
+        work = recorder.start("progress", "已沉淀助手记忆")
+        recorder.done(work, detail=f"- [偏好] {content}")
+
+    async def _memorize_extracted_items(
+        self,
+        recorder: WorkLogRecorder,
+        *,
+        assistant_id: str,
+        chat_session_id: str,
+        user_message: str,
+        assistant_reply: str,
+        llm: AsyncOpenAI,
+        model: str,
+        temperature: float,
+    ) -> None:
+        profile_text = self.store.get_assistant_profile(assistant_id)
+        items = await chat_memory.extract_preferences(
+            llm,
+            model,
+            user_message=user_message,
+            assistant_reply=assistant_reply,
+            profile_text=profile_text,
+            json_mode=self.settings.json_mode,
+            temperature=temperature,
+            timeout_seconds=self.settings.chat_memory_extraction_timeout_seconds,
+        )
+        items = [
+            (kind, content) for kind, content in items
+            if not chat_memory.is_duplicate_memory(content, profile_text)
+        ]
+        if not items:
+            return
+        lines: list[str] = []
+        written = 0
+        failure: Exception | None = None
+        for kind, content in items:
+            try:
+                self.store.memorize(assistant_id, kind, content, session_id=chat_session_id)
+            except Exception as exc:
+                failure = exc
+                break
+            written += 1
+            lines.append(f"- [{chat_memory.kind_label(kind)}] {content}")
+        if written:
+            work = recorder.start("progress", "已沉淀助手记忆")
+            recorder.done(work, detail="\n".join(lines))
+        if failure is not None:
+            # 文案如实：memorize 逐条写入，中途失败时已写入条目保留（phase10 P2-8）
+            logger.warning(
+                "聊天记忆沉淀部分失败（assistant=%s session=%s）",
+                assistant_id, chat_session_id, exc_info=True,
+            )
+            try:
+                recorder.note(
+                    "warning",
+                    f"本轮记忆沉淀部分失败：已写入 {written}/{len(items)} 条，其余跳过（不影响回复）",
+                )
             except Exception:
                 logger.debug("沉淀降级警告工作项写入失败", exc_info=True)
 
@@ -454,6 +539,7 @@ class AgentRuntime:
             document_content = ""
             document_prefix = ""
             document_clipped = False
+            document_squeezed_out = False
             if current_document_id is not None:
                 document = self.store.get_document(
                     assistant_id, project_id, current_document_id
@@ -472,10 +558,18 @@ class AgentRuntime:
             skill_prompt = editing.body if editing is not None else "帮助用户审校和改写项目文本。"
             # 聊天注入本助手记忆（v1.30，§4.7 既有声明补齐实现）：在编辑指导之前注入
             # recall 结果；注入内容属于 system prompt，参与既有 token 预算与兜底计算。
+            # 注入块自身按预算份额（1/3）裁剪（phase10 P1-3）：大画像不得把
+            # 文档正文挤成空串、把历史窗口清空。
             memory_trace = self.store.recall_trace(assistant_id, message)
+            memory_text = memory_trace.text
+            memory_clipped = False
+            if memory_text and self.settings.chat_context_token_budget > 0:
+                memory_text, memory_clipped = clip_content_to_token_budget(
+                    memory_text, self.settings.chat_context_token_budget // 3
+                )
             memory_block = (
-                f"本助手长期记忆（跨会话共享，供参考）：\n{memory_trace.text}\n\n"
-                if memory_trace.text
+                f"本助手长期记忆（跨会话共享，供参考）：\n{memory_text}\n\n"
+                if memory_text
                 else ""
             )
             system_prefix = (
@@ -503,6 +597,9 @@ class AgentRuntime:
                 )
                 if token_clipped and not document_clipped:
                     content_label = "content（已按上下文预算截断）:\n"
+                document_squeezed_out = (
+                    token_clipped and not document_content.strip() and bool(document_prefix)
+                )
                 context = f"{document_prefix}{content_label}{document_content}"
             system_prompt = f"{system_prefix}{context}"
             user_record = self.store.add_project_chat_message(
@@ -545,6 +642,23 @@ class AgentRuntime:
             for warning in chat_context.warnings:
                 self.bus.emit("warning", text=warning)
                 recorder.note("warning", warning)
+            if memory_clipped:
+                # 注入记忆被裁剪必须可观测（phase10 P1-3）：提示用户可清理画像。
+                notice = (
+                    "长期记忆超出注入预算，已按上下文预算份额截断；"
+                    "可在「记忆画像」对话框清理不需要的条目"
+                )
+                self.bus.emit("warning", text=notice)
+                recorder.note("warning", notice)
+            if document_squeezed_out:
+                # 文档被挤到 0 时指明原因（phase10 P1-3），不再只有不指因的截断标签。
+                notice = (
+                    "当前文档正文因上下文预算不足未注入本轮 prompt"
+                    "（系统提示词或长期记忆占用过大时会出现）；"
+                    "涉及正文的指令可能无法正确执行"
+                )
+                self.bus.emit("warning", text=notice)
+                recorder.note("warning", notice)
             if chat_context.summary_changed:
                 # 显式校验代替 assert：python -O 剥离断言后不应把类型收窄交给运行时崩溃。
                 if (

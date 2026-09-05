@@ -689,7 +689,12 @@ def _finalize_write_intent(
         )
         if current_intent is None:
             conn.commit()
-            return []
+            # 静默成功会造成「磁盘已写、DB 未推进」的假成功——accept 报 200
+            # 而 hunk 仍 pending、无任何告警（phase10 P3-9）；显式冲突交给
+            # 调用方/用户重试，由恢复机制重新对账文档状态。
+            raise StorageRecoveryPendingError(
+                "文档写入意图在终结前丢失：文档状态可能已由其他进程恢复，请重试"
+            )
         if (
             current_intent.owner_pid != intent.owner_pid
             or current_intent.owner_started_at != intent.owner_started_at

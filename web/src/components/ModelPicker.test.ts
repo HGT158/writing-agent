@@ -101,6 +101,26 @@ describe('ModelPicker', () => {
     wrapper.unmount()
   })
 
+  it('includes the add-provider action in arrow key navigation', async () => {
+    // phase10 P3-22：「添加提供商…」此前游离于 roving 循环之外，键盘用户只能 Tab 到达。
+    const wrapper = mount(ModelPicker, {
+      props: { providers: payload, busy: false },
+      attachTo: document.body,
+    })
+    await wrapper.get('button[title="切换模型与提供商"]').trigger('click')
+    const options = wrapper.findAll('.model-option')
+    const addAction = wrapper.get('.model-add-action')
+
+    ;(options[options.length - 1].element as HTMLButtonElement).focus()
+    await options[options.length - 1].trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(addAction.element)
+    await addAction.trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[0].element)
+    await addAction.trigger('keydown', { key: 'End' })
+    expect(document.activeElement).toBe(addAction.element)
+    wrapper.unmount()
+  })
+
   it('disables the trigger while busy', () => {
     const wrapper = mount(ModelPicker, { props: { providers: payload, busy: true } })
     expect(wrapper.get('button[title="切换模型与提供商"]').attributes('disabled')).toBeDefined()

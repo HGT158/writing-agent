@@ -277,3 +277,36 @@ describe('apiClient project chat reconciliation', () => {
     expect(fetchMock.mock.calls[1][0]).not.toContain('/reconcile')
   })
 })
+
+describe('apiClient error detail readability', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('surfaces the first message from FastAPI 422 array details', async () => {
+    // phase10 P1-1/P3-22：数组形态 detail 此前退化成 "422 Unprocessable Entity"。
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      detail: [{
+        loc: ['body', 'name'],
+        msg: 'String should have at least 1 character',
+        type: 'string_too_short',
+      }],
+    }), { status: 422, statusText: 'Unprocessable Entity' })))
+
+    await expect(apiClient.listAssistants()).rejects.toThrow(
+      'String should have at least 1 character',
+    )
+  })
+
+  it('keeps string details and stable-code object details readable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ detail: '助手正忙' }),
+      { status: 409, statusText: 'Conflict' },
+    )))
+    await expect(apiClient.listAssistants()).rejects.toThrow('助手正忙')
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ detail: { code: 'stale', message: '建议已失效' } }),
+      { status: 409, statusText: 'Conflict' },
+    )))
+    await expect(apiClient.listAssistants()).rejects.toThrow('建议已失效')
+  })
+})

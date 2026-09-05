@@ -4,8 +4,8 @@
 
 个人写作 Agent（内容生产，非 Coding Agent）：Planner 每轮动态选择 Skill/工具，完成检索、归纳、大纲、成文、质检和归档，不是固定 Workflow。
 
-- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.31**。
-- 阶段 2、3、4 及 v1.13–v1.31 均已完成；当前基线：Python **344/344**、记忆隔离 **11/11**、前端 **174/174**。
+- 架构单一事实来源：`docs/architecture/phase1-architecture.md` **v1.33**。
+- 阶段 2、3、4 及 v1.33 均已完成；当前基线：Python **379/379**、记忆隔离 **11/11**、前端 **179/179**。
 - 阶段 4 已具备 FastAPI + SSE + Vue 3 写作 IDE、一助手多项目、选区改写、项目 Agent 流式编辑和每项目多会话历史。
 - v1.17 补齐：活动 SSE 订阅者按 `seq` 跨越事件滑窗（修复长回复超过窗口后停流）、编辑器内联 diff + 侧栏卡片双视图、选区工具栏可输入、项目聊天上下文分层压缩、前端助手增删。
 - v1.18 补齐：SSE 断线游标续传——数据帧带标准 `id: <seq>` 行，流端点接受 `after_seq` / `Last-Event-ID` 游标，游标落后于窗口时发 `reconnect_gap` 缺口信号；前端按退避自动重连、按 `seq` 去重，缺口后等待终态并重载持久化会话。
@@ -23,6 +23,8 @@
 - v1.29 补齐（加固批次）：写意图 finalize 返回契约统一 `list[str]`（缺失分支返回空列表）；`WorkLogRecorder` 终态后 `start` 显式拒绝；`watchTask` 退避复位以收到首个事件（数据帧或 heartbeat）为准、开连即断不再无限快速重连；补五项崩溃恢复回归测试（并发终态对账、迁移后二次启动、真实 recorder 取消分支、跨助手 change set 404、工作事件断线补发）；工作记录截断标注改「脱敏后 N 字符」与 import 分组。详见 backlog「已完成并移出待办」。
 - v1.30 补齐（助手记忆系统完善）：项目聊天 system prompt 注入本助手记忆（recall_trace 画像全文+文章命中+对话片段，补齐 §4.7 既有声明）并以「已注入助手记忆」工作条目呈现命中摘要；聊天轮次 succeeded 终态选择性沉淀——确定性信号门槛（未命中零成本）→ 显式指令剥离指令词直达 `memorize`（零模型调用）/ 其余命中一次 JSON 提取（≤3 条，kind ∈ preference/style/topic，含画像去重），failed/interrupted 不沉淀，失败降级 warning 不影响回复，`CHAT_MEMORY_CONSOLIDATION` 可整体关闭；新增 `GET/PUT /api/assistants/{id}/memory/profile`（整文白盒替换、50,000 字符上限、助手运行中 409）与前端标题栏「记忆画像」对话框；`recall_trace` 结构化命中 + 普通任务启动 `info` 播报；随行 clamp：`list_change_sets` 的 page_size 在 Memory 层收口 ≤100（phase7 P3-4）。同版无障碍小批次：ChangeDiff 卡片头部与 hunk 的 Space 键激活（phase8 P3-5）、主题菜单打开后聚焦当前项并支持方向键循环导航与 Home/End（phase7 P3-9）、工作记录 changes 条目补按钮语义与 Enter/Space 激活（phase7 P3-9 剩余部分）。
 - v1.31 补齐（TRAE 式模型/提供商切换）：多提供商配置存储 `agent/llm_providers.py`——提供商与当前选择持久化于项目根目录 `llm_providers.json`（与 .env 同目录、已 gitignore、白盒可手改、临时文件+原子替换写入并尽力收紧权限），首次启动从 `.env` 合成 `default` 提供商，文件损坏启动时显式报错；Runtime 按任务路由——每任务（run/chat_project/rewrite_selection）启动时解析一次「当前提供商 → (client, model, temperature)」快照，切换=原子更新指针只影响后续任务、不打断运行中任务、不占用助手运行锁，`runtime.llm` 保留属性门面（测试替身注入兼容）；温度配置化（phase6 遗留闭环）——温度为提供商配置项（0–2，缺省 0.3），llm.py 及全部调用点硬编码收敛为统一读配置；API 新增 `GET /api/llm/providers`（api_key 只回掩码尾缀）、`POST /api/llm/providers`、`POST /api/llm/providers/current`（未知提供商 404/未声明模型 400）；前端 Agent 面板输入区新增模型选择按钮（按提供商分组、键盘导航对齐主题菜单）与「添加提供商」二级对话框（保存后自动切换到新提供商第一个模型，服务端拒绝原样提示不关对话框）。「可用性测试按钮」（你好探活）为后续增强未实施。硬性规则 4/11 已随密钥边界修订。
+- v1.32 补齐（phase10 文档口径）：纯文档修正与实现的偏差，不改任何代码行为——§5.7 工作记录截断标注口径改「脱敏后长度标注」（对齐 v1.29 实现）、§5.4 补工作记录终态守卫契约、§9 聊天记忆沉淀失败语义如实化（提取失败画像保持原状；memorize 逐条写入，中途失败已写入条目保留、其余跳过）、v1.31 两处措辞（任务快照解析先于运行锁获取、icacls 收紧范围含 SYSTEM）；另修正 docs/README.md 与 new-session-prompt 的陈旧版本引用（原停留在 v1.28）。phase10 审查报告见 `docs/reviews/phase10-code-review.md`（v1.28–v1.31 四提交区间复审：无 P0，3 P1 / 8 P2 / 23 P3；文档口径项已随本版关闭，观察项已登记 backlog）。
+- v1.33 补齐（phase10 代码侧修复，`fix/phase10-review` 分支单次修复，处理报告全部 P1/P2 与除 backlog 观察项外的 P3）：**助手编辑契约**——空描述助手可保存（撤销 `description` 单边 `min_length=1`，422 数组 detail 取首条可读消息）、显式 null 字段 422、空白显示名 registry 收口；**提供商配置写入收口**——变更+落盘 RLock 串行且单一快照引用（并发切换不再持久化交叉配对）、先落盘后更新内存、落盘 fsync + 孤儿 tmp 启动清扫、base_url urlparse 校验、手改值报错带路径、短密钥（<16 位）整体掩码；**记忆管线收口**——直达沉淀有界化（超 120 字/换行/疑问语气不直达、两路径画像去重）、注入记忆按预算 1/3 裁剪并指因告警（chat+run 双路径）、提取调用 30 秒独立超时（`CHAT_MEMORY_EXTRACTION_TIMEOUT_SECONDS`）、部分失败文案如实「已写入 k/N 条」、回复交付后的沉淀取消不改记 interrupted、画像编码损坏可经 PUT 覆盖修复（GET 400 指引）、run 路径零命中不播报记忆注入；**助手文件一致性**——assistant.yaml/persona.md/profile.md 全部走临时文件+fsync+原子替换、registry reload 整体替换+RLock、回滚失败 logging 告警；**边界收尾**——persona 50,000 上限下沉 registry（CLI/API 同口径）、persona_file 越界拒绝、工作记录终态旗标后置（落库失败补偿可重试）、写意图终结假成功改显式 409（契约修订）；前端 persona 字数计数/切换 in-flight 防护/添加提供商入键盘循环。架构文档随本次修复升版 v1.33。逐条处置见报告文末「处理结果记录」；P3 观察项（P3-3/P3-10/P3-14/P3-15/P3-21）维持 backlog 暂缓。二次复审另登记四项 P3 观察项并随本分支补强（记忆去重改条目整条相等、助手文件原子写补 fsync、.env.example 登记提取超时可配项、run 路径记忆裁剪回归测试），见报告「复审补强记录」。
 - **阶段门：完成一个阶段后必须停下等待用户确认，不自动扩大范围。**
 
 ## 新会话必读
@@ -95,6 +97,7 @@ npm run build
 - scope 使用业务模块名（如 agent / memory / api / web），可省略
 - subject 简洁明确，不超过 72 个字符；不写「修改代码」「优化一下」「修复 bug」等无意义描述
 - 一个 Commit 尽量只对应一个独立改动；修改复杂时再增加正文，简单修改只写一行
+- 多改动批次：subject 以全角括号列举本批要点，正文用「总起 + 无序列表」结构——先一句话点明本次处理的范围或来源，空行后以 `- ` 逐条说明每组改动（改了什么、为什么或效果）；验证数字不入提交信息，随文档基线同步；简单修改仍只写一行
 - 摘要与正文使用中文，技术名词可保留原文
 - 不要根据描述猜测，必须以实际 Diff 为准——写提交信息前逐文件核对本次改动
 

@@ -107,11 +107,16 @@ async function reloadProviders() {
 }
 
 async function selectProvider(providerId: string, model: string) {
+  // in-flight 防护（phase10 P3-22/P2-1）：快速连点会产生并发 POST，
+  // 切换期间禁用触发器串行化请求。
+  providerBusy.value = true
   providerError.value = ''
   try {
     providers.value = await apiClient.selectLlmProvider(providerId, model)
   } catch (cause) {
     providerError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    providerBusy.value = false
   }
 }
 

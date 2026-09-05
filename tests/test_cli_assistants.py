@@ -135,3 +135,16 @@ def test_edit_blank_name_is_rejected(tmp_path):
 
     assert _run_cli(tmp_path, "edit", "editor", "--name", "  ") == 2
     assert _assistant_yaml(tmp_path)["name"] != "  "
+
+
+def test_persona_file_non_utf8_reports_readable_error(tmp_path, capsys):
+    """phase10 P3-2：非 UTF-8 的 persona 文件给可读提示，不再是裸 traceback 摘要。"""
+    source = tmp_path / "persona-gbk.txt"
+    source.write_bytes("GBK 编码的人设".encode("gbk"))
+
+    code = _run_cli(tmp_path, "create", "editor", "--name", "编辑助手", "--persona-file", str(source))
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "persona 文件" in captured.err
+    assert not (tmp_path / "assistants" / "editor").exists()
