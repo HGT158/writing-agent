@@ -60,16 +60,29 @@ def extract_explicit_command(message: str) -> str | None:
     return content
 
 
-def is_duplicate_memory(content: str, profile_text: str) -> bool:
-    """规范化（去除全部空白）后与画像既有内容比对；空内容视为重复不写入。
+# 画像既有条目形如「- [偏好] {content} （时间戳）」，剥离条目装饰后取正文比对。
+_PROFILE_ENTRY_RE = re.compile(r"^-\s*\[[^\]]+\]\s*(.*?)\s*（[^）]*）\s*$")
+# 手改条目可能缺时间戳后缀：回退为只剥条目头（- [kind] ），正文原样比对。
+_PROFILE_ENTRY_PREFIX_RE = re.compile(r"^-\s*\[[^\]]+\]\s*")
 
-    既有条目形如「- [偏好] {content} （时间戳）」，子串包含即视为等价。
+
+def is_duplicate_memory(content: str, profile_text: str) -> bool:
+    """规范化（去除全部空白）后与画像既有条目逐条比对；空内容视为重复不写入。
+
+    等价判定是「剥离条目装饰后整条相等」而非跨条目子串包含（phase10 复审补强）：
+    「简洁」这类短新偏好是更长既有条目的子串，包含语义会把它误判为重复而
+    静默吞掉；同一句话重复说的场景整条相等已覆盖（规范化抵消空白差异）。
     """
     needle = "".join(str(content).split())
     if not needle:
         return True
-    haystack = "".join(str(profile_text or "").split())
-    return needle in haystack
+    for line in str(profile_text or "").splitlines():
+        stripped = line.strip()
+        match = _PROFILE_ENTRY_RE.match(stripped)
+        existing = match.group(1) if match else _PROFILE_ENTRY_PREFIX_RE.sub("", stripped)
+        if "".join(existing.split()) == needle:
+            return True
+    return False
 
 
 def kind_label(kind: str) -> str:

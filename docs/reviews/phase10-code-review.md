@@ -226,3 +226,15 @@ token 估算对 CJK 约 1 字 1 token（`context.py:25-36`）。用户经「记�
 - **报告外顺手修（同文件/同主题）**：`selection()`/`resolve()` 一并快照化（P2-1 同域）；`append_profile` 的首部初始化与超限裁剪重写一并原子化（P3-12 同域）；registry `create` 的空白显示名一并拒绝（P2-5 同域）。无关新缺陷未发现，backlog 无新增登记。
 - **架构文档升版记录**：v1.33（本次修复单次升版，覆盖提供商配置边界与助手编辑契约、记忆管线收口、助手文件一致性、边界收尾四组改动）；`CHAT_MEMORY_EXTRACTION_TIMEOUT_SECONDS` 为新增可配项（默认 30 秒）。
 - **验证**：实跑 `python -m pytest tests -q -p no:cacheprovider --basetemp D:\test_agent\pytest-temp-full` 全绿 + `tests/test_memory_isolation.py`（pytest-temp-isolation）常绿 + `web/` 下 `npm test`、`npm run typecheck` 通过；收尾另跑 `npm run build` 通过。最终基线：Python 377/377、隔离 11/11、前端 179/179。
+
+
+---
+
+## 复审补强记录（fix/phase10-review 二次复审，2026-09-05）
+
+对照式复审逐条核实「处理结果记录（v1.33）」全部属实（P1-2 例证撤销说明经独立验证相符，无新增误报）后，二次复审另登记四项 P3 观察项，随本分支一并修复；Python 基线 377→379（含 2 条新增测试），记忆隔离 11/11 常绿：
+
+- **run 路径记忆裁剪缺直接回归测试**：补与 chat 路径对称的回归用例——预算 1/3 份额裁剪、「超出注入预算已截断」播报标记、注入文本 token 上界断言（此前 run 路径的裁剪与标记零断言）。
+- **CHAT_MEMORY_EXTRACTION_TIMEOUT_SECONDS 未进 .env.example**：补登记（默认 30 秒，注明 0/负数会让提取立即超时失败）；该文件无代码消费方，纯文档遗漏。
+- **助手文件原子写无 fsync，与 llm_providers.json 写入标准分叉**：assistant.yaml/persona.md/profile.md 的原子写在 os.replace 前补 flush+fsync，断电不留空/半截文件；架构 §4.2/§5.7/§9/v1.33 变更行与 AGENTS.md 写入口径同步为「临时文件 + fsync + 原子替换」（分支未合并，保持 v1.33 单版本口径不另升版）。
+- **记忆去重子串包含语义可能吞掉合法短新条目**：`is_duplicate_memory` 改为与画像既有条目「剥离装饰后整条相等」（条目按「- [kind] 正文 （时间戳）」解析，手改的无时间戳条目剥条目头比对），不做跨条目子串包含——短新偏好不再被更长既有条目误判为重复而静默吞掉；同一句话重复说只落一条的主场景由整条相等覆盖，直达与启发式两条落库路径调用方式不变。

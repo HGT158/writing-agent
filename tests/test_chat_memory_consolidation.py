@@ -15,6 +15,7 @@ from agent.chat_memory import (
     has_consolidation_signal,
     is_duplicate_memory,
 )
+from agent.context import estimate_tokens
 from agent.events import EventBus
 from agent.runtime import AgentRuntime
 from config.settings import Settings
@@ -160,10 +161,17 @@ def test_extract_explicit_command_bounds_and_question_guard():
 
 
 def test_is_duplicate_memory_normalizes_whitespace():
-    """phase10 P1-2：与画像既有条目规范化比对去重。"""
+    """phase10 P1-2：与画像既有条目规范化比对去重；等价判定为剥离条目装饰后整条相等。"""
     assert is_duplicate_memory("摘要放在文末", "# 画像\n\n- [偏好] 摘要放在文末 （2026-09-02 10:00）\n")
     assert not is_duplicate_memory("摘要放在文末", "- [偏好] 标题放文首")
     assert is_duplicate_memory("", "任意画像")  # 空内容视为重复，不写入
+    # 复审补强：不做跨条目子串包含——短新偏好不得被更长的既有条目误判为重复而吞掉
+    assert not is_duplicate_memory("简洁", "- [偏好] 喜欢简洁的排版 （2026-09-02 10:00）")
+    assert not is_duplicate_memory("我喜欢简洁的排版风格", "- [偏好] 简洁 （2026-09-02 10:00）")
+    # 手写行（无条目装饰）按整行相等比对
+    assert is_duplicate_memory("白盒手改的一行", "# 画像\n白盒手改的一行\n")
+    # 手改条目缺时间戳后缀时，回退为剥掉条目头后比对（与旧包含语义等强的兜底）
+    assert is_duplicate_memory("摘要放在文末", "- [偏好] 摘要放在文末")
 
 
 def test_extract_preferences_normalizes_items():
@@ -315,6 +323,20 @@ def test_explicit_command_duplicate_skips_memorize(tmp_path):
 
     profile = runtime.store.get_assistant_profile("default")
     assert profile.count("摘要放在文末") == 1
+    asyncio.run(runtime.close())
+
+
+def test_explicit_short_command_not_swallowed_by_longer_entry(tmp_path):
+    """复审补强：去重为逐条整条相等——短新偏好是更长既有条目的子串时仍应写入。
+
+    全文子串包含语义会把「简洁」判成「喜欢简洁的排版」的重复而静默跳过。"""
+    runtime, project, document, _events = _runtime(tmp_path, TurnLLM([_stream_chunk(content="好的。")]))
+    runtime.store.memorize("default", "preference", "我喜欢简洁的排版")
+
+    _chat(runtime, project, document, "记住：简洁")
+
+    profile = runtime.store.get_assistant_profile("default")
+    assert "- [偏好] 简洁 （" in profile
     asyncio.run(runtime.close())
 
 
@@ -520,6 +542,49 @@ def test_run_emits_recall_summary_info_event(tmp_path: Path):
     assert state["status"] == "done"
     infos = [e["data"].get("text", "") for e in events if e["type"] == "info"]
     assert any("已注入助手记忆" in text and "画像 1 条" in text for text in infos)
+
+
+def test_run_memory_clipped_to_budget_share_with_marker(tmp_path: Path):
+    """复审补强：普通任务路径注入记忆同样按预算份额（1/3）裁剪，播报带截断标记。
+
+    与 chat 路径的 test_chat_memory_block_clipped_to_budget_share 对称；
+    此前 run 路径的裁剪与「超出注入预算已截断」标记没有任何测试断言。"""
+    class _Completions:
+        async def create(self, *, messages, stream=False, **_kwargs):
+            if stream:
+                return FakeAsyncStream([_stream_chunk(content="正文。")])
+            user = messages[-1]["content"]
+            if "核查清单" in user:
+                return _response(json.dumps({"passed": True, "missing": [], "new_preferences": []}, ensure_ascii=False))
+            return _response(json.dumps({
+                "thought": "直接成文",
+                "next_action": "write",
+                "skill": None,
+                "skill_reason": "已有足够上下文",
+                "tool_calls": [],
+                "tool_reason": None,
+                "done_criteria_met": False,
+            }, ensure_ascii=False))
+
+    events = []
+    bus = EventBus()
+    bus.subscribe(events.append)
+    runtime = AgentRuntime(_settings(tmp_path), bus)
+    runtime.llm = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    runtime.store.replace_assistant_profile("default", "记" * 24_000)
+
+    async def scenario():
+        try:
+            return await runtime.run("default", "写一篇模型蒸馏实践")
+        finally:
+            await runtime.close()
+
+    state = asyncio.run(scenario())
+    assert state["status"] == "done"
+    assert "中间部分已省略" in state["memory_context"]  # 注入文本带省略标记
+    assert estimate_tokens(state["memory_context"]) <= 24_000 // 3  # 恒不超 1/3 预算份额
+    infos = [e["data"].get("text", "") for e in events if e["type"] == "info"]
+    assert any("已注入助手记忆" in text and "超出注入预算已截断" in text for text in infos)
 
 
 def test_run_skips_recall_info_when_no_memory_hit(tmp_path: Path):

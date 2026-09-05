@@ -22,14 +22,16 @@ ASSISTANT_PROFILE_MAX_CHARS = 50_000
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
-    """同目录临时文件 + os.replace 原子写（phase10 P3-12）：
-    并发读端只会看到旧文件或新文件，进程中断不留半程文件。"""
+    """同目录临时文件 + fsync + os.replace 原子写（phase10 P3-12，fsync 为复审补强）：
+    并发读端只会看到旧文件或新文件，进程中断或断电不留半程/空文件。"""
     fd, tmp_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except BaseException:
         try:

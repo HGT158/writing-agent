@@ -118,13 +118,16 @@ class AssistantRegistry:
 
     @staticmethod
     def _atomic_write_text(path: Path, text: str) -> None:
-        """同目录临时文件 + os.replace 原子写：进程中断不留截断文件（phase10 P2-3）。"""
+        """同目录临时文件 + fsync + os.replace 原子写：进程中断或断电不留截断/空文件
+        （phase10 P2-3，fsync 为复审补强，对齐 llm_providers.json 写入标准）。"""
         fd, tmp_name = tempfile.mkstemp(
             dir=str(path.parent), prefix=f".{path.name}-", suffix=".tmp"
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp_name, path)
         except BaseException:
             try:
